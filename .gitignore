@@ -31,7 +31,9 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+backend/.env
 
 # typescript
 *.tsbuildinfo
@@ -41,3 +43,11 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
