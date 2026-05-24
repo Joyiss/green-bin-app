@@ -1,142 +1,124 @@
-import open_clip
-import torch
+import base64
+import io
+import os
+import re
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 from PIL import Image
+
+from .materials import LABEL_TO_CATEGORY, MATERIAL_LABELS, build_material_selection_prompt, resolve_material_label
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
 
-
-BASE_ITEMS = [
-    # Plastic / Containers
-    "plastic bottle",
-    "plastic bag",
-    "plastic food container",
-    "milk jug",
-    "shampoo bottle",
-
-    # Paper / Cardboard
-    "cardboard box",
-    "egg carton",
-    "pizza box",
-    "newspaper",
-    "magazine",
-    "paper cup",
-    "cereal box",
-
-    # Glass
-    "glass bottle",
-    "glass jar",
-
-    # Metal
-    "aluminum can",
-
-    # Food waste / Compost
-    "banana peel",
-    "apple core",
-    "pile of coffee grounds",
-
-    # Electronics
-    "smartphone",
-    "laptop",
-    "desktop computer tower",
-    "printer",
-    "pair of earbuds",
-    "smartwatch",
-    "remote control",
-    "calculator",
-
-    # Batteries
-    "AA battery",
-    "lithium phone battery",
-
-    # Household items
-    "light bulb",
-    "toothbrush",
-    "pair of shoes",
-    "pair of flip flops",
-    "bicycle",
-    "book",
-    "toy",
-
-    # Appliances
-    "microwave oven",
-    "refrigerator",
-    "washer and dryer",
-
-    # Hazardous / Chemicals
-    "paint can",
-    "cleaning spray bottle",
-    "motor oil container",
-
-    # Clothing
-    "t-shirt",
-    "pair of jeans",
-]
-
-ENSEMBLE_PROMPTS = {
-    item: [
-        f"a photo of a {item}.",
-        f"a photo of a {item}, a type of waste item.",
-    ]
-    for item in BASE_ITEMS
-}
-
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL = None
-PREPROCESS = None
-ENSEMBLE_TEXT_FEATURES = None  # averaged embeddings per item
+API_URL = os.getenv("MODELBEST_API_URL", "https://api.modelbest.cn/v1/chat/completions")
+API_KEY = os.getenv("MODELBEST_API_KEY", "")
+MODEL_ID = "MiniCPM-V-4.6-Thinking"
+DETECTION_PROMPT = build_material_selection_prompt()
 
 
-def _get_model_resources():
-    global MODEL, PREPROCESS, ENSEMBLE_TEXT_FEATURES
+def _clean_generated_label(raw_text: str) -> str:
+    text = raw_text.replace("\\n", "\n").strip()
+    if not text:
+        return ""
 
-    if MODEL is None or PREPROCESS is None or ENSEMBLE_TEXT_FEATURES is None:
-        MODEL, _, PREPROCESS = open_clip.create_model_and_transforms(
-            "ViT-B-32",
-            pretrained="laion2b_s34b_b79k",
-            device=DEVICE,
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    candidate = lines[0] if lines else text
+    candidate = re.sub(r"^[\-\*\d\.\)\s]+", "", candidate)
+    candidate = re.sub(
+        r"^(?:label|answer|object|main object)\s*:\s*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"^(?:the main object(?: in this image)? is|this is|it is|the object is)\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.split(r"[.!?\n]", candidate, maxsplit=1)[0]
+    return candidate.strip(" \"'`,:;()[]{}")
+
+
+def detect_object(image: Image.Image) -> str:
+    try:
+        if not API_KEY:
+            raise RuntimeError("MODELBEST_API_KEY is not set in backend/.env.")
+
+        rgb_image = image.convert("RGB")
+        buffer = io.BytesIO()
+        rgb_image.save(buffer, format="JPEG", quality=75)
+        img_bytes = buffer.getvalue()
+        img_str = base64.b64encode(img_bytes).decode("utf-8")
+        data_uri = f"data:image/jpeg;base64,{img_str}"
+
+        payload = {
+            "model": MODEL_ID,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": DETECTION_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": data_uri,
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            API_URL,
+            headers=headers,
+            json=payload,
+            timeout=60,
         )
+        response.raise_for_status()
+        response_json = response.json()
+        raw_output = response_json["choices"][0]["message"]["content"]
+    except Exception as exc:
+        print(f"ModelBest API error: {exc}")
+        return ""
 
-        # build one averaged embedding per item
-        ensemble_embeddings = []
-        for item in BASE_ITEMS:
-            prompts = ENSEMBLE_PROMPTS[item]
-            tokenized = open_clip.get_tokenizer("ViT-B-32")(prompts).to(DEVICE)
-            with torch.no_grad():
-                embeddings = MODEL.encode_text(tokenized)
-                embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
-                averaged = embeddings.mean(dim=0)
-                averaged = averaged / averaged.norm()
-            ensemble_embeddings.append(averaged)
-
-        ENSEMBLE_TEXT_FEATURES = torch.stack(ensemble_embeddings)  # shape: [n_items, embed_dim]
-
-    return MODEL, PREPROCESS, ENSEMBLE_TEXT_FEATURES
+    cleaned_label = _clean_generated_label(raw_output)
+    print(f"ModelBest raw output: {raw_output!r}")
+    print(f"ModelBest cleaned label: {cleaned_label!r}")
+    return cleaned_label
 
 
 def get_top_predictions(image: Image.Image) -> dict[str, object]:
-    model, preprocess, text_features = _get_model_resources()
-    image_input = preprocess(image).unsqueeze(0).to(DEVICE)
+    detected_label = detect_object(image)
+    canonical_label = resolve_material_label(detected_label)
+    print(f"MiniCPM canonical label: {canonical_label!r}")
 
-    with torch.no_grad():
-        image_features = model.encode_image(image_input)
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    if canonical_label is None:
+        return {
+            "top_predictions": [],
+            "scores": [0.0 for _ in MATERIAL_LABELS],
+            "top1_score": 0.0,
+            "top2_score": 0.0,
+            "margin": 0.0,
+            "detected_label": detected_label,
+        }
 
-        similarities = (image_features @ text_features.T).squeeze(0)
-        top_scores, top_indices = similarities.topk(5)
-
-    top_predictions = [
-        (BASE_ITEMS[index], float(score))
-        for score, index in zip(top_scores.tolist(), top_indices.tolist())
-    ]
-
-    top1_score = top_predictions[0][1] if top_predictions else 0.0
-    top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
-
+    scores = [1.0 if label == canonical_label else 0.0 for label in MATERIAL_LABELS]
     return {
-        "top_predictions": top_predictions,
-        "scores": similarities.tolist(),
-        "top1_score": top1_score,
-        "top2_score": top2_score,
-        "margin": top1_score - top2_score,
+        "top_predictions": [(canonical_label, 1.0)],
+        "scores": scores,
+        "top1_score": 1.0,
+        "top2_score": 0.0,
+        "margin": 1.0,
+        "detected_label": detected_label,
+        "category": LABEL_TO_CATEGORY[canonical_label],
     }
