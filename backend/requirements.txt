@@ -1,8 +1,5 @@
 fastapi
 uvicorn
-open_clip_torch
-torch
-torchvision
 Pillow
 python-multipart
 python-dotenv

@@ -4,8 +4,9 @@ import { useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
 import { SearchChip } from '@/components/search-chip';
 import { API_BASE_URL } from '@/constants/api';
@@ -36,6 +37,7 @@ function getRouteItem(value: string | string[] | undefined) {
 }
 
 export default function NearbyScreen() {
+  const insets = useSafeAreaInsets();
   const { item } = useLocalSearchParams<{ item?: string | string[] }>();
   const selectedItem = getRouteItem(item) ?? getLastScannedItem();
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
@@ -153,7 +155,10 @@ export default function NearbyScreen() {
       </ScrollView>
 
       <ScrollView
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[
+          styles.list,
+          { paddingBottom: insets.bottom + BOTTOM_NAV_BAR_HEIGHT + 18 },
+        ]}
         showsVerticalScrollIndicator={false}
         style={styles.cards}>
         {isLoading ? (
@@ -254,7 +259,6 @@ const styles = StyleSheet.create({
   },
   list: {
     gap: 18,
-    paddingBottom: 28,
   },
   stateCard: {
     alignItems: 'center',

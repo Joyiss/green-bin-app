@@ -37,7 +37,7 @@ From the **repository root** (`green-bin-app/`):
    - Health: `GET http://localhost:8000/health`
    - Predict: `POST http://localhost:8000/predict` (multipart file field)
 
-The first prediction request loads the CLIP model; startup can take a moment.
+The prediction endpoint sends the uploaded image to the configured ModelBest MiniCPM-V API, so response time depends on network availability and remote inference latency.
 
 ## Learn more
 

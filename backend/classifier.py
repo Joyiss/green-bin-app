@@ -1,72 +1,5 @@
+from .materials import LABEL_TO_CATEGORY, resolve_material_label
 from .model import CONFIDENT_THRESHOLD, MARGIN_THRESHOLD
-
-
-LABEL_TO_CATEGORY = {
-    # Plastic / Containers
-    "plastic bottle": "Plastic",
-    "plastic bag": "Plastic",
-    "plastic food container": "Plastic",
-    "milk jug": "Plastic",
-    "shampoo bottle": "Plastic",
-
-    # Paper / Cardboard
-    "cardboard box": "Cardboard",
-    "egg carton": "Cardboard",
-    "pizza box": "Cardboard",
-    "newspaper": "Paper",
-    "magazine": "Paper",
-    "paper cup": "Paper",
-    "cereal box": "Cardboard",
-
-    # Glass
-    "glass bottle": "Glass",
-    "glass jar": "Glass",
-
-    # Metal
-    "aluminum can": "Metal",
-
-    # Food waste / Compost
-    "banana peel": "Organic",
-    "apple core": "Organic",
-    "pile of coffee grounds": "Organic",
-
-    # Electronics
-    "smartphone": "Electronics",
-    "laptop": "Electronics",
-    "desktop computer tower": "Electronics",
-    "printer": "Electronics",
-    "pair of earbuds": "Electronics",
-    "smartwatch": "Electronics",
-    "remote control": "Electronics",
-    "calculator": "Electronics",
-
-    # Batteries
-    "AA battery": "Battery",
-    "lithium phone battery": "Battery",
-
-    # Household items
-    "light bulb": "Hazardous",
-    "toothbrush": "Mixed Material",
-    "pair of shoes": "Textile",
-    "pair of flip flops": "Textile",
-    "bicycle": "Metal",
-    "book": "Paper",
-    "toy": "Hard Plastic",
-
-    # Appliances
-    "microwave oven": "Appliances",
-    "refrigerator": "Appliances",
-    "washer and dryer": "Appliances",
-
-    # Hazardous / Chemicals
-    "paint can": "Hazardous",
-    "cleaning spray bottle": "Hazardous",
-    "motor oil container": "Hazardous",
-
-    # Clothing
-    "t-shirt": "Textile",
-    "pair of jeans": "Textile",
-}          
 
 
 UNKNOWN_CATEGORY = "Unknown"
@@ -74,11 +7,9 @@ UNCERTAIN_CANDIDATE_LIMIT = 3
 
 
 def _normalize_label(label: str) -> str:
-    normalized_label = label.strip().lower()
-
-    for known_label in LABEL_TO_CATEGORY:
-        if known_label.lower() == normalized_label:
-            return known_label
+    canonical_label = resolve_material_label(label)
+    if canonical_label is not None:
+        return canonical_label
 
     return label.strip()
 
@@ -120,7 +51,7 @@ def _unknown_prediction() -> dict:
 def classify(prediction_result: dict) -> dict:
     top_predictions = prediction_result.get("top_predictions", [])
 
-    print("top 5 labels:")
+    print("top labels:")
     for rank, (label, score) in enumerate(top_predictions, start=1):
         print(f"  {rank}. {label}: {score:.4f}")
 
