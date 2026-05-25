@@ -129,7 +129,10 @@ _ALIAS_MAP = {
     "eggshells": "Eggshell",
     "flip flops": "Shoes",
     "food tin": "Food can",
+    "fruit": "Fruit scraps",
+    "fruit flesh": "Fruit scraps",
     "fruit scrap": "Fruit scraps",
+    "fruit waste": "Fruit scraps",
     "glass bottles": "Glass bottle",
     "glass jars": "Glass jar",
     "grass clipping": "Grass clippings",
@@ -144,8 +147,9 @@ _ALIAS_MAP = {
     "milk bottle": "Milk jug",
     "mobile phone": "Smartphone",
     "motor oil bottle": "Motor oil",
-    "news paper": "Newspaper",
     "notebook": "Notebook paper",
+    "news paper": "Newspaper",
+    "notebook book": "Notebook paper",
     "orange peels": "Orange peel",
     "paint bucket": "Paint can",
     "paper carton": "Drink carton",
@@ -163,6 +167,8 @@ _ALIAS_MAP = {
     "remote controller": "Remote control",
     "sanitizer bottle": "Hand sanitizer",
     "shoe": "Shoes",
+    "sneaker": "Shoes",
+    "sneakers": "Shoes",
     "smart phone": "Smartphone",
     "smartphones": "Smartphone",
     "soft drink bottle": "Soda bottle",
@@ -179,7 +185,11 @@ _ALIAS_MAP = {
     "usb cable": "Cable",
     "vacuum cleaner": "Vacuum",
     "vegetable scrap": "Vegetable scraps",
+    "vegetable waste": "Vegetable scraps",
     "water bottle": "Plastic water bottle",
+    "water melon": "Fruit scraps",
+    "watermelon": "Fruit scraps",
+    "watermelon rind": "Fruit scraps",
     "wood piece": "Wood pieces",
     "wood scraps": "Wood pieces",
     "yoghurt container": "Yogurt container",
@@ -259,9 +269,53 @@ def resolve_material_label(label: str) -> str | None:
 def build_material_selection_prompt() -> str:
     inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
     return (
-        "Identify the main object in this image. Return only one concise object label.\n"
-        "Choose exactly one label from this list.\n"
-        "Return the exact label text from the list and nothing else.\n"
-        "Do not explain your choice. Do not add punctuation.\n"
+        "You are classifying waste-related items from an image.\n"
+        "Choose labels only from the allowed inventory below.\n"
+        "If the exact object is not listed, generalize to the nearest appropriate inventory label.\n"
+        "Examples: watermelon -> Fruit scraps, sneakers -> Shoes, plastic bottle on table -> Plastic water bottle.\n"
+        "If two or more distinct visible objects could each map to supported inventory labels, you must return status uncertain.\n"
+        "When multiple objects are visible, candidate_labels should name those visible objects or their nearest supported inventory labels.\n"
+        "Do not collapse multiple visible objects into one generalized label.\n"
+        "Only return status confident when exactly one relevant object is clearly the subject and no other plausible supported object competes with it.\n"
+        "If the image is ambiguous or contains multiple plausible items, return the top 3 best inventory labels in ranked order.\n"
+        "Return strict JSON only using this exact shape:\n"
+        '{"status":"confident|uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
+        "Use only inventory labels in the JSON. Do not include explanations or markdown.\n"
+        "Allowed inventory labels:\n"
+        f"{inventory_lines}"
+    )
+
+
+def build_uncertain_fallback_prompt(primary_label: str) -> str:
+    inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
+    return (
+        "Your previous result was uncertain and did not include enough valid candidate labels.\n"
+        f"The first-pass primary guess was: {primary_label or 'unknown'}.\n"
+        "Return strict JSON only with exactly 3 ranked inventory labels.\n"
+        'Use this exact shape: {"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
+        "Choose labels only from the allowed inventory below.\n"
+        "Keep the alternatives close to the first-pass guess when possible, and do not output scene objects, furniture parts, colors, or descriptions that are not inventory labels.\n"
+        "Do not include explanations or markdown.\n"
+        "Allowed inventory labels:\n"
+        f"{inventory_lines}"
+    )
+
+
+def build_multi_object_verification_prompt(primary_label: str) -> str:
+    inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
+    return (
+        "Verify whether this image should stay confident or become uncertain.\n"
+        f"The first-pass primary guess was: {primary_label or 'unknown'}.\n"
+        "If two or more distinct visible objects in the image could each map to supported inventory labels, you must return status uncertain.\n"
+        "If only one relevant supported object is clearly the subject, return status confident.\n"
+        'The status field must be exactly one of these strings: "confident" or "uncertain".\n'
+        "Return strict JSON only using this exact shape:\n"
+        '{"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
+        "or this exact shape:\n"
+        '{"status":"confident","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
+        "For uncertain, candidate_labels must contain exactly 3 ranked inventory labels describing the visible supported objects or their nearest supported inventory labels.\n"
+        "For confident, candidate_labels may repeat the primary label or include nearby alternatives from the inventory.\n"
+        "Use only inventory labels from this list. Do not include explanations or markdown.\n"
+        "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )

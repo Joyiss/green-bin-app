@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
 import { setLastScannedItem } from '@/constants/scan-session';
@@ -54,10 +55,6 @@ type ScannerResultData = {
   buttonLabel: string;
   buttonIconName: keyof typeof Ionicons.glyphMap;
 };
-
-const FLOATING_NAV_HEIGHT = 30;
-const FLOATING_NAV_BOTTOM_GAP = 18;
-const FLOATING_NAV_VERTICAL_PADDING = 1;
 
 function toSheetData(response: PredictionResponse): ScannerResultData {
   const action = (response.disposal_action ?? 'follow local guidance').trim().toLowerCase();
@@ -148,7 +145,7 @@ function CameraArea({
           </View>
         </View>
 
-        <View style={[styles.cameraControls, { bottom: bottomInset + 115 }]}>
+        <View style={[styles.cameraControls, { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + 28 }]}>
           <Pressable
             disabled={isLoading}
             onPress={onPickImage}
@@ -191,8 +188,7 @@ export default function ScannerScreen() {
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
   const sheetAnimation = useRef(new Animated.Value(360)).current;
-  const resultSheetBottomOffset =
-    insets.bottom + FLOATING_NAV_HEIGHT + FLOATING_NAV_BOTTOM_GAP + FLOATING_NAV_VERTICAL_PADDING;
+  const resultSheetBottomOffset = insets.bottom + BOTTOM_NAV_BAR_HEIGHT - 10;
 
   useEffect(() => {
     requestPermission();
@@ -419,10 +415,10 @@ export default function ScannerScreen() {
                   buttonIconName="camera-outline"
                   buttonLabel="Retake Photo"
                   label="REVIEW NEEDED"
-                  materialTag="Low Margin Match"
+                  materialTag="Multiple Plausible Matches"
                   onButtonPress={resetScanner}
                   steps={[]}
-                  summary="The top matches are too close together to guess safely. Pick the right item below and we'll load the correct disposal guidance on this page."
+                  summary="We found a few plausible waste-item matches for this image. Pick the best option below and we'll load the correct disposal guidance on this page."
                   title="Which item is this?">
                   <View style={styles.choiceButtonGroup}>
                     {candidates.map((candidate) => (

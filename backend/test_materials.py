@@ -16,6 +16,12 @@ class ResolveMaterialLabelTests(unittest.TestCase):
             "Plastic water bottle",
         )
 
+    def test_resolves_generalized_watermelon_variant(self):
+        self.assertEqual(resolve_material_label("watermelon"), "Fruit scraps")
+
+    def test_resolves_notebook_variant(self):
+        self.assertEqual(resolve_material_label("notebook"), "Notebook paper")
+
     def test_returns_none_for_unknown_label(self):
         self.assertIsNone(resolve_material_label("Garden hose"))
 
