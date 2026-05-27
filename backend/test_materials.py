@@ -1,6 +1,6 @@
 import unittest
 
-from backend.materials import resolve_material_label
+from materials import resolve_material_label
 
 
 class ResolveMaterialLabelTests(unittest.TestCase):
