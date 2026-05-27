@@ -393,7 +393,7 @@ async def predict(
             except Exception as exc:
                 raise HTTPException(status_code=400, detail={"error": "Invalid image file."}) from exc
 
-            from .model import get_top_predictions
+            from model import get_top_predictions
 
             predictions = get_top_predictions(image)
             classification = classify(predictions)
