@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from backend.classifier import classify
-from backend.model import detect_object, get_top_predictions
+from classifier import classify
+from model import detect_object, get_top_predictions
 from PIL import Image
 
 

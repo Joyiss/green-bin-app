@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from PIL import Image
 
-from .classifier import build_selected_item_prediction, classify
-from .rules import get_rules
+from classifier import build_selected_item_prediction, classify
+from rules import get_rules
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")

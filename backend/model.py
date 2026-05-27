@@ -9,7 +9,7 @@ import requests
 from dotenv import load_dotenv
 from PIL import Image
 
-from .materials import (
+from materials import (
     LABEL_TO_CATEGORY,
     MATERIAL_LABELS,
     build_material_selection_prompt,
@@ -59,13 +59,35 @@ def _extract_json_object(raw_text: str) -> dict[str, object]:
     if not isinstance(raw_text, str):
         raise ValueError("Model response content must be a string.")
 
+    # find first JSON block
     start_index = raw_text.find("{")
     if start_index == -1:
         raise ValueError("No JSON object found in model response.")
 
     json_text = raw_text[start_index:]
+
+    # 🚨 fix: sometimes model outputs multiple JSON objects
+    # keep only first complete object
+    open_braces = 0
+    end_index = None
+
+    for i, ch in enumerate(json_text):
+        if ch == "{":
+            open_braces += 1
+        elif ch == "}":
+            open_braces -= 1
+            if open_braces == 0:
+                end_index = i + 1
+                break
+
+    if end_index is None:
+        raise ValueError("Incomplete JSON object in model response.")
+
+    json_text = json_text[:end_index]
+
     decoder = json.JSONDecoder()
-    parsed, _end_index = decoder.raw_decode(json_text)
+    parsed, _ = decoder.raw_decode(json_text)
+
     if not isinstance(parsed, dict):
         raise ValueError("Parsed model response JSON is not an object.")
 
@@ -131,48 +153,49 @@ def _call_modelbest(data_uri: str, prompt_text: str) -> str:
 
 def _parse_detection_result(raw_output: str) -> dict[str, object]:
     parsed_output = _extract_json_object(raw_output)
+
     status = str(parsed_output.get("status", "")).strip().lower()
-    primary_label = _clean_generated_label(str(parsed_output.get("primary_label", "")))
+    if status not in {"confident", "uncertain"}:
+        status = "unknown"
+
+    primary_label = _clean_generated_label(
+        str(parsed_output.get("primary_label", ""))
+    )
+
+    # 🚨 remove invalid "none"-type outputs
+    if primary_label.lower() in {"none", "null", "unknown"}:
+        primary_label = ""
+
     raw_candidate_labels = parsed_output.get("candidate_labels", [])
     if not isinstance(raw_candidate_labels, list):
         raw_candidate_labels = []
 
-    cleaned_raw_candidate_labels = [
-        _clean_generated_label(str(label))
-        for label in raw_candidate_labels
-        if str(label).strip()
+    cleaned_candidates = [
+        _clean_generated_label(str(l))
+        for l in raw_candidate_labels
+        if str(l).strip()
     ]
-    cleaned_candidate_labels = list(cleaned_raw_candidate_labels)
-    if primary_label:
-        cleaned_candidate_labels.insert(0, primary_label)
 
-    normalized_candidates = _normalize_candidate_labels(cleaned_candidate_labels)[:3]
-    normalized_raw_candidates = _normalize_candidate_labels(cleaned_raw_candidate_labels)
+    if primary_label:
+        cleaned_candidates.insert(0, primary_label)
+
+    normalized_candidates = _normalize_candidate_labels(cleaned_candidates)[:3]
     normalized_primary = resolve_material_label(primary_label)
+
     if normalized_primary is None and normalized_candidates:
         normalized_primary = normalized_candidates[0]
 
-    normalized_status = status if status in {"confident", "uncertain"} else "unknown"
-    distinct_raw_candidates = [
-        candidate
-        for candidate in normalized_raw_candidates
-        if candidate and candidate != (normalized_primary or "")
-    ]
+    # 🚨 consistency fix
+    if normalized_primary and normalized_candidates:
+        if normalized_primary not in normalized_candidates:
+            normalized_primary = normalized_candidates[0]
 
-    if normalized_status == "confident" and normalized_primary is None:
-        normalized_status = "unknown"
-    if (
-        normalized_status == "confident"
-        and normalized_primary
-        and normalized_primary not in normalized_raw_candidates
-        and len(distinct_raw_candidates) >= 2
-    ):
-        normalized_status = "uncertain"
-    if normalized_status == "uncertain" and len(normalized_candidates) < 2:
-        normalized_status = "unknown"
+    # 🚨 must have at least 1 valid label for confident
+    if status == "confident" and not normalized_primary:
+        status = "unknown"
 
     return {
-        "status": normalized_status,
+        "status": status,
         "primary_label": normalized_primary or "",
         "candidate_labels": normalized_candidates,
         "raw_output": raw_output,
@@ -183,23 +206,32 @@ def _maybe_verify_confident_result(
     data_uri: str,
     result: dict[str, object],
 ) -> dict[str, object]:
-    if str(result.get("status", "unknown")) != "confident":
+
+    if result.get("status") != "confident":
         return result
 
-    primary_label = str(result.get("primary_label", "")).strip()
+    primary_label = (result.get("primary_label") or "").strip()
     if not primary_label:
         return result
 
     verification_prompt = build_multi_object_verification_prompt(primary_label)
     verification_output = _call_modelbest(data_uri, verification_prompt)
-    print(f"ModelBest verification raw output: {verification_output!r}")
-    verification_result = _parse_detection_result(verification_output)
-    print(f"ModelBest verification parsed result: {verification_result!r}")
 
-    if (
-        str(verification_result.get("status", "unknown")) == "uncertain"
-        and len(verification_result.get("candidate_labels", [])) >= 2
-    ):
+    print(f"Verification raw: {verification_output!r}")
+
+    verification_result = _parse_detection_result(verification_output)
+
+    print(f"Verification parsed: {verification_result!r}")
+
+    # 🚨 if model says uncertain → trust it
+    if verification_result.get("status") == "uncertain":
+        return verification_result
+
+    verified_label = verification_result.get("primary_label", "")
+    original_candidates = set(result.get("candidate_labels", []))
+
+    # 🚨 only accept verification if it stays in same label space
+    if verified_label and verified_label in original_candidates:
         return verification_result
 
     return result
@@ -213,25 +245,42 @@ def detect_object(image: Image.Image) -> dict[str, object]:
         rgb_image = image.convert("RGB")
         buffer = io.BytesIO()
         rgb_image.save(buffer, format="JPEG", quality=75)
+
         img_bytes = buffer.getvalue()
         img_str = base64.b64encode(img_bytes).decode("utf-8")
         data_uri = f"data:image/jpeg;base64,{img_str}"
+
         raw_output = _call_modelbest(data_uri, DETECTION_PROMPT)
-        result = _parse_detection_result(raw_output)
         print(f"ModelBest raw output: {raw_output!r}")
 
-        raw_parsed = _extract_json_object(raw_output)
-        raw_status = str(raw_parsed.get("status", "")).strip().lower()
-        if raw_status == "uncertain" and len(result["candidate_labels"]) < 2:
-            fallback_prompt = build_uncertain_fallback_prompt(str(raw_parsed.get("primary_label", "")).strip())
-            fallback_output = _call_modelbest(data_uri, fallback_prompt)
-            print(f"ModelBest fallback raw output: {fallback_output!r}")
-            fallback_result = _parse_detection_result(fallback_output)
-            if len(fallback_result["candidate_labels"]) >= 2:
-                print(f"ModelBest parsed fallback result: {fallback_result!r}")
-                return fallback_result
+        result = _parse_detection_result(raw_output)
 
-        result = _maybe_verify_confident_result(data_uri, result)
+        # 🚨 fallback ONLY if truly weak output
+        if result.get("status") == "uncertain" and len(result.get("candidate_labels", [])) < 2:
+            fallback_prompt = build_uncertain_fallback_prompt(
+                result.get("primary_label", "")
+            )
+
+            fallback_output = _call_modelbest(data_uri, fallback_prompt)
+            print(f"Fallback raw output: {fallback_output!r}")
+
+            fallback_result = _parse_detection_result(fallback_output)
+
+            if len(fallback_result.get("candidate_labels", [])) >= 2:
+                result = fallback_result
+
+        # 🚨 verification ALWAYS runs
+        verified_result = _maybe_verify_confident_result(data_uri, result)
+
+        # 🚨 FINAL AUTHORITY
+        if verified_result.get("primary_label"):
+            result = verified_result
+
+        # 🚨 final safety consistency check
+        if result.get("candidate_labels") and result.get("primary_label"):
+            if result["primary_label"] not in result["candidate_labels"]:
+                result["primary_label"] = result["candidate_labels"][0]
+
     except Exception as exc:
         print(f"ModelBest API error: {exc}")
         return {
@@ -239,6 +288,7 @@ def detect_object(image: Image.Image) -> dict[str, object]:
             "primary_label": "",
             "candidate_labels": [],
             "raw_output": "",
+            "error": str(exc),
         }
 
     print(f"ModelBest parsed result: {result!r}")
@@ -257,7 +307,7 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
     print(f"MiniCPM candidate labels: {candidate_labels!r}")
 
     if detection_status == "confident" and primary_label:
-        scores = [CONFIDENT_SCORE if label == primary_label else 0.0 for label in MATERIAL_LABELS]
+        scores = [0.8 if label == primary_label else 0.0 for label in MATERIAL_LABELS]
         return {
             "top_predictions": [(primary_label, CONFIDENT_SCORE)],
             "scores": scores,
@@ -313,7 +363,7 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
             "detected_label": detected_label,
         }
 
-    scores = [CONFIDENT_SCORE if label == canonical_label else 0.0 for label in MATERIAL_LABELS]
+    scores = [0.8 if label == primary_label else 0.0 for label in MATERIAL_LABELS]
     return {
         "top_predictions": [(canonical_label, CONFIDENT_SCORE)],
         "scores": scores,

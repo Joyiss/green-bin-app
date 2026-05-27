@@ -1,5 +1,5 @@
-from .materials import LABEL_TO_CATEGORY, resolve_material_label
-from .model import CONFIDENT_THRESHOLD, MARGIN_THRESHOLD
+from materials import LABEL_TO_CATEGORY, resolve_material_label
+from model import CONFIDENT_THRESHOLD, MARGIN_THRESHOLD
 
 
 UNKNOWN_CATEGORY = "Unknown"
