@@ -9,6 +9,7 @@ import {
   Alert,
   Animated,
   Image,
+  LayoutChangeEvent,
   Linking,
   Pressable,
   ScrollView,
@@ -23,6 +24,8 @@ import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
 import { setLastScannedItem } from '@/constants/scan-session';
+
+const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 
 type PredictionStatus = 'confident' | 'uncertain' | 'unknown';
 
@@ -43,6 +46,7 @@ type PredictionResponse = {
 };
 
 type SheetViewState = 'idle' | PredictionStatus;
+type VisibleSheetState = Exclude<SheetViewState, 'idle'>;
 type RequestState = 'idle' | 'loading';
 
 type ScannerResultData = {
@@ -145,7 +149,11 @@ function CameraArea({
           </View>
         </View>
 
-        <View style={[styles.cameraControls, { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + 28 }]}>
+        <View
+          style={[
+            styles.cameraControls,
+            { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + CAMERA_CONTROLS_NAV_CLEARANCE },
+          ]}>
           <Pressable
             disabled={isLoading}
             onPress={onPickImage}
@@ -183,34 +191,65 @@ export default function ScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [requestState, setRequestState] = useState<RequestState>('idle');
   const [sheetState, setSheetState] = useState<SheetViewState>('idle');
+  const [visibleSheetState, setVisibleSheetState] = useState<VisibleSheetState | 'idle'>('idle');
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
-  const sheetAnimation = useRef(new Animated.Value(360)).current;
-  const resultSheetBottomOffset = insets.bottom + BOTTOM_NAV_BAR_HEIGHT - 10;
+  const [sheetHeight, setSheetHeight] = useState(0);
+  const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
+  const bottomNavOffset = Math.max(insets.bottom, 12);
+  const resultSheetBottomOffset = bottomNavOffset + BOTTOM_NAV_BAR_HEIGHT + 12;
+  const hiddenSheetOffset = Math.max(sheetHeight + resultSheetBottomOffset + 24, windowHeight);
 
   useEffect(() => {
     requestPermission();
   }, [requestPermission]);
 
   useEffect(() => {
+    if (visibleSheetState === 'idle') {
+      sheetAnimation.setValue(hiddenSheetOffset);
+      return;
+    }
+
     Animated.spring(sheetAnimation, {
       damping: 18,
       mass: 0.8,
       stiffness: 170,
-      toValue: sheetState === 'idle' ? 360 : -resultSheetBottomOffset,
+      toValue: sheetState === 'idle' ? hiddenSheetOffset : 0,
       useNativeDriver: true,
-    }).start();
-  }, [resultSheetBottomOffset, sheetAnimation, sheetState]);
+    }).start(({ finished }) => {
+      if (!finished || sheetState !== 'idle') {
+        return;
+      }
+
+      setVisibleSheetState('idle');
+      setResult(null);
+      setCandidates([]);
+      setSheetHeight(0);
+    });
+  }, [hiddenSheetOffset, sheetAnimation, sheetState, visibleSheetState]);
+
+  const handleSheetLayout = ({ nativeEvent }: LayoutChangeEvent) => {
+    const nextHeight = nativeEvent.layout.height;
+
+    if (Math.abs(nextHeight - sheetHeight) > 1) {
+      setSheetHeight(nextHeight);
+    }
+  };
 
   const resetScanner = () => {
     predictRequestRef.current += 1;
     setCapturedImageUri(null);
-    setResult(null);
-    setCandidates([]);
     setRequestState('idle');
     setSheetState('idle');
+
+    if (visibleSheetState === 'idle') {
+      setResult(null);
+      setCandidates([]);
+      setSheetHeight(0);
+      return;
+    }
   };
 
   const applyPrediction = (prediction: PredictionResponse) => {
@@ -221,16 +260,19 @@ export default function ScannerScreen() {
       const nextResult = toSheetData(prediction);
       setLastScannedItem(prediction.item);
       setResult(nextResult);
+      setVisibleSheetState('confident');
       setSheetState('confident');
       return;
     }
 
     if (prediction.status === 'uncertain' && prediction.candidates.length) {
       setCandidates(prediction.candidates);
+      setVisibleSheetState('uncertain');
       setSheetState('uncertain');
       return;
     }
 
+    setVisibleSheetState('unknown');
     setSheetState('unknown');
   };
 
@@ -296,7 +338,9 @@ export default function ScannerScreen() {
         setCapturedImageUri(null);
         setResult(null);
         setCandidates([]);
+        setVisibleSheetState('idle');
         setSheetState('idle');
+        setSheetHeight(0);
         Alert.alert('Could not analyze image. Please try again.');
       }
     } finally {
@@ -379,88 +423,94 @@ export default function ScannerScreen() {
           </View>
         )}
 
-        <Animated.View
-          style={[
-            styles.sheetWrap,
-            {
-              maxHeight: windowHeight - insets.top - 28,
-              transform: [{ translateY: sheetAnimation }],
-            },
-          ]}>
-          {sheetState !== 'idle' ? (
-            <ScrollView
-              bounces={false}
-              contentContainerStyle={styles.sheetContent}
-              showsVerticalScrollIndicator={false}>
-              {sheetState === 'confident' && result ? (
-                <ResultSheet
-                  buttonIconName={result.buttonIconName}
-                  buttonLabel={result.buttonLabel}
-                  label={result.label}
-                  materialTag={result.materialTag}
-                  onButtonPress={() =>
-                    router.navigate({
-                      pathname: '/(tabs)/nearby',
-                      params: { item: result.item },
-                    })
-                  }
-                  steps={result.steps}
-                  summary={result.summary}
-                  title={result.title}
-                />
-              ) : null}
+        <View pointerEvents="box-none" style={styles.sheetOverlay}>
+          {visibleSheetState !== 'idle' ? (
+            <Animated.View
+              onLayout={handleSheetLayout}
+              pointerEvents={sheetState === 'idle' ? 'none' : 'auto'}
+              style={[
+                styles.sheetWrap,
+                {
+                  bottom: resultSheetBottomOffset,
+                  maxHeight: windowHeight - insets.top - resultSheetBottomOffset - 20,
+                  transform: [{ translateY: sheetAnimation }],
+                },
+              ]}>
+              <ScrollView
+                bounces={false}
+                contentContainerStyle={styles.sheetContent}
+                showsVerticalScrollIndicator={false}
+                style={styles.sheetScroll}>
+                {visibleSheetState === 'confident' && result ? (
+                  <ResultSheet
+                    buttonIconName={result.buttonIconName}
+                    buttonLabel={result.buttonLabel}
+                    label={result.label}
+                    materialTag={result.materialTag}
+                    onButtonPress={() =>
+                      router.navigate({
+                        pathname: '/(tabs)/nearby',
+                        params: { item: result.item },
+                      })
+                    }
+                    steps={result.steps}
+                    summary={result.summary}
+                    title={result.title}
+                  />
+                ) : null}
 
-              {sheetState === 'uncertain' ? (
-                <ResultSheet
-                  buttonIconName="camera-outline"
-                  buttonLabel="Retake Photo"
-                  label="REVIEW NEEDED"
-                  materialTag="Multiple Plausible Matches"
-                  onButtonPress={resetScanner}
-                  steps={[]}
-                  summary="We found a few plausible waste-item matches for this image. Pick the best option below and we'll load the correct disposal guidance on this page."
-                  title="Which item is this?">
-                  <View style={styles.choiceButtonGroup}>
-                    {candidates.map((candidate) => (
-                      <Pressable
-                        disabled={requestState === 'loading'}
-                        key={candidate.label}
-                        onPress={() => sendPredictionRequest({ selectedItem: candidate.label })}
-                        style={({ pressed }) => [
-                          styles.choiceButton,
-                          pressed && styles.choiceButtonPressed,
-                          requestState === 'loading' && styles.buttonDisabled,
-                        ]}>
-                        <Text numberOfLines={2} style={styles.choiceButtonLabel}>
-                          {candidate.label}
-                        </Text>
-                        <View style={styles.choiceButtonMeta}>
-                          <Ionicons color="#5B6470" name="sparkles-outline" size={13} />
-                          <Text style={styles.choiceButtonMetaText}>
-                            {formatCandidateScore(candidate.score)}
+                {visibleSheetState === 'uncertain' ? (
+                  <ResultSheet
+                    buttonIconName="camera-outline"
+                    buttonLabel="Retake Photo"
+                    label="REVIEW NEEDED"
+                    materialTag="Multiple Plausible Matches"
+                    onButtonPress={resetScanner}
+                    steps={[]}
+                    summary="We found a few plausible waste-item matches for this image. Pick the best option below and we'll load the correct disposal guidance on this page."
+                    title="Which item is this?">
+                    <View style={styles.choiceButtonGroup}>
+                      {candidates.map((candidate) => (
+                        <Pressable
+                          disabled={requestState === 'loading'}
+                          key={candidate.label}
+                          onPress={() => sendPredictionRequest({ selectedItem: candidate.label })}
+                          style={({ pressed }) => [
+                            styles.choiceButton,
+                            pressed && styles.choiceButtonPressed,
+                            requestState === 'loading' && styles.buttonDisabled,
+                          ]}>
+                          <Text numberOfLines={2} style={styles.choiceButtonLabel}>
+                            {candidate.label}
                           </Text>
-                        </View>
-                      </Pressable>
-                    ))}
-                  </View>
-                </ResultSheet>
-              ) : null}
+                          <View style={styles.choiceButtonMeta}>
+                            <Ionicons color="#5B6470" name="sparkles-outline" size={13} />
+                            <Text style={styles.choiceButtonMetaText}>
+                              {formatCandidateScore(candidate.score)}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </ResultSheet>
+                ) : null}
 
-              {sheetState === 'unknown' ? (
-                <ResultSheet
-                  buttonIconName="camera-outline"
-                  buttonLabel="Retake Photo"
-                  label="UNIDENTIFIED"
-                  materialTag="No Strong Match"
-                  onButtonPress={resetScanner}
-                  steps={[]}
-                  summary="We couldn't identify this clearly without risking the wrong disposal guidance. Retake the photo with brighter light, a simpler background, or a closer crop."
-                  title="We couldn't identify this clearly"
-                />
-              ) : null}
-            </ScrollView>
+                {visibleSheetState === 'unknown' ? (
+                  <ResultSheet
+                    buttonIconName="camera-outline"
+                    buttonLabel="Retake Photo"
+                    label="UNIDENTIFIED"
+                    materialTag="No Strong Match"
+                    onButtonPress={resetScanner}
+                    steps={[]}
+                    summary="We couldn't identify this clearly without risking the wrong disposal guidance. Retake the photo with brighter light, a simpler background, or a closer crop."
+                    title="We couldn't identify this clearly"
+                  />
+                ) : null}
+              </ScrollView>
+            </Animated.View>
           ) : null}
-        </Animated.View>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -473,6 +523,10 @@ const styles = StyleSheet.create({
   },
   shell: {
     flex: 1,
+  },
+  sheetOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
   },
   cameraCard: {
     flex: 1,
@@ -595,13 +649,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 12,
   },
+  sheetScroll: {
+    flex: 1,
+  },
   sheetWrap: {
-    marginHorizontal: 16,
-    marginTop: -34,
-    paddingBottom: 24,
+    left: 16,
+    position: 'absolute',
+    right: 16,
+    zIndex: 20,
   },
   sheetContent: {
-    gap: 14,
     paddingBottom: 20,
   },
   choiceButtonGroup: {

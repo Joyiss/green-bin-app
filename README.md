@@ -37,7 +37,17 @@ From the **repository root** (`green-bin-app/`):
    - Health: `GET http://localhost:8000/health`
    - Predict: `POST http://localhost:8000/predict` (multipart file field)
 
-The prediction endpoint sends the uploaded image to the configured ModelBest MiniCPM-V API, so response time depends on network availability and remote inference latency.
+3. Add the required backend environment variables in `backend/.env`:
+
+   ```env
+   CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
+   CLOUDFLARE_API_TOKEN=your-workers-ai-api-token
+   CLOUDFLARE_AI_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+   ```
+
+   `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
+
+The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
 
 ## Learn more
 

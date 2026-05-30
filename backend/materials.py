@@ -280,7 +280,7 @@ def build_material_selection_prompt() -> str:
         "If the image is ambiguous or contains multiple plausible items, return the top 3 best inventory labels in ranked order.\n"
         "Return strict JSON only using this exact shape:\n"
         '{"status":"confident|uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
-        "Use only inventory labels in the JSON. Do not include explanations or markdown.\n"
+        "Use only inventory labels in the JSON. Do not include explanations, markdown, or any text before or after the JSON object.\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )
@@ -295,7 +295,7 @@ def build_uncertain_fallback_prompt(primary_label: str) -> str:
         'Use this exact shape: {"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
         "Choose labels only from the allowed inventory below.\n"
         "Keep the alternatives close to the first-pass guess when possible, and do not output scene objects, furniture parts, colors, or descriptions that are not inventory labels.\n"
-        "Do not include explanations or markdown.\n"
+        "Do not include explanations, markdown, or any text before or after the JSON object.\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )
@@ -315,7 +315,7 @@ def build_multi_object_verification_prompt(primary_label: str) -> str:
         '{"status":"confident","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
         "For uncertain, candidate_labels must contain exactly 3 ranked inventory labels describing the visible supported objects or their nearest supported inventory labels.\n"
         "For confident, candidate_labels may repeat the primary label or include nearby alternatives from the inventory.\n"
-        "Use only inventory labels from this list. Do not include explanations or markdown.\n"
+        "Use only inventory labels from this list. Do not include explanations, markdown, or any text before or after the JSON object.\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )

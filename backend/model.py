@@ -23,10 +23,33 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
 
-API_URL = os.getenv("MODELBEST_API_URL", "https://api.modelbest.cn/v1/chat/completions")
-API_KEY = os.getenv("MODELBEST_API_KEY", "")
-MODEL_ID = "MiniCPM-V-4.6-Thinking"
+CLOUDFLARE_API_BASE_URL = os.getenv(
+    "CLOUDFLARE_API_BASE_URL",
+    "https://api.cloudflare.com/client/v4",
+).rstrip("/")
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_AI_MODEL = os.getenv(
+    "CLOUDFLARE_AI_MODEL",
+    "@cf/meta/llama-3.2-11b-vision-instruct",
+)
 DETECTION_PROMPT = build_material_selection_prompt()
+DETECTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["confident", "uncertain"],
+        },
+        "primary_label": {"type": "string"},
+        "candidate_labels": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": ["status", "primary_label", "candidate_labels"],
+}
+VERIFICATION_RESPONSE_SCHEMA = DETECTION_RESPONSE_SCHEMA
 CONFIDENT_SCORE = 1.0
 UNCERTAIN_TOP_SCORE = 0.58
 UNCERTAIN_SCORE_STEP = 0.02
@@ -94,6 +117,92 @@ def _extract_json_object(raw_text: str) -> dict[str, object]:
     return parsed
 
 
+def _parse_candidate_phrase(raw_text: str) -> list[str]:
+    candidate_match = re.search(
+        r"candidate labels?\s*(?:could\s+include|could\s+be|are|include|:)\s*(.+?)(?:[.\n]|$)",
+        raw_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not candidate_match:
+        return []
+
+    candidate_text = candidate_match.group(1).strip()
+    if not candidate_text:
+        return []
+
+    quoted_candidates = re.findall(r'"([^"]+)"', candidate_text)
+    if quoted_candidates:
+        return [_clean_generated_label(candidate) for candidate in quoted_candidates]
+
+    parts = re.split(r",|\band\b", candidate_text, flags=re.IGNORECASE)
+    return [_clean_generated_label(part) for part in parts if part.strip()]
+
+
+def _extract_primary_label_from_text(raw_text: str) -> str:
+    primary_patterns = (
+        r'primary label\s*(?:could be|would be|is|:)\s*"([^"]+)"',
+        r'primary label\s*(?:could be|would be|is|:)\s*([A-Za-z0-9][^.\n,;]+)',
+        r'main object\s*(?:could be|would be|is|:)\s*"([^"]+)"',
+        r'main object\s*(?:could be|would be|is|:)\s*([A-Za-z0-9][^.\n,;]+)',
+    )
+
+    for pattern in primary_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+        if match:
+            return _clean_generated_label(match.group(1))
+
+    return ""
+
+
+def _extract_status_from_text(raw_text: str) -> str:
+    status_patterns = (
+        r'status\s*(?:of the image\s*)?(?:would be|is|:)\s*"?(confident|uncertain)"?',
+        r'return status\s+"?(confident|uncertain)"?',
+    )
+
+    for pattern in status_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip().lower()
+
+    return ""
+
+
+def _parse_detection_result_from_text(raw_output: str) -> dict[str, object]:
+    status = _extract_status_from_text(raw_output)
+    primary_label = _extract_primary_label_from_text(raw_output)
+    candidate_labels = _parse_candidate_phrase(raw_output)
+
+    if primary_label:
+        candidate_labels.insert(0, primary_label)
+
+    normalized_candidates = _normalize_candidate_labels(
+        [label for label in candidate_labels if label]
+    )[:3]
+    normalized_primary = resolve_material_label(primary_label)
+
+    if normalized_primary is None and normalized_candidates:
+        normalized_primary = normalized_candidates[0]
+
+    if status not in {"confident", "uncertain"}:
+        if len(normalized_candidates) >= 2:
+            status = "uncertain"
+        elif normalized_primary:
+            status = "confident"
+        else:
+            status = "unknown"
+
+    if status == "confident" and not normalized_primary:
+        status = "unknown"
+
+    return {
+        "status": status,
+        "primary_label": normalized_primary or "",
+        "candidate_labels": normalized_candidates,
+        "raw_output": raw_output,
+    }
+
+
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
     seen = set()
     deduped = []
@@ -115,44 +224,98 @@ def _normalize_candidate_labels(candidate_labels: list[str]) -> list[str]:
     return _dedupe_preserve_order(normalized_candidates)
 
 
-def _build_payload(data_uri: str, prompt_text: str) -> dict[str, object]:
-    return {
-        "model": MODEL_ID,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": data_uri,
-                        },
-                    },
-                ],
-            }
-        ],
+def _build_payload(
+    image_base64: str,
+    prompt_text: str,
+    response_schema: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "image": image_base64,
+        "prompt": prompt_text,
+        "max_tokens": 200,
+        "temperature": 0,
     }
 
+    if response_schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": response_schema,
+        }
 
-def _call_modelbest(data_uri: str, prompt_text: str) -> str:
+    return payload
+
+
+def _cloudflare_api_url() -> str:
+    return (
+        f"{CLOUDFLARE_API_BASE_URL}/accounts/"
+        f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_AI_MODEL}"
+    )
+
+
+def _normalize_cloudflare_result_value(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+
+    return None
+
+
+def _extract_cloudflare_response_text(response_json: dict[str, object]) -> str:
+    if "success" in response_json and not response_json.get("success"):
+        errors = response_json.get("errors") or []
+        raise RuntimeError(f"Cloudflare Workers AI returned an error: {errors}")
+
+    result = response_json.get("result")
+    if isinstance(result, dict):
+        for key in ("response", "output_text", "text"):
+            normalized_value = _normalize_cloudflare_result_value(result.get(key))
+            if normalized_value is not None:
+                return normalized_value
+
+        normalized_result = _normalize_cloudflare_result_value(result)
+        if normalized_result is not None:
+            return normalized_result
+    else:
+        normalized_result = _normalize_cloudflare_result_value(result)
+        if normalized_result is not None:
+            return normalized_result
+
+    normalized_top_level_response = _normalize_cloudflare_result_value(
+        response_json.get("response")
+    )
+    if normalized_top_level_response is not None:
+        return normalized_top_level_response
+
+    raise ValueError("Cloudflare Workers AI response did not include text output.")
+
+
+def _call_vision_model(
+    image_base64: str,
+    prompt_text: str,
+    response_schema: dict[str, object] | None = None,
+) -> str:
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
         "Content-Type": "application/json",
     }
     response = requests.post(
-        API_URL,
+        _cloudflare_api_url(),
         headers=headers,
-        json=_build_payload(data_uri, prompt_text),
+        json=_build_payload(image_base64, prompt_text, response_schema=response_schema),
         timeout=60,
     )
     response.raise_for_status()
-    response_json = response.json()
-    return response_json["choices"][0]["message"]["content"]
+    return _extract_cloudflare_response_text(response.json())
 
 
 def _parse_detection_result(raw_output: str) -> dict[str, object]:
-    parsed_output = _extract_json_object(raw_output)
+    try:
+        parsed_output = _extract_json_object(raw_output)
+    except ValueError:
+        return _parse_detection_result_from_text(raw_output)
 
     status = str(parsed_output.get("status", "")).strip().lower()
     if status not in {"confident", "uncertain"}:
@@ -203,7 +366,7 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
 
 
 def _maybe_verify_confident_result(
-    data_uri: str,
+    image_base64: str,
     result: dict[str, object],
 ) -> dict[str, object]:
 
@@ -215,11 +378,19 @@ def _maybe_verify_confident_result(
         return result
 
     verification_prompt = build_multi_object_verification_prompt(primary_label)
-    verification_output = _call_modelbest(data_uri, verification_prompt)
+    verification_output = _call_vision_model(
+        image_base64,
+        verification_prompt,
+        response_schema=VERIFICATION_RESPONSE_SCHEMA,
+    )
 
     print(f"Verification raw: {verification_output!r}")
 
-    verification_result = _parse_detection_result(verification_output)
+    try:
+        verification_result = _parse_detection_result(verification_output)
+    except (ValueError, TypeError) as exc:
+        print(f"Verification parse failed: {exc}")
+        return result
 
     print(f"Verification parsed: {verification_result!r}")
 
@@ -228,30 +399,51 @@ def _maybe_verify_confident_result(
         return verification_result
 
     verified_label = verification_result.get("primary_label", "")
-    original_candidates = set(result.get("candidate_labels", []))
+    original_candidates = result.get("candidate_labels", [])
+    original_candidate_set = set(original_candidates)
 
     # 🚨 only accept verification if it stays in same label space
-    if verified_label and verified_label in original_candidates:
+    if (
+        verification_result.get("status") == "confident"
+        and verified_label
+        and verified_label in original_candidate_set
+    ):
         return verification_result
+
+    distinct_candidates = [
+        candidate for candidate in original_candidates if candidate != primary_label
+    ]
+    if distinct_candidates:
+        return {
+            "status": "uncertain",
+            "primary_label": primary_label,
+            "candidate_labels": original_candidates[:3],
+            "raw_output": str(result.get("raw_output", "")),
+        }
 
     return result
 
 
 def detect_object(image: Image.Image) -> dict[str, object]:
     try:
-        if not API_KEY:
-            raise RuntimeError("MODELBEST_API_KEY is not set in backend/.env.")
+        if not CLOUDFLARE_ACCOUNT_ID:
+            raise RuntimeError("CLOUDFLARE_ACCOUNT_ID is not set in backend/.env.")
+        if not CLOUDFLARE_API_TOKEN:
+            raise RuntimeError("CLOUDFLARE_API_TOKEN is not set in backend/.env.")
 
         rgb_image = image.convert("RGB")
         buffer = io.BytesIO()
         rgb_image.save(buffer, format="JPEG", quality=75)
 
         img_bytes = buffer.getvalue()
-        img_str = base64.b64encode(img_bytes).decode("utf-8")
-        data_uri = f"data:image/jpeg;base64,{img_str}"
+        image_base64 = base64.b64encode(img_bytes).decode("utf-8")
 
-        raw_output = _call_modelbest(data_uri, DETECTION_PROMPT)
-        print(f"ModelBest raw output: {raw_output!r}")
+        raw_output = _call_vision_model(
+            image_base64,
+            DETECTION_PROMPT,
+            response_schema=DETECTION_RESPONSE_SCHEMA,
+        )
+        print(f"Cloudflare Vision raw output: {raw_output!r}")
 
         result = _parse_detection_result(raw_output)
 
@@ -261,16 +453,24 @@ def detect_object(image: Image.Image) -> dict[str, object]:
                 result.get("primary_label", "")
             )
 
-            fallback_output = _call_modelbest(data_uri, fallback_prompt)
-            print(f"Fallback raw output: {fallback_output!r}")
+            fallback_output = _call_vision_model(
+                image_base64,
+                fallback_prompt,
+                response_schema=DETECTION_RESPONSE_SCHEMA,
+            )
+            print(f"Cloudflare Vision fallback raw output: {fallback_output!r}")
 
-            fallback_result = _parse_detection_result(fallback_output)
+            try:
+                fallback_result = _parse_detection_result(fallback_output)
+            except (ValueError, TypeError) as exc:
+                print(f"Fallback parse failed: {exc}")
+                fallback_result = result
 
             if len(fallback_result.get("candidate_labels", [])) >= 2:
                 result = fallback_result
 
         # 🚨 verification ALWAYS runs
-        verified_result = _maybe_verify_confident_result(data_uri, result)
+        verified_result = _maybe_verify_confident_result(image_base64, result)
 
         # 🚨 FINAL AUTHORITY
         if verified_result.get("primary_label"):
@@ -282,7 +482,7 @@ def detect_object(image: Image.Image) -> dict[str, object]:
                 result["primary_label"] = result["candidate_labels"][0]
 
     except Exception as exc:
-        print(f"ModelBest API error: {exc}")
+        print(f"Cloudflare Workers AI error: {exc}")
         return {
             "status": "unknown",
             "primary_label": "",
@@ -291,7 +491,7 @@ def detect_object(image: Image.Image) -> dict[str, object]:
             "error": str(exc),
         }
 
-    print(f"ModelBest parsed result: {result!r}")
+    print(f"Cloudflare Vision parsed result: {result!r}")
     return result
 
 
@@ -303,8 +503,8 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
     if not isinstance(candidate_labels, list):
         candidate_labels = []
 
-    print(f"MiniCPM detection status: {detection_status!r}")
-    print(f"MiniCPM candidate labels: {candidate_labels!r}")
+    print(f"Vision model detection status: {detection_status!r}")
+    print(f"Vision model candidate labels: {candidate_labels!r}")
 
     if detection_status == "confident" and primary_label:
         scores = [0.8 if label == primary_label else 0.0 for label in MATERIAL_LABELS]
