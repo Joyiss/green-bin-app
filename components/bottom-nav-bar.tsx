@@ -1,10 +1,10 @@
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-export const BOTTOM_NAV_BAR_HEIGHT = 86;
+export const BOTTOM_NAV_BAR_HEIGHT = 64;
 
 const tabs = {
   index: {
@@ -21,21 +21,30 @@ const tabs = {
 
 export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const bottomPadding = Math.max(insets.bottom, 14);
+  const bottomOffset = Math.max(insets.bottom, 12);
+  const isAndroid = Platform.OS === 'android';
 
   return (
     <View pointerEvents="box-none" style={styles.wrapper}>
-      <View pointerEvents="none" style={styles.shadowLayer} />
-      <View style={styles.bar}>
-        <BlurView intensity={58} style={StyleSheet.absoluteFill} tint="light" />
-        <View
-          style={[
-            styles.barFill,
-            {
-              minHeight: BOTTOM_NAV_BAR_HEIGHT + Math.max(bottomPadding - 14, 0),
-              paddingBottom: bottomPadding,
-            },
-          ]}>
+      <View
+        pointerEvents="none"
+        style={[styles.shadowLayer, isAndroid && styles.shadowLayerAndroid, { bottom: bottomOffset }]}
+      />
+
+      <View style={[styles.bar, isAndroid && styles.barAndroid, { bottom: bottomOffset }]}>
+        <BlurView
+          blurReductionFactor={isAndroid ? 1 : 2}
+          experimentalBlurMethod={isAndroid ? 'dimezisBlurView' : 'none'}
+          intensity={100}
+          style={StyleSheet.absoluteFill}
+          tint={isAndroid ? 'light' : 'systemThinMaterialLight'}
+        />
+
+        {isAndroid ? <View pointerEvents="none" style={styles.androidFrostLayer} /> : null}
+        {isAndroid ? <View pointerEvents="none" style={styles.glossHighlight} /> : null}
+        {isAndroid ? <View pointerEvents="none" style={styles.innerBorder} /> : null}
+
+        <View style={[styles.barFill, isAndroid && styles.barFillAndroid]}>
           {state.routes.map((route, index) => {
             const isFocused = state.index === index;
             const config = tabs[route.name as keyof typeof tabs];
@@ -69,6 +78,9 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
                 onPress={onPress}
                 style={({ pressed }) => [
                   styles.tabButton,
+                  isAndroid && styles.tabButtonAndroid,
+                  isFocused && styles.tabButtonFocused,
+                  isFocused && isAndroid && styles.tabButtonFocusedAndroid,
                   pressed && styles.tabButtonPressed,
                 ]}>
                 <View style={[styles.iconBubble, isFocused && styles.iconBubbleFocused]}>
@@ -78,6 +90,7 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
                     size={21}
                   />
                 </View>
+
                 <Text style={[styles.tabLabel, isFocused && styles.tabLabelFocused]}>
                   {config.label}
                 </Text>
@@ -92,49 +105,99 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
 
 const styles = StyleSheet.create({
   wrapper: {
-    bottom: 0,
     backgroundColor: 'transparent',
     alignItems: 'center',
+    bottom: 0,
     left: 0,
     position: 'absolute',
     right: 0,
   },
   shadowLayer: {
-    backgroundColor: 'rgba(15, 23, 42, 0.08)',
-    bottom: 0,
-    height: BOTTOM_NAV_BAR_HEIGHT + 20,
-    left: 0,
-    opacity: 0.7,
+    backgroundColor: 'rgba(17, 24, 39, 0.06)',
+    borderRadius: 999,
+    height: BOTTOM_NAV_BAR_HEIGHT,
+    opacity: 0.5,
     position: 'absolute',
-    right: 0,
+    width: 262,
     shadowColor: '#111827',
-    shadowOffset: { width: 0, height: -10 },
-    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.16,
     shadowRadius: 24,
   },
+  shadowLayerAndroid: {
+    backgroundColor: 'rgba(0, 0, 0, 0.12)',
+    opacity: 0.25,
+    elevation: 18,
+  },
   bar: {
-    backgroundColor: 'rgba(248, 246, 241, 0.72)',
-    borderColor: 'rgba(255, 255, 255, 0.62)',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    borderTopWidth: 1,
+    backgroundColor: 'rgba(251, 250, 247, 0.14)',
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+    borderRadius: 999,
+    borderWidth: 1,
+    minWidth: 278,
     overflow: 'hidden',
-    width: '100%',
+    position: 'absolute',
+  },
+  barAndroid: {
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  androidFrostLayer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  glossHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: 8,
+    right: 8,
+    height: 1.5,
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderRadius: 999,
+    opacity: 0.9,
+    zIndex: 2,
+  },
+  innerBorder: {
+    position: 'absolute',
+    top: 1,
+    left: 1,
+    right: 1,
+    bottom: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    zIndex: 2,
   },
   barFill: {
     alignItems: 'center',
-    backgroundColor: 'rgba(247, 244, 239, 0.38)',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 999,
     flexDirection: 'row',
-    paddingHorizontal: 18,
-    paddingTop: 12,
+    minHeight: BOTTOM_NAV_BAR_HEIGHT,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  barFillAndroid: {
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
   },
   tabButton: {
     alignItems: 'center',
-    borderRadius: 22,
+    borderRadius: 999,
     flex: 1,
-    gap: 6,
+    gap: 4,
     justifyContent: 'center',
-    paddingVertical: 8,
+    minWidth: 0,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  tabButtonAndroid: {
+    paddingHorizontal: 16,
+  },
+  tabButtonFocused: {
+    backgroundColor: 'rgba(255, 255, 255, 0.34)',
+  },
+  tabButtonFocusedAndroid: {
+    backgroundColor: 'rgba(255, 255, 255, 0.28)',
   },
   tabButtonPressed: {
     opacity: 0.82,
@@ -143,19 +206,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'transparent',
     borderRadius: 999,
-    height: 40,
+    height: 28,
     justifyContent: 'center',
     overflow: 'hidden',
-    width: 40,
+    width: 28,
   },
   iconBubbleFocused: {
-    backgroundColor: 'rgba(136, 211, 157, 0.18)',
+    backgroundColor: 'transparent',
   },
   tabLabel: {
     color: '#8A8E8D',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.1,
+    textAlign: 'center',
+    width: '100%',
   },
   tabLabelFocused: {
     color: '#4E8D63',
