@@ -17,6 +17,7 @@ Expo (React Native) app for scanning items and finding nearby disposal guidance,
    ```
 
 The scanner calls the backend on **port 8000** (see `app/(tabs)/index.tsx`). Use a real device or emulator on the same network as your machine, or set `API_HOST_OVERRIDE` if the dev host is not auto-detected.
+If you need to force a host manually, set `EXPO_PUBLIC_API_HOST_OVERRIDE=your-machine-ip` before starting Expo.
 
 ## Backend (Python)
 

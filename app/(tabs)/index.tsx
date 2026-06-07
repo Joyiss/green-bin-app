@@ -94,6 +94,7 @@ function CameraPermissionNotice() {
 
 type CameraAreaProps = {
   cameraRef: React.RefObject<CameraView | null>;
+  cameraPreviewKey: number;
   capturedImageUri: string | null;
   bottomInset: number;
   isLoading: boolean;
@@ -107,6 +108,7 @@ type CameraAreaProps = {
 
 function CameraArea({
   cameraRef,
+  cameraPreviewKey,
   bottomInset,
   capturedImageUri,
   isLoading,
@@ -123,8 +125,10 @@ function CameraArea({
         <Image source={{ uri: capturedImageUri }} style={StyleSheet.absoluteFillObject} />
       ) : (
         <CameraView
+          active
           enableTorch={isTorchOn}
           facing="back"
+          key={cameraPreviewKey}
           mode="picture"
           ref={cameraRef}
           style={StyleSheet.absoluteFillObject}
@@ -193,6 +197,7 @@ export default function ScannerScreen() {
   const [sheetState, setSheetState] = useState<SheetViewState>('idle');
   const [visibleSheetState, setVisibleSheetState] = useState<VisibleSheetState | 'idle'>('idle');
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
+  const [cameraPreviewKey, setCameraPreviewKey] = useState(0);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
@@ -238,9 +243,14 @@ export default function ScannerScreen() {
     }
   };
 
+  const restoreCameraPreview = () => {
+    setCapturedImageUri(null);
+    setCameraPreviewKey((current) => current + 1);
+  };
+
   const resetScanner = () => {
     predictRequestRef.current += 1;
-    setCapturedImageUri(null);
+    restoreCameraPreview();
     setRequestState('idle');
     setSheetState('idle');
 
@@ -335,7 +345,7 @@ export default function ScannerScreen() {
       if (selectedItem) {
         Alert.alert('Could not confirm that selection. Please try again.');
       } else {
-        setCapturedImageUri(null);
+        restoreCameraPreview();
         setResult(null);
         setCandidates([]);
         setVisibleSheetState('idle');
@@ -407,6 +417,7 @@ export default function ScannerScreen() {
         ) : permission?.granted ? (
           <CameraArea
             cameraRef={cameraRef}
+            cameraPreviewKey={cameraPreviewKey}
             bottomInset={insets.bottom}
             capturedImageUri={capturedImageUri}
             isLoading={requestState === 'loading'}

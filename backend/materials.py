@@ -12,11 +12,13 @@ MATERIAL_INVENTORY = [
     {"label": "Yogurt container", "category": "Plastic"},
     {"label": "Food takeout container", "category": "Plastic"},
     {"label": "Plastic bag", "category": "Plastic"},
+    {"label": "Plastic film", "category": "Plastic"},
     {"label": "Chip bag", "category": "Mixed Material"},
     {"label": "Candy wrapper", "category": "Mixed Material"},
     {"label": "Toothpaste tube", "category": "Mixed Material"},
     {"label": "Plastic bucket", "category": "Hard Plastic"},
     {"label": "Bottle cap", "category": "Hard Plastic"},
+
     # Paper / cardboard
     {"label": "Cardboard box", "category": "Cardboard"},
     {"label": "Pizza box", "category": "Cardboard"},
@@ -28,6 +30,7 @@ MATERIAL_INVENTORY = [
     {"label": "Drink carton", "category": "Mixed Material"},
     {"label": "Book", "category": "Paper"},
     {"label": "Paper bag", "category": "Paper"},
+
     # Metal
     {"label": "Soda can", "category": "Metal"},
     {"label": "Food can", "category": "Metal"},
@@ -35,10 +38,12 @@ MATERIAL_INVENTORY = [
     {"label": "Metal lid", "category": "Metal"},
     {"label": "Aerosol can", "category": "Hazardous"},
     {"label": "Paint can", "category": "Hazardous"},
+
     # Glass
     {"label": "Glass bottle", "category": "Glass"},
     {"label": "Glass jar", "category": "Glass"},
     {"label": "Beverage bottle", "category": "Glass"},
+
     # Food / compost
     {"label": "Banana peel", "category": "Organic"},
     {"label": "Apple core", "category": "Organic"},
@@ -49,13 +54,18 @@ MATERIAL_INVENTORY = [
     {"label": "Bread", "category": "Organic"},
     {"label": "Fruit scraps", "category": "Organic"},
     {"label": "Vegetable scraps", "category": "Organic"},
+
     # Electronics / batteries / appliances
     {"label": "Smartphone", "category": "Electronics"},
     {"label": "Tablet", "category": "Electronics"},
     {"label": "Laptop", "category": "Electronics"},
+    {"label": "Monitor", "category": "Electronics"},
+    {"label": "Television", "category": "Electronics"},
+    {"label": "Computer tower", "category": "Electronics"},
     {"label": "Keyboard", "category": "Electronics"},
     {"label": "Mouse", "category": "Electronics"},
     {"label": "Headphones", "category": "Electronics"},
+    {"label": "Earbuds", "category": "Electronics"},
     {"label": "Charger", "category": "Electronics"},
     {"label": "Cable", "category": "Electronics"},
     {"label": "Calculator", "category": "Electronics"},
@@ -67,6 +77,8 @@ MATERIAL_INVENTORY = [
     {"label": "Microwave", "category": "Appliances"},
     {"label": "Toaster", "category": "Appliances"},
     {"label": "Vacuum", "category": "Appliances"},
+    {"label": "Refrigerator", "category": "Appliances"},
+
     # Clothing / household
     {"label": "Shoes", "category": "Textile"},
     {"label": "T-shirt", "category": "Textile"},
@@ -78,6 +90,8 @@ MATERIAL_INVENTORY = [
     {"label": "Pillow", "category": "Textile"},
     {"label": "Mattress", "category": "Appliances"},
     {"label": "Furniture", "category": "Appliances"},
+    {"label": "Sofa", "category": "Appliances"},
+
     # Hazardous items
     {"label": "Light bulb", "category": "Hazardous"},
     {"label": "Motor oil", "category": "Hazardous"},
@@ -85,16 +99,35 @@ MATERIAL_INVENTORY = [
     {"label": "Propane tank", "category": "Hazardous"},
     {"label": "Hand sanitizer", "category": "Hazardous"},
     {"label": "Medication bottle", "category": "Hazardous"},
+
     # Outdoor / yard
     {"label": "Leaves", "category": "Organic"},
     {"label": "Branches", "category": "Organic"},
     {"label": "Grass clippings", "category": "Organic"},
     {"label": "Wood pieces", "category": "Organic"},
+    {"label": "Garden hose", "category": "Hard Plastic"},
+    {"label": "String lights", "category": "Electronics"},
+    {"label": "Tire", "category": "Hard Plastic"},
 ]
 
 
 MATERIAL_LABELS = [entry["label"] for entry in MATERIAL_INVENTORY]
 LABEL_TO_CATEGORY = {entry["label"]: entry["category"] for entry in MATERIAL_INVENTORY}
+
+GENERIC_UNSAFE_TERMS = {
+    "paper",
+    "plastic",
+    "glass",
+    "metal",
+    "organic",
+    "electronics",
+    "clothing",
+    "textile",
+    "container",
+    "bottle",
+    "bag",
+    "food",
+}
 
 _ALIAS_MAP = {
     "aerosol spray can": "Aerosol can",
@@ -120,22 +153,39 @@ _ALIAS_MAP = {
     "chip wrapper": "Chip bag",
     "coffee grounds pile": "Coffee grounds",
     "coffee ground pile": "Coffee grounds",
+    "composition book": "Book",
     "computer mouse": "Mouse",
+    "computer monitor": "Monitor",
+    "display monitor": "Monitor",
+    "pc monitor": "Monitor",
+    "screen": "Monitor",
+    "tv": "Television",
+    "television set": "Television",
+    "flat screen tv": "Television",
+    "smart tv": "Television",
+    "desktop tower": "Computer tower",
+    "pc tower": "Computer tower",
+    "computer tower case": "Computer tower",
+    "desktop tower computer": "Computer tower",
     "detergent jug": "Detergent bottle",
     "drinks carton": "Drink carton",
-    "ear buds": "Headphones",
+    "ear buds": "Earbuds",
+    "earbud": "Earbuds",
+    "wireless earbuds": "Earbuds",
+    "bluetooth earbuds": "Earbuds",
     "earphones": "Headphones",
     "egg shell": "Eggshell",
     "eggshells": "Eggshell",
     "flip flops": "Shoes",
     "food tin": "Food can",
-    "fruit": "Fruit scraps",
-    "fruit flesh": "Fruit scraps",
     "fruit scrap": "Fruit scraps",
     "fruit waste": "Fruit scraps",
     "glass bottles": "Glass bottle",
     "glass jars": "Glass jar",
     "grass clipping": "Grass clippings",
+    "garden hose pipe": "Garden hose",
+    "water hose": "Garden hose",
+    "hose pipe": "Garden hose",
     "headset": "Headphones",
     "jean": "Jeans",
     "keyboard device": "Keyboard",
@@ -147,22 +197,21 @@ _ALIAS_MAP = {
     "milk bottle": "Milk jug",
     "mobile phone": "Smartphone",
     "motor oil bottle": "Motor oil",
-    "notebook": "Notebook paper",
     "news paper": "Newspaper",
-    "notebook book": "Notebook paper",
+    "notebook": "Book",
     "orange peels": "Orange peel",
     "paint bucket": "Paint can",
     "paper carton": "Drink carton",
     "paper cups": "Paper cup",
-    "paper notebook": "Notebook paper",
+    "paper notebook": "Book",
     "pill bottle": "Medication bottle",
     "pizza boxes": "Pizza box",
-    "plastic bottle": "Plastic water bottle",
-    "plastic bottles": "Plastic water bottle",
-    "plastic bottles water": "Plastic water bottle",
-    "plastic container": "Food takeout container",
-    "plastic food container": "Food takeout container",
     "plastic shopping bag": "Plastic bag",
+    "plastic wrap": "Plastic film",
+    "cling wrap": "Plastic film",
+    "cling film": "Plastic film",
+    "saran wrap": "Plastic film",
+    "shrink wrap": "Plastic film",
     "remote": "Remote control",
     "remote controller": "Remote control",
     "sanitizer bottle": "Hand sanitizer",
@@ -174,6 +223,10 @@ _ALIAS_MAP = {
     "soft drink bottle": "Soda bottle",
     "spray bottle": "Cleaning spray bottle",
     "spray can": "Aerosol can",
+    "string light": "String lights",
+    "fairy lights": "String lights",
+    "christmas lights": "String lights",
+    "holiday lights": "String lights",
     "tablet computer": "Tablet",
     "take out container": "Food takeout container",
     "takeout box": "Food takeout container",
@@ -182,6 +235,7 @@ _ALIAS_MAP = {
     "tin can": "Food can",
     "tooth paste tube": "Toothpaste tube",
     "tv controller": "TV remote",
+    "tv screen": "Television",
     "usb cable": "Cable",
     "vacuum cleaner": "Vacuum",
     "vegetable scrap": "Vegetable scraps",
@@ -193,6 +247,15 @@ _ALIAS_MAP = {
     "wood piece": "Wood pieces",
     "wood scraps": "Wood pieces",
     "yoghurt container": "Yogurt container",
+    "fridge": "Refrigerator",
+    "mini fridge": "Refrigerator",
+    "refrigerator fridge": "Refrigerator",
+    "sofa couch": "Sofa",
+    "couch": "Sofa",
+    "loveseat": "Sofa",
+    "car tire": "Tire",
+    "vehicle tire": "Tire",
+    "rubber tire": "Tire",
 }
 
 
@@ -225,6 +288,9 @@ def resolve_material_label(label: str) -> str | None:
     if not normalized:
         return None
 
+    if normalized in GENERIC_UNSAFE_TERMS:
+        return None
+
     direct_match = NORMALIZED_LABEL_TO_CANONICAL.get(normalized)
     if direct_match is not None:
         return direct_match
@@ -236,12 +302,13 @@ def resolve_material_label(label: str) -> str | None:
             best_match = canonical_label
             best_length = len(candidate_key)
 
-    if best_match is not None:
+    if best_match is not None and best_length >= len(normalized) * 0.75:
         return best_match
 
     normalized_terms = set(normalized.split())
     best_overlap_match = None
     best_overlap_score = 0.0
+    best_overlap_length = -1
 
     for candidate_key, canonical_label in NORMALIZED_LABEL_TO_CANONICAL.items():
         candidate_terms = set(candidate_key.split())
@@ -254,13 +321,13 @@ def resolve_material_label(label: str) -> str | None:
 
         overlap_score = len(overlap) / len(candidate_terms)
         if overlap_score > best_overlap_score or (
-            overlap_score == best_overlap_score and len(candidate_key) > best_length
+            overlap_score == best_overlap_score and len(candidate_key) > best_overlap_length
         ):
             best_overlap_match = canonical_label
             best_overlap_score = overlap_score
-            best_length = len(candidate_key)
+            best_overlap_length = len(candidate_key)
 
-    if best_overlap_score >= 0.6:
+    if best_overlap_score >= 0.75:
         return best_overlap_match
 
     return None
@@ -269,18 +336,33 @@ def resolve_material_label(label: str) -> str | None:
 def build_material_selection_prompt() -> str:
     inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
     return (
-        "You are classifying waste-related items from an image.\n"
-        "Choose labels only from the allowed inventory below.\n"
-        "If the exact object is not listed, generalize to the nearest appropriate inventory label.\n"
-        "Examples: watermelon -> Fruit scraps, sneakers -> Shoes, plastic bottle on table -> Plastic water bottle.\n"
-        "If two or more distinct visible objects could each map to supported inventory labels, you must return status uncertain.\n"
-        "When multiple objects are visible, candidate_labels should name those visible objects or their nearest supported inventory labels.\n"
-        "Do not collapse multiple visible objects into one generalized label.\n"
-        "Only return status confident when exactly one relevant object is clearly the subject and no other plausible supported object competes with it.\n"
-        "If the image is ambiguous or contains multiple plausible items, return the top 3 best inventory labels in ranked order.\n"
-        "Return strict JSON only using this exact shape:\n"
-        '{"status":"confident|uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
-        "Use only inventory labels in the JSON. Do not include explanations, markdown, or any text before or after the JSON object.\n"
+        "You are an image classifier for a disposal app.\n"
+        "Return exactly one JSON object and nothing else.\n"
+        "Do not include any explanation, description, markdown, or extra text.\n"
+        "Do not output more than one JSON object.\n"
+        "\n"
+        "Classify the single main item the user is most likely focusing on.\n"
+        "Ignore background objects unless they are equally prominent and equally likely to be the intended item.\n"
+        "Do not mark the result uncertain just because other background objects are visible.\n"
+        "\n"
+        "Use only labels from the allowed inventory below.\n"
+        "If the exact object is not listed, map it to the nearest allowed inventory label.\n"
+        "If no allowed inventory label is a reasonable match, return unknown with an empty primary_label and an empty candidate_labels list.\n"
+        "\n"
+        "Rules:\n"
+        '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
+        "- Return confident when one main supported item is clearly the subject.\n"
+        "- Return uncertain only when two or more supported inventory labels are genuinely plausible for the same main item.\n"
+        "- Return unknown when no supported inventory label is a good match.\n"
+        "- candidate_labels must contain 0 to 3 labels only.\n"
+        "- Never include more than 3 candidate labels.\n"
+        "- candidate_labels must contain only allowed inventory labels.\n"
+        "- When status is confident, candidate_labels should contain only close alternatives, not random inventory items.\n"
+        "- When status is unknown, primary_label must be \"\" and candidate_labels must be [].\n"
+        "\n"
+        "Return JSON in exactly this shape:\n"
+        '{"status":"confident","primary_label":"<inventory label>","candidate_labels":["<inventory label>","<inventory label>","<inventory label>"]}\n'
+        "\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )
@@ -289,13 +371,26 @@ def build_material_selection_prompt() -> str:
 def build_uncertain_fallback_prompt(primary_label: str) -> str:
     inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
     return (
-        "Your previous result was uncertain and did not include enough valid candidate labels.\n"
-        f"The first-pass primary guess was: {primary_label or 'unknown'}.\n"
-        "Return strict JSON only with exactly 3 ranked inventory labels.\n"
-        'Use this exact shape: {"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
-        "Choose labels only from the allowed inventory below.\n"
-        "Keep the alternatives close to the first-pass guess when possible, and do not output scene objects, furniture parts, colors, or descriptions that are not inventory labels.\n"
-        "Do not include explanations, markdown, or any text before or after the JSON object.\n"
+        "Your previous result was uncertain or incomplete.\n"
+        "Return exactly one JSON object and nothing else.\n"
+        "Do not include any explanation, description, markdown, or extra text.\n"
+        "Do not output more than one JSON object.\n"
+        f'The previous primary guess was: "{primary_label or "unknown"}".\n'
+        "\n"
+        "Choose the 2 or 3 closest allowed inventory labels for the same main item.\n"
+        "Do not include unrelated background objects.\n"
+        "Do not include random labels from the inventory.\n"
+        "\n"
+        "Rules:\n"
+        '- status must be exactly "uncertain"\n'
+        "- primary_label must be the best single allowed inventory label, or \"\" if no good match exists.\n"
+        "- candidate_labels must contain 2 to 3 allowed inventory labels only.\n"
+        "- candidate_labels must be ranked from best to worst.\n"
+        "- Never include more than 3 candidate labels.\n"
+        "\n"
+        "Return JSON in exactly this shape:\n"
+        '{"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label>","<inventory label>","<inventory label>"]}\n'
+        "\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )
@@ -304,18 +399,27 @@ def build_uncertain_fallback_prompt(primary_label: str) -> str:
 def build_multi_object_verification_prompt(primary_label: str) -> str:
     inventory_lines = "\n".join(f"- {label}" for label in MATERIAL_LABELS)
     return (
-        "Verify whether this image should stay confident or become uncertain.\n"
-        f"The first-pass primary guess was: {primary_label or 'unknown'}.\n"
-        "If two or more distinct visible objects in the image could each map to supported inventory labels, you must return status uncertain.\n"
-        "If only one relevant supported object is clearly the subject, return status confident.\n"
-        'The status field must be exactly one of these strings: "confident" or "uncertain".\n'
-        "Return strict JSON only using this exact shape:\n"
-        '{"status":"uncertain","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
-        "or this exact shape:\n"
-        '{"status":"confident","primary_label":"<inventory label>","candidate_labels":["<inventory label 1>","<inventory label 2>","<inventory label 3>"]}\n'
-        "For uncertain, candidate_labels must contain exactly 3 ranked inventory labels describing the visible supported objects or their nearest supported inventory labels.\n"
-        "For confident, candidate_labels may repeat the primary label or include nearby alternatives from the inventory.\n"
-        "Use only inventory labels from this list. Do not include explanations, markdown, or any text before or after the JSON object.\n"
+        "Re-evaluate the same main item from the image.\n"
+        "Return exactly one JSON object and nothing else.\n"
+        "Do not include any explanation, description, markdown, or extra text.\n"
+        "Do not output more than one JSON object.\n"
+        f'The first-pass primary guess was: "{primary_label or "unknown"}".\n'
+        "\n"
+        "Focus only on the single main item.\n"
+        "Ignore background objects unless they make the main item genuinely ambiguous.\n"
+        "Do not mark the result uncertain just because a bed, table, wall, floor, or other background object is visible.\n"
+        "\n"
+        "Rules:\n"
+        '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
+        "- Return confident when the first-pass label still looks like the best supported label.\n"
+        "- Return uncertain only when 2 or 3 supported labels are genuinely plausible for the same main item.\n"
+        "- Return unknown when no supported label is a good match.\n"
+        "- candidate_labels must contain 0 to 3 allowed inventory labels only.\n"
+        "- Never include more than 3 candidate labels.\n"
+        "\n"
+        "Return JSON in exactly this shape:\n"
+        '{"status":"confident","primary_label":"<inventory label>","candidate_labels":["<inventory label>","<inventory label>","<inventory label>"]}\n'
+        "\n"
         "Allowed inventory labels:\n"
         f"{inventory_lines}"
     )
