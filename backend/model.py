@@ -445,7 +445,7 @@ def _maybe_verify_confident_result(
 
     try:
         verification_result = _parse_detection_result(verification_output)
-    except Exception as exc:
+    except (ValueError, TypeError) as exc:
         print(f"Verification parse failed: {exc}")
         return result
 
@@ -519,7 +519,7 @@ def detect_object(image: Image.Image) -> dict[str, object]:
 
             try:
                 fallback_result = _parse_detection_result(fallback_output)
-            except Exception as exc:
+            except (ValueError, TypeError) as exc:
                 print(f"Fallback parse failed: {exc}")
                 fallback_result = result
 
