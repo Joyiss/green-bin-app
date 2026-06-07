@@ -1,20 +1,20 @@
-// import Constants from 'expo-constants';
-// import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 
-// const API_HOST_OVERRIDE = '10.0.0.121';
-// const API_PORT = 8000;
+const API_HOST_OVERRIDE = process.env.EXPO_PUBLIC_API_HOST_OVERRIDE?.trim();
+const API_BASE_URL_OVERRIDE = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+const API_PORT = 8000;
 
-// export const DOWNTOWN_AUSTIN_COORDS = {
-//   lat: 30.2672,
-//   lon: -97.7431,
-// } as const;
+export function getApiBaseUrl() {
+  if (API_BASE_URL_OVERRIDE) {
+    return API_BASE_URL_OVERRIDE;
+  }
 
-// export function getApiBaseUrl() {
-//   const expoHost = Constants.expoConfig?.hostUri?.split(':')[0];
-//   const host =
-//     API_HOST_OVERRIDE || (Platform.OS === 'web' ? 'localhost' : expoHost ?? 'localhost');
+  const expoHost = Constants.expoConfig?.hostUri?.split(':')[0];
+  const host =
+    API_HOST_OVERRIDE || (Platform.OS === 'web' ? 'localhost' : expoHost ?? 'localhost');
 
-//   return `http://${host}:${API_PORT}`;
-// }
+  return `http://${host}:${API_PORT}`;
+}
 
-export const API_BASE_URL = "https://green-bin-app-production.up.railway.app";
+export const API_BASE_URL = getApiBaseUrl();

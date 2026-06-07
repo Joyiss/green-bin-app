@@ -36,15 +36,25 @@ CLOUDFLARE_AI_MODEL = os.getenv(
 DETECTION_PROMPT = build_material_selection_prompt()
 DETECTION_RESPONSE_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "status": {
             "type": "string",
-            "enum": ["confident", "uncertain"],
+            "enum": ["confident", "uncertain", "unknown"],
         },
-        "primary_label": {"type": "string"},
+        "primary_label": {
+            "type": "string",
+            "enum": [""] + MATERIAL_LABELS,
+        },
         "candidate_labels": {
             "type": "array",
-            "items": {"type": "string"},
+            "items": {
+                "type": "string",
+                "enum": MATERIAL_LABELS,
+            },
+            "minItems": 0,
+            "maxItems": 3,
+            "uniqueItems": True,
         },
     },
     "required": ["status", "primary_label", "candidate_labels"],
@@ -116,6 +126,44 @@ def _extract_json_object(raw_text: str) -> dict[str, object]:
 
     return parsed
 
+def _extract_partial_json_fields(raw_text: str) -> dict[str, object]:
+    if not isinstance(raw_text, str):
+        return {}
+
+    status_match = re.search(
+        r'"status"\s*:\s*"(confident|uncertain|unknown)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    primary_match = re.search(
+        r'"primary_label"\s*:\s*"([^"]+)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    candidate_block_match = re.search(
+        r'"candidate_labels"\s*:\s*\[(.*?)\]',
+        raw_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    parsed: dict[str, object] = {}
+
+    if status_match:
+        parsed["status"] = status_match.group(1).strip().lower()
+
+    if primary_match:
+        parsed["primary_label"] = _clean_generated_label(primary_match.group(1))
+
+    if candidate_block_match:
+        quoted_candidates = re.findall(r'"([^"]+)"', candidate_block_match.group(1))
+        parsed["candidate_labels"] = [
+            _clean_generated_label(candidate)
+            for candidate in quoted_candidates
+            if _clean_generated_label(candidate)
+        ]
+
+    return parsed
+
 
 def _parse_candidate_phrase(raw_text: str) -> list[str]:
     candidate_match = re.search(
@@ -156,8 +204,8 @@ def _extract_primary_label_from_text(raw_text: str) -> str:
 
 def _extract_status_from_text(raw_text: str) -> str:
     status_patterns = (
-        r'status\s*(?:of the image\s*)?(?:would be|is|:)\s*"?(confident|uncertain)"?',
-        r'return status\s+"?(confident|uncertain)"?',
+        r'status\s*(?:of the image\s*)?(?:would be|is|:)\s*"?(confident|uncertain|unknown)"?',
+        r'return status\s+"?(confident|uncertain|unknown)"?',
     )
 
     for pattern in status_patterns:
@@ -232,7 +280,7 @@ def _build_payload(
     payload: dict[str, object] = {
         "image": image_base64,
         "prompt": prompt_text,
-        "max_tokens": 200,
+        "max_tokens": 60,
         "temperature": 0,
     }
 
@@ -312,20 +360,25 @@ def _call_vision_model(
 
 
 def _parse_detection_result(raw_output: str) -> dict[str, object]:
+    parsed_output: dict[str, object]
+
     try:
         parsed_output = _extract_json_object(raw_output)
     except ValueError:
-        return _parse_detection_result_from_text(raw_output)
+        partial_output = _extract_partial_json_fields(raw_output)
+        if partial_output:
+            parsed_output = partial_output
+        else:
+            return _parse_detection_result_from_text(raw_output)
 
     status = str(parsed_output.get("status", "")).strip().lower()
-    if status not in {"confident", "uncertain"}:
+    if status not in {"confident", "uncertain", "unknown"}:
         status = "unknown"
 
     primary_label = _clean_generated_label(
         str(parsed_output.get("primary_label", ""))
     )
 
-    # 🚨 remove invalid "none"-type outputs
     if primary_label.lower() in {"none", "null", "unknown"}:
         primary_label = ""
 
@@ -334,9 +387,9 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
         raw_candidate_labels = []
 
     cleaned_candidates = [
-        _clean_generated_label(str(l))
-        for l in raw_candidate_labels
-        if str(l).strip()
+        _clean_generated_label(str(label))
+        for label in raw_candidate_labels
+        if str(label).strip()
     ]
 
     if primary_label:
@@ -348,14 +401,18 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
     if normalized_primary is None and normalized_candidates:
         normalized_primary = normalized_candidates[0]
 
-    # 🚨 consistency fix
-    if normalized_primary and normalized_candidates:
-        if normalized_primary not in normalized_candidates:
-            normalized_primary = normalized_candidates[0]
+    if normalized_primary and normalized_primary not in normalized_candidates:
+        normalized_candidates.insert(0, normalized_primary)
+        normalized_candidates = _dedupe_preserve_order(normalized_candidates)[:3]
 
-    # 🚨 must have at least 1 valid label for confident
     if status == "confident" and not normalized_primary:
         status = "unknown"
+
+    if status == "uncertain" and len(normalized_candidates) < 2:
+        if normalized_primary:
+            status = "confident"
+        else:
+            status = "unknown"
 
     return {
         "status": status,
@@ -370,7 +427,7 @@ def _maybe_verify_confident_result(
     result: dict[str, object],
 ) -> dict[str, object]:
 
-    if result.get("status") != "confident":
+    if result.get("status") != "uncertain":
         return result
 
     primary_label = (result.get("primary_label") or "").strip()
@@ -466,15 +523,11 @@ def detect_object(image: Image.Image) -> dict[str, object]:
                 print(f"Fallback parse failed: {exc}")
                 fallback_result = result
 
-            if len(fallback_result.get("candidate_labels", [])) >= 2:
+            if fallback_result.get("primary_label") or fallback_result.get("candidate_labels"):
                 result = fallback_result
 
-        # 🚨 verification ALWAYS runs
-        verified_result = _maybe_verify_confident_result(image_base64, result)
-
-        # 🚨 FINAL AUTHORITY
-        if verified_result.get("primary_label"):
-            result = verified_result
+        verified_result = result
+        result = verified_result
 
         # 🚨 final safety consistency check
         if result.get("candidate_labels") and result.get("primary_label"):
@@ -563,7 +616,7 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
             "detected_label": detected_label,
         }
 
-    scores = [0.8 if label == primary_label else 0.0 for label in MATERIAL_LABELS]
+    scores = [0.8 if label == canonical_label else 0.0 for label in MATERIAL_LABELS]
     return {
         "top_predictions": [(canonical_label, CONFIDENT_SCORE)],
         "scores": scores,
