@@ -8,9 +8,15 @@ type ResultSheetProps = {
   materialTag?: string | null;
   summary: string;
   steps: string[];
+
   buttonLabel?: string;
   buttonIconName?: keyof typeof Ionicons.glyphMap;
   onButtonPress?: () => void;
+
+  secondaryButtonLabel?: string;
+  secondaryButtonIconName?: keyof typeof Ionicons.glyphMap;
+  onSecondaryButtonPress?: () => void;
+
   children?: ReactNode;
 };
 
@@ -23,25 +29,34 @@ export function ResultSheet({
   buttonLabel,
   buttonIconName = 'location-outline',
   onButtonPress,
+  secondaryButtonLabel,
+  secondaryButtonIconName = 'swap-horizontal-outline',
+  onSecondaryButtonPress,
   children,
 }: ResultSheetProps) {
+  const showSecondaryButton = secondaryButtonLabel && onSecondaryButtonPress;
+  const showPrimaryButton = buttonLabel && onButtonPress;
+
   return (
     <View style={styles.sheet}>
       <View style={styles.handle} />
+
       <Text style={styles.eyebrow}>{label}</Text>
       <Text style={styles.title}>{title}</Text>
+
       {materialTag ? (
         <View style={styles.tag}>
           <Ionicons color="#5B6470" name="leaf-outline" size={14} />
           <Text style={styles.tagText}>{materialTag}</Text>
         </View>
       ) : null}
+
       <Text style={styles.summary}>{summary}</Text>
 
       {steps.length ? (
         <View style={styles.steps}>
           {steps.map((step, index) => (
-            <View key={step} style={styles.stepRow}>
+            <View key={`${step}-${index}`} style={styles.stepRow}>
               <View style={styles.stepIndex}>
                 <Text style={styles.stepIndexText}>{index + 1}</Text>
               </View>
@@ -53,11 +68,34 @@ export function ResultSheet({
 
       {children}
 
-      {buttonLabel && onButtonPress ? (
-        <Pressable onPress={onButtonPress} style={styles.button}>
-          <Ionicons color="#FFFFFF" name={buttonIconName} size={18} />
-          <Text style={styles.buttonText}>{buttonLabel}</Text>
-        </Pressable>
+      {(showSecondaryButton || showPrimaryButton) ? (
+        <View style={styles.buttonStack}>
+          {showSecondaryButton ? (
+            <Pressable
+              onPress={onSecondaryButtonPress}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Ionicons color="#333333" name={secondaryButtonIconName} size={17} />
+              <Text style={styles.secondaryButtonText}>{secondaryButtonLabel}</Text>
+            </Pressable>
+          ) : null}
+
+          {showPrimaryButton ? (
+            <Pressable
+              onPress={onButtonPress}
+              style={({ pressed }) => [
+                styles.button,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Ionicons color="#FFFFFF" name={buttonIconName} size={18} />
+              <Text style={styles.buttonText}>{buttonLabel}</Text>
+            </Pressable>
+          ) : null}
+        </View>
       ) : null}
     </View>
   );
@@ -67,7 +105,7 @@ const styles = StyleSheet.create({
   sheet: {
     backgroundColor: '#FFFEFC',
     borderRadius: 32,
-    gap: 14,
+    gap: 12,
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 18,
@@ -81,7 +119,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#E6E1DA',
     borderRadius: 999,
     height: 5,
-    marginBottom: 6,
+    marginBottom: 4,
     width: 38,
   },
   eyebrow: {
@@ -93,9 +131,9 @@ const styles = StyleSheet.create({
   },
   title: {
     color: '#050505',
-    fontSize: 34,
+    fontSize: 32,
     fontWeight: '900',
-    letterSpacing: -1.4,
+    letterSpacing: -1.3,
     textAlign: 'center',
   },
   tag: {
@@ -121,8 +159,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   steps: {
-    gap: 14,
-    marginTop: 4,
+    gap: 12,
+    marginTop: 2,
   },
   stepRow: {
     flexDirection: 'row',
@@ -147,7 +185,27 @@ const styles = StyleSheet.create({
     color: '#736C65',
     flex: 1,
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 22,
+  },
+  buttonStack: {
+    gap: 10,
+    marginTop: 6,
+  },
+  secondaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#F4F1EC',
+    borderColor: '#E3DED6',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    paddingVertical: 12,
+  },
+  secondaryButtonText: {
+    color: '#333333',
+    fontSize: 14,
+    fontWeight: '800',
   },
   button: {
     alignItems: 'center',
@@ -156,8 +214,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
-    marginTop: 8,
-    paddingVertical: 17,
+    paddingVertical: 16,
+  },
+  buttonPressed: {
+    opacity: 0.82,
   },
   buttonText: {
     color: '#FFFFFF',

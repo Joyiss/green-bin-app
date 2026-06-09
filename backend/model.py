@@ -61,6 +61,7 @@ DETECTION_RESPONSE_SCHEMA = {
 }
 VERIFICATION_RESPONSE_SCHEMA = DETECTION_RESPONSE_SCHEMA
 CONFIDENT_SCORE = 1.0
+CONFIDENT_SCORE_STEP = 0.08
 UNCERTAIN_TOP_SCORE = 0.58
 UNCERTAIN_SCORE_STEP = 0.02
 
@@ -270,6 +271,18 @@ def _normalize_candidate_labels(candidate_labels: list[str]) -> list[str]:
             normalized_candidates.append(canonical_label)
 
     return _dedupe_preserve_order(normalized_candidates)
+
+
+def _rank_candidate_predictions(
+    candidate_labels: list[str],
+    top_score: float,
+    score_step: float,
+) -> list[tuple[str, float]]:
+    ranked_candidates = _dedupe_preserve_order(candidate_labels)[:3]
+    return [
+        (label, max(CONFIDENT_THRESHOLD, top_score - (index * score_step)))
+        for index, label in enumerate(ranked_candidates)
+    ]
 
 
 def _build_payload(
@@ -560,13 +573,23 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
     print(f"Vision model candidate labels: {candidate_labels!r}")
 
     if detection_status == "confident" and primary_label:
-        scores = [0.8 if label == primary_label else 0.0 for label in MATERIAL_LABELS]
+        top_predictions = _rank_candidate_predictions(
+            [primary_label, *candidate_labels],
+            CONFIDENT_SCORE,
+            CONFIDENT_SCORE_STEP,
+        )
+        scores = [
+            next((score for candidate, score in top_predictions if candidate == label), 0.0)
+            for label in MATERIAL_LABELS
+        ]
+        top1_score = top_predictions[0][1]
+        top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
         return {
-            "top_predictions": [(primary_label, CONFIDENT_SCORE)],
+            "top_predictions": top_predictions,
             "scores": scores,
-            "top1_score": CONFIDENT_SCORE,
-            "top2_score": 0.0,
-            "margin": CONFIDENT_SCORE,
+            "top1_score": top1_score,
+            "top2_score": top2_score,
+            "margin": top1_score - top2_score if len(top_predictions) > 1 else top1_score,
             "detected_label": primary_label,
             "category": LABEL_TO_CATEGORY[primary_label],
         }
@@ -616,13 +639,23 @@ def get_top_predictions(image: Image.Image) -> dict[str, object]:
             "detected_label": detected_label,
         }
 
-    scores = [0.8 if label == canonical_label else 0.0 for label in MATERIAL_LABELS]
+    top_predictions = _rank_candidate_predictions(
+        [canonical_label, *candidate_labels],
+        CONFIDENT_SCORE,
+        CONFIDENT_SCORE_STEP,
+    )
+    scores = [
+        next((score for candidate, score in top_predictions if candidate == label), 0.0)
+        for label in MATERIAL_LABELS
+    ]
+    top1_score = top_predictions[0][1]
+    top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
     return {
-        "top_predictions": [(canonical_label, CONFIDENT_SCORE)],
+        "top_predictions": top_predictions,
         "scores": scores,
-        "top1_score": CONFIDENT_SCORE,
-        "top2_score": 0.0,
-        "margin": CONFIDENT_SCORE,
+        "top1_score": top1_score,
+        "top2_score": top2_score,
+        "margin": top1_score - top2_score if len(top_predictions) > 1 else top1_score,
         "detected_label": detected_label,
         "category": LABEL_TO_CATEGORY[canonical_label],
     }

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 
 from classifier import build_selected_item_prediction, classify
+from materials import MATERIAL_LABELS
 from rules import get_rules
 
 
@@ -372,6 +373,11 @@ def _build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/material_labels")
+def material_labels() -> dict[str, list[str]]:
+    return {"labels": MATERIAL_LABELS}
 
 
 @app.post("/predict")
