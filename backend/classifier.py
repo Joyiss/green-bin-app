@@ -48,6 +48,26 @@ def _unknown_prediction() -> dict:
     }
 
 
+def _build_ranked_candidates(top_predictions: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    candidates = []
+    seen_labels = set()
+
+    for label, score in top_predictions:
+        normalized_label = _normalize_label(label)
+        if normalized_label in seen_labels:
+            continue
+        if get_category_for_label(normalized_label) == UNKNOWN_CATEGORY:
+            continue
+
+        seen_labels.add(normalized_label)
+        candidates.append((normalized_label, float(score)))
+
+        if len(candidates) == UNCERTAIN_CANDIDATE_LIMIT:
+            break
+
+    return candidates
+
+
 def classify(prediction_result: dict) -> dict:
     top_predictions = prediction_result.get("top_predictions", [])
 
@@ -66,22 +86,7 @@ def classify(prediction_result: dict) -> dict:
         return _unknown_prediction()
 
     if margin < MARGIN_THRESHOLD:
-        candidates = []
-        seen_labels = set()
-
-        for label, score in top_predictions:
-            normalized_label = _normalize_label(label)
-            if normalized_label in seen_labels:
-                continue
-            if get_category_for_label(normalized_label) == UNKNOWN_CATEGORY:
-                continue
-
-            seen_labels.add(normalized_label)
-            candidates.append((normalized_label, float(score)))
-
-            if len(candidates) == UNCERTAIN_CANDIDATE_LIMIT:
-                break
-
+        candidates = _build_ranked_candidates(top_predictions)
         if len(candidates) < 2:
             return _unknown_prediction()
 
@@ -96,5 +101,5 @@ def classify(prediction_result: dict) -> dict:
         "item": _normalize_label(top1_label),
         "category": top1_category,
         "status": "confident",
-        "candidates": [],
+        "candidates": _build_ranked_candidates(top_predictions),
     }

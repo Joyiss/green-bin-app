@@ -63,6 +63,38 @@ class VisionModelCompatibilityTests(unittest.TestCase):
         self.assertLess(prediction["margin"], 0.05)
         self.assertEqual(classify(prediction)["status"], "uncertain")
 
+    @patch(
+        "model.detect_object",
+        return_value={
+            "status": "confident",
+            "primary_label": "Calculator",
+            "candidate_labels": ["Calculator", "Keyboard", "Mouse"],
+            "raw_output": "",
+        },
+    )
+    def test_confident_prediction_preserves_ranked_candidates(self, _mock_detect_object):
+        prediction = get_top_predictions(image=None)
+        classification = classify(prediction)
+
+        self.assertEqual(
+            prediction["top_predictions"],
+            [
+                ("Calculator", 1.0),
+                ("Keyboard", 0.92),
+                ("Mouse", 0.84),
+            ],
+        )
+        self.assertGreaterEqual(prediction["margin"], 0.05)
+        self.assertEqual(classification["status"], "confident")
+        self.assertEqual(
+            classification["candidates"],
+            [
+                ("Calculator", 1.0),
+                ("Keyboard", 0.92),
+                ("Mouse", 0.84),
+            ],
+        )
+
 
 class DetectObjectApiTests(unittest.TestCase):
     def setUp(self):

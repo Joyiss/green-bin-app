@@ -15,6 +15,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -48,6 +49,12 @@ type PredictionResponse = {
 type SheetViewState = 'idle' | PredictionStatus;
 type VisibleSheetState = Exclude<SheetViewState, 'idle'>;
 type RequestState = 'idle' | 'loading';
+type PredictionRequestSource = 'image' | 'selection';
+type CorrectionSheetMode = 'candidate-list' | 'manual-entry';
+
+type SupportedLabelsResponse = {
+  labels: string[];
+};
 
 type ScannerResultData = {
   item: string;
@@ -79,6 +86,10 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
 
 function formatCandidateScore(score: number) {
   return `${Math.round(score * 100)}% similarity`;
+}
+
+function normalizeLabelKey(value: string) {
+  return value.trim().toLowerCase();
 }
 
 function CameraPermissionNotice() {
@@ -201,6 +212,13 @@ export default function ScannerScreen() {
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
+  const [correctionSheetMode, setCorrectionSheetMode] =
+    useState<CorrectionSheetMode>('candidate-list');
+  const [materialLabels, setMaterialLabels] = useState<string[] | null>(null);
+  const [isLoadingMaterialLabels, setIsLoadingMaterialLabels] = useState(false);
+  const [materialLabelsError, setMaterialLabelsError] = useState<string | null>(null);
+  const [manualEntryText, setManualEntryText] = useState('');
+  const [selectedManualLabel, setSelectedManualLabel] = useState<string | null>(null);
   const [sheetHeight, setSheetHeight] = useState(0);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
   const bottomNavOffset = Math.max(insets.bottom, 12);
@@ -248,11 +266,69 @@ export default function ScannerScreen() {
     setCameraPreviewKey((current) => current + 1);
   };
 
+  const resetManualEntry = () => {
+    setCorrectionSheetMode('candidate-list');
+    setManualEntryText('');
+    setSelectedManualLabel(null);
+    setMaterialLabelsError(null);
+  };
+
+  const loadMaterialLabels = async () => {
+    if (materialLabels || isLoadingMaterialLabels) {
+      return;
+    }
+
+    setIsLoadingMaterialLabels(true);
+    setMaterialLabelsError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/material_labels`);
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const data = (await response.json()) as SupportedLabelsResponse;
+      setMaterialLabels(Array.isArray(data.labels) ? data.labels : []);
+    } catch {
+      setMaterialLabelsError('Could not load supported items right now. Please try again.');
+    } finally {
+      setIsLoadingMaterialLabels(false);
+    }
+  };
+
+  const handleChangeItem = () => {
+    resetManualEntry();
+    setVisibleSheetState('uncertain');
+    setSheetState('uncertain');
+  };
+
+  const handleOpenManualEntry = () => {
+    setCorrectionSheetMode('manual-entry');
+    setManualEntryText('');
+    setSelectedManualLabel(null);
+
+    if (!materialLabels && !isLoadingMaterialLabels) {
+      void loadMaterialLabels();
+    }
+  };
+
+  const handleManualEntryBack = () => {
+    resetManualEntry();
+  };
+
+  const handleRetryMaterialLabels = () => {
+    if (!isLoadingMaterialLabels) {
+      void loadMaterialLabels();
+    }
+  };
+
   const resetScanner = () => {
     predictRequestRef.current += 1;
     restoreCameraPreview();
     setRequestState('idle');
     setSheetState('idle');
+    resetManualEntry();
 
     if (visibleSheetState === 'idle') {
       setResult(null);
@@ -262,9 +338,16 @@ export default function ScannerScreen() {
     }
   };
 
-  const applyPrediction = (prediction: PredictionResponse) => {
+  const applyPrediction = (
+    prediction: PredictionResponse,
+    fallbackCandidates: PredictionCandidate[] = []
+  ) => {
+    const nextCandidates =
+      prediction.candidates.length > 0 ? prediction.candidates : fallbackCandidates;
+
+    resetManualEntry();
     setResult(null);
-    setCandidates([]);
+    setCandidates(nextCandidates);
 
     if (prediction.status === 'confident' && prediction.item) {
       const nextResult = toSheetData(prediction);
@@ -275,8 +358,7 @@ export default function ScannerScreen() {
       return;
     }
 
-    if (prediction.status === 'uncertain' && prediction.candidates.length) {
-      setCandidates(prediction.candidates);
+    if (prediction.status === 'uncertain') {
       setVisibleSheetState('uncertain');
       setSheetState('uncertain');
       return;
@@ -297,6 +379,8 @@ export default function ScannerScreen() {
       return;
     }
 
+    const requestSource: PredictionRequestSource = selectedItem ? 'selection' : 'image';
+    const fallbackCandidates = requestSource === 'selection' ? candidates : [];
     const requestId = predictRequestRef.current + 1;
     predictRequestRef.current = requestId;
 
@@ -336,7 +420,7 @@ export default function ScannerScreen() {
         return;
       }
 
-      applyPrediction(prediction);
+      applyPrediction(prediction, fallbackCandidates);
     } catch {
       if (requestId !== predictRequestRef.current) {
         return;
@@ -407,6 +491,58 @@ export default function ScannerScreen() {
   };
 
   const permissionDenied = permission && !permission.granted;
+  const currentPredictedLabel = result?.item ?? candidates[0]?.label ?? null;
+  const normalizedCurrentPredictedLabel = normalizeLabelKey(currentPredictedLabel ?? '');
+  const filteredCandidates = candidates.filter(
+    (candidate) => normalizeLabelKey(candidate.label) !== normalizedCurrentPredictedLabel
+  );
+  const visibleCandidateKeys = new Set(
+    filteredCandidates.map((candidate) => normalizeLabelKey(candidate.label))
+  );
+  const normalizedManualEntry = normalizeLabelKey(manualEntryText);
+  const exactSupportedLabel =
+    materialLabels?.find((label) => {
+      const normalizedLabel = normalizeLabelKey(label);
+      return (
+        normalizedLabel === normalizedManualEntry &&
+        normalizedLabel !== normalizedCurrentPredictedLabel
+      );
+    }) ?? null;
+  const manualSelectionLabel = exactSupportedLabel ?? selectedManualLabel;
+  const manualSuggestions = normalizedManualEntry
+    ? (materialLabels ?? [])
+        .filter((label) => {
+          const normalizedLabel = normalizeLabelKey(label);
+          return (
+            normalizedLabel !== normalizedCurrentPredictedLabel &&
+            !visibleCandidateKeys.has(normalizedLabel) &&
+            normalizedLabel.includes(normalizedManualEntry)
+          );
+        })
+        .slice(0, 6)
+    : [];
+  const canSubmitManualEntry =
+    !!manualSelectionLabel && requestState !== 'loading' && !materialLabelsError;
+  const isShowingManualEntry = correctionSheetMode === 'manual-entry';
+  const canShowCandidateChoices = filteredCandidates.length > 0;
+
+  const handleManualEntryChange = (value: string) => {
+    setManualEntryText(value);
+    setSelectedManualLabel(null);
+  };
+
+  const handleManualSuggestionPress = (label: string) => {
+    setManualEntryText(label);
+    setSelectedManualLabel(label);
+  };
+
+  const handleManualSubmit = () => {
+    if (!manualSelectionLabel || requestState === 'loading') {
+      return;
+    }
+
+    void sendPredictionRequest({ selectedItem: manualSelectionLabel });
+  };
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
@@ -450,6 +586,7 @@ export default function ScannerScreen() {
               <ScrollView
                 bounces={false}
                 contentContainerStyle={styles.sheetContent}
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
                 style={styles.sheetScroll}>
                 {visibleSheetState === 'confident' && result ? (
@@ -464,6 +601,9 @@ export default function ScannerScreen() {
                         params: { item: result.item },
                       })
                     }
+                    secondaryButtonIconName="swap-horizontal-outline"
+                    secondaryButtonLabel="Change Item"
+                    onSecondaryButtonPress={handleChangeItem}
                     steps={result.steps}
                     summary={result.summary}
                     title={result.title}
@@ -478,31 +618,165 @@ export default function ScannerScreen() {
                     materialTag="Multiple Plausible Matches"
                     onButtonPress={resetScanner}
                     steps={[]}
-                    summary="We found a few plausible waste-item matches for this image. Pick the best option below and we'll load the correct disposal guidance on this page."
+                    summary={
+                      isShowingManualEntry
+                        ? 'Search for the supported item label that best matches this object, then continue to load the right disposal guidance.'
+                        : candidates.length > 0
+                          ? "Pick the best match below, or choose Other to search the full supported item list."
+                          : "We couldn't load alternate matches for this scan, but you can still search the supported item list or retake the photo."
+                    }
                     title="Which item is this?">
-                    <View style={styles.choiceButtonGroup}>
-                      {candidates.map((candidate) => (
+                    {isShowingManualEntry ? (
+                      <View style={styles.manualEntrySection}>
+                        <Text style={styles.manualEntryPrompt}>What item is this?</Text>
+                        <TextInput
+                          autoCapitalize="words"
+                          autoCorrect={false}
+                          editable={requestState !== 'loading'}
+                          onChangeText={handleManualEntryChange}
+                          placeholder="Search supported items"
+                          placeholderTextColor="#9A948C"
+                          style={styles.manualEntryInput}
+                          value={manualEntryText}
+                        />
+
+                        {isLoadingMaterialLabels ? (
+                          <View style={styles.manualStateRow}>
+                            <ActivityIndicator color="#050505" size="small" />
+                            <Text style={styles.manualStateText}>Loading supported items...</Text>
+                          </View>
+                        ) : null}
+
+                        {materialLabelsError ? (
+                          <View style={styles.manualStateBlock}>
+                            <Text style={styles.manualErrorText}>{materialLabelsError}</Text>
+                            <Pressable
+                              disabled={isLoadingMaterialLabels}
+                              onPress={handleRetryMaterialLabels}
+                              style={({ pressed }) => [
+                                styles.manualRetryButton,
+                                pressed && styles.buttonPressed,
+                                isLoadingMaterialLabels && styles.buttonDisabled,
+                              ]}>
+                              <Text style={styles.manualRetryButtonText}>Try Again</Text>
+                            </Pressable>
+                          </View>
+                        ) : null}
+
+                        {!isLoadingMaterialLabels && !materialLabelsError && !normalizedManualEntry ? (
+                          <Text style={styles.manualHintText}>
+                            Start typing to search supported item labels.
+                          </Text>
+                        ) : null}
+
+                        {!isLoadingMaterialLabels &&
+                        !materialLabelsError &&
+                        !!normalizedManualEntry &&
+                        !manualSuggestions.length &&
+                        !exactSupportedLabel ? (
+                          <Text style={styles.manualHintText}>
+                            No supported items match that search yet.
+                          </Text>
+                        ) : null}
+
+                        {!materialLabelsError && manualSuggestions.length ? (
+                          <View style={styles.manualSuggestionsGroup}>
+                            {manualSuggestions.map((label) => {
+                              const isSelected =
+                                normalizeLabelKey(label) ===
+                                normalizeLabelKey(manualSelectionLabel ?? '');
+
+                              return (
+                                <Pressable
+                                  key={label}
+                                  onPress={() => handleManualSuggestionPress(label)}
+                                  style={({ pressed }) => [
+                                    styles.manualSuggestionButton,
+                                    isSelected && styles.manualSuggestionButtonSelected,
+                                    pressed && styles.buttonPressed,
+                                  ]}>
+                                  <Text
+                                    style={[
+                                      styles.manualSuggestionText,
+                                      isSelected && styles.manualSuggestionTextSelected,
+                                    ]}>
+                                    {label}
+                                  </Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        ) : null}
+
+                        <View style={styles.manualActionRow}>
+                          <Pressable
+                            onPress={handleManualEntryBack}
+                            style={({ pressed }) => [
+                              styles.manualBackButton,
+                              pressed && styles.buttonPressed,
+                            ]}>
+                            <Text style={styles.manualBackButtonText}>Back</Text>
+                          </Pressable>
+                          <Pressable
+                            disabled={!canSubmitManualEntry}
+                            onPress={handleManualSubmit}
+                            style={({ pressed }) => [
+                              styles.manualContinueButton,
+                              pressed && canSubmitManualEntry && styles.buttonPressed,
+                              !canSubmitManualEntry && styles.buttonDisabled,
+                            ]}>
+                            <Text style={styles.manualContinueButtonText}>Continue</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.choiceButtonGroup}>
+                        {canShowCandidateChoices ? (
+                          filteredCandidates.map((candidate) => (
+                            <Pressable
+                              disabled={requestState === 'loading'}
+                              key={candidate.label}
+                              onPress={() => sendPredictionRequest({ selectedItem: candidate.label })}
+                              style={({ pressed }) => [
+                                styles.choiceButton,
+                                pressed && styles.choiceButtonPressed,
+                                requestState === 'loading' && styles.buttonDisabled,
+                              ]}>
+                              <Text numberOfLines={2} style={styles.choiceButtonLabel}>
+                                {candidate.label}
+                              </Text>
+                              <View style={styles.choiceButtonMeta}>
+                                <Ionicons color="#5B6470" name="sparkles-outline" size={13} />
+                                <Text style={styles.choiceButtonMetaText}>
+                                  {formatCandidateScore(candidate.score)}
+                                </Text>
+                              </View>
+                            </Pressable>
+                          ))
+                        ) : (
+                          <View style={styles.choiceFallback}>
+                            <Ionicons color="#5B6470" name="information-circle-outline" size={18} />
+                            <Text style={styles.choiceFallbackText}>
+                              No alternate candidate buttons are available, but you can search the
+                              supported item list below.
+                            </Text>
+                          </View>
+                        )}
                         <Pressable
                           disabled={requestState === 'loading'}
-                          key={candidate.label}
-                          onPress={() => sendPredictionRequest({ selectedItem: candidate.label })}
+                          onPress={handleOpenManualEntry}
                           style={({ pressed }) => [
                             styles.choiceButton,
+                            styles.otherChoiceButton,
                             pressed && styles.choiceButtonPressed,
                             requestState === 'loading' && styles.buttonDisabled,
                           ]}>
-                          <Text numberOfLines={2} style={styles.choiceButtonLabel}>
-                            {candidate.label}
+                          <Text numberOfLines={1} style={styles.choiceButtonLabel}>
+                            Other
                           </Text>
-                          <View style={styles.choiceButtonMeta}>
-                            <Ionicons color="#5B6470" name="sparkles-outline" size={13} />
-                            <Text style={styles.choiceButtonMetaText}>
-                              {formatCandidateScore(candidate.score)}
-                            </Text>
-                          </View>
                         </Pressable>
-                      ))}
-                    </View>
+                      </View>
+                    )}
                   </ResultSheet>
                 ) : null}
 
@@ -644,6 +918,9 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.55,
   },
+  buttonPressed: {
+    opacity: 0.82,
+  },
   loadingOverlay: {
     alignItems: 'center',
     backgroundColor: 'rgba(5, 5, 5, 0.36)',
@@ -690,6 +967,9 @@ const styles = StyleSheet.create({
   choiceButtonPressed: {
     opacity: 0.88,
   },
+  otherChoiceButton: {
+    borderStyle: 'dashed',
+  },
   choiceButtonLabel: {
     color: '#050505',
     fontSize: 19,
@@ -707,6 +987,143 @@ const styles = StyleSheet.create({
     color: '#5B6470',
     fontSize: 12,
     fontWeight: '700',
+  },
+  choiceFallback: {
+    alignItems: 'center',
+    backgroundColor: '#F7F4EF',
+    borderColor: '#E8E2DA',
+    borderRadius: 22,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  choiceFallbackText: {
+    color: '#66605B',
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  manualEntrySection: {
+    gap: 12,
+  },
+  manualEntryPrompt: {
+    color: '#66605B',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  manualEntryInput: {
+    backgroundColor: '#F7F4EF',
+    borderColor: '#E8E2DA',
+    borderRadius: 18,
+    borderWidth: 1,
+    color: '#050505',
+    fontSize: 16,
+    fontWeight: '600',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  manualStateRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  manualStateText: {
+    color: '#66605B',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  manualStateBlock: {
+    alignItems: 'center',
+    gap: 10,
+  },
+  manualErrorText: {
+    color: '#9B3D33',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  manualHintText: {
+    color: '#8B857F',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  manualRetryButton: {
+    alignItems: 'center',
+    backgroundColor: '#F4F1EC',
+    borderColor: '#E3DED6',
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  manualRetryButtonText: {
+    color: '#333333',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  manualSuggestionsGroup: {
+    gap: 8,
+  },
+  manualSuggestionButton: {
+    backgroundColor: '#F7F4EF',
+    borderColor: '#E8E2DA',
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  manualSuggestionButtonSelected: {
+    backgroundColor: '#050505',
+    borderColor: '#050505',
+  },
+  manualSuggestionText: {
+    color: '#050505',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  manualSuggestionTextSelected: {
+    color: '#FFFFFF',
+  },
+  manualActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  manualBackButton: {
+    alignItems: 'center',
+    backgroundColor: '#F4F1EC',
+    borderColor: '#E3DED6',
+    borderRadius: 999,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    paddingVertical: 12,
+  },
+  manualBackButtonText: {
+    color: '#333333',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  manualContinueButton: {
+    alignItems: 'center',
+    backgroundColor: '#050505',
+    borderRadius: 999,
+    flex: 1,
+    justifyContent: 'center',
+    paddingVertical: 12,
+  },
+  manualContinueButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
   permissionState: {
     alignItems: 'center',
