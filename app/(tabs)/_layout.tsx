@@ -22,6 +22,18 @@ export default function TabLayout() {
           title: 'Nearby',
         }}
       />
+      <Tabs.Screen
+        name="scans"
+        options={{
+          title: 'Scans',
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Profile',
+        }}
+      />
     </Tabs>
   );
 }

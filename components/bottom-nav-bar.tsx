@@ -2,11 +2,12 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export const BOTTOM_NAV_BAR_HEIGHT = 64;
-const BOTTOM_NAV_BAR_WIDTH = 282;
+const BOTTOM_NAV_BAR_MAX_WIDTH = 356;
+const BOTTOM_NAV_BAR_HORIZONTAL_MARGIN = 28;
 const BAR_HORIZONTAL_PADDING = 14;
 
 const tabs = {
@@ -20,27 +21,46 @@ const tabs = {
     icon: 'location-outline' as const,
     activeIcon: 'location' as const,
   },
+  scans: {
+    label: 'Scans',
+    icon: 'time-outline' as const,
+    activeIcon: 'time' as const,
+  },
+  profile: {
+    label: 'Profile',
+    icon: 'person-outline' as const,
+    activeIcon: 'person' as const,
+  },
 };
 
 export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const bottomOffset = Math.max(insets.bottom, 12);
   const isAndroid = Platform.OS === 'android';
+  const barWidth = Math.min(BOTTOM_NAV_BAR_MAX_WIDTH, windowWidth - BOTTOM_NAV_BAR_HORIZONTAL_MARGIN);
 
   const activeColor = 'rgba(10, 12, 14, 0.92)';
   const inactiveColor = '#7A7F7E';
 
   const tabCount = state.routes.length;
-  const tabWidth = (BOTTOM_NAV_BAR_WIDTH - BAR_HORIZONTAL_PADDING * 2) / tabCount;
+  const tabWidth = (barWidth - BAR_HORIZONTAL_PADDING * 2) / tabCount;
   const selectedBubbleLeft = BAR_HORIZONTAL_PADDING + tabWidth * state.index;
 
   return (
     <View pointerEvents="box-none" style={styles.wrapper}>
       {/* Shadow Layer */}
-      <View pointerEvents="none" style={[styles.shadowLayer, isAndroid && styles.shadowLayerAndroid, { bottom: bottomOffset }]} />
+      <View
+        pointerEvents="none"
+        style={[
+          styles.shadowLayer,
+          isAndroid && styles.shadowLayerAndroid,
+          { bottom: bottomOffset, width: barWidth },
+        ]}
+      />
 
       {/* Bar Container */}
-      <View style={[styles.bar, isAndroid && styles.barAndroid, { bottom: bottomOffset }]}>
+      <View style={[styles.bar, isAndroid && styles.barAndroid, { bottom: bottomOffset, width: barWidth }]}>
         
         {!isAndroid ? (
           <>
@@ -98,7 +118,7 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
         ) : null}
 
         {/* Layer 4: Interactive Content Layer */}
-        <View style={[styles.barFill, isAndroid && styles.barFillAndroid]}>
+        <View style={[styles.barFill, isAndroid && styles.barFillAndroid, { width: barWidth }]}>
           <View
             pointerEvents="none"
             style={[
@@ -179,7 +199,9 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
                     size={21}
                   />
                 </View>
-                <Text style={[styles.tabLabel, { color: isFocused ? activeColor : inactiveColor }]}>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.tabLabel, { color: isFocused ? activeColor : inactiveColor }]}>
                   {config.label}
                 </Text>
               </Pressable>
@@ -206,7 +228,6 @@ const styles = StyleSheet.create({
     height: BOTTOM_NAV_BAR_HEIGHT,
     opacity: 0.34,
     position: 'absolute',
-    width: BOTTOM_NAV_BAR_WIDTH,
     shadowColor: '#102033',
     shadowOffset: { width: 0, height: 7 },
     shadowOpacity: 0.04,
@@ -225,7 +246,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     overflow: 'hidden',
     position: 'absolute',
-    width: BOTTOM_NAV_BAR_WIDTH,
   },
   barAndroid: {
     backgroundColor: '#FFFFFF',
@@ -266,7 +286,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: BAR_HORIZONTAL_PADDING,
     paddingVertical: 8,
     position: 'relative',
-    width: BOTTOM_NAV_BAR_WIDTH,
     zIndex: 7,
   },
   barFillAndroid: {
@@ -287,7 +306,7 @@ const styles = StyleSheet.create({
     gap: 4,
     justifyContent: 'center',
     minWidth: 0,
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     position: 'relative',
     zIndex: 5,
@@ -336,7 +355,7 @@ const styles = StyleSheet.create({
     width: 28,
   },
   tabLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.1,
     textAlign: 'center',
