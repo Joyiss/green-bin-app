@@ -1,7 +1,9 @@
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
@@ -10,7 +12,7 @@ import {
   type ScanHistoryCardItem,
   type ScanHistoryCardThumbnailVariant,
 } from '@/components/scan-history-card';
-import { getRecentScans, type RecentScan } from '../../storage/recentScans';
+import { deleteRecentScan, getRecentScans, type RecentScan } from '../../storage/recentScans';
 
 type ScanHistorySection = {
   id: string;
@@ -127,6 +129,8 @@ export default function RecentScansScreen() {
   const insets = useSafeAreaInsets();
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [hasLoadedScans, setHasLoadedScans] = useState(false);
+  const openSwipeableRef = useRef<Swipeable | null>(null);
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
 
   useFocusEffect(
     useCallback(() => {
@@ -153,6 +157,59 @@ export default function RecentScansScreen() {
     }, [])
   );
 
+  const handleSwipeableOpen = useCallback((swipeable: Swipeable) => {
+    if (openSwipeableRef.current && openSwipeableRef.current !== swipeable) {
+      openSwipeableRef.current.close();
+    }
+
+    openSwipeableRef.current = swipeable;
+  }, []);
+
+  const handleSwipeableClose = useCallback((swipeable: Swipeable) => {
+    if (openSwipeableRef.current === swipeable) {
+      openSwipeableRef.current = null;
+    }
+  }, []);
+
+  const handleDeleteScan = useCallback(
+    async (scanId: string) => {
+      const previousScans = recentScans;
+      const swipeable = swipeableRefs.current[scanId];
+
+      swipeable?.close();
+
+      if (openSwipeableRef.current === swipeable) {
+        openSwipeableRef.current = null;
+      }
+
+      setRecentScans((currentScans) => currentScans.filter((scan) => scan.id !== scanId));
+
+      try {
+        await deleteRecentScan(scanId);
+      } catch {
+        setRecentScans(previousScans);
+        Alert.alert('Could not delete scan. Please try again.');
+      } finally {
+        delete swipeableRefs.current[scanId];
+      }
+    },
+    [recentScans]
+  );
+
+  const renderRightActions = useCallback(
+    (scanId: string) => (
+      <Pressable
+        accessibilityLabel="Delete recent scan"
+        onPress={() => {
+          void handleDeleteScan(scanId);
+        }}
+        style={({ pressed }) => [styles.deleteAction, pressed && styles.deleteActionPressed]}>
+        <Ionicons color="#FFFFFF" name="trash-outline" size={28} />
+      </Pressable>
+    ),
+    [handleDeleteScan]
+  );
+
   const sections = buildSections(recentScans);
 
   return (
@@ -176,7 +233,26 @@ export default function RecentScansScreen() {
 
             <View style={styles.cardStack}>
               {section.items.map((item) => (
-                <ScanHistoryCard item={item} key={item.id} />
+                <Swipeable
+                  containerStyle={styles.swipeableContainer}
+                  friction={2}
+                  key={item.id}
+                  onSwipeableClose={(_direction, swipeable) => {
+                    handleSwipeableClose(swipeable);
+                  }}
+                  onSwipeableOpen={(direction, swipeable) => {
+                    if (direction === 'right') {
+                      handleSwipeableOpen(swipeable);
+                    }
+                  }}
+                  overshootRight={false}
+                  ref={(ref) => {
+                    swipeableRefs.current[item.id] = ref;
+                  }}
+                  renderRightActions={() => renderRightActions(item.id)}
+                  rightThreshold={56}>
+                  <ScanHistoryCard item={item} />
+                </Swipeable>
               ))}
             </View>
           </View>
@@ -232,6 +308,21 @@ const styles = StyleSheet.create({
   },
   cardStack: {
     gap: 14,
+  },
+  swipeableContainer: {
+    borderRadius: 28,
+  },
+  deleteAction: {
+    alignItems: 'center',
+    backgroundColor: '#F24747',
+    borderRadius: 28,
+    justifyContent: 'center',
+    marginLeft: 12,
+    minHeight: 102,
+    width: 96,
+  },
+  deleteActionPressed: {
+    opacity: 0.88,
   },
   emptyState: {
     backgroundColor: '#FFFFFF',
