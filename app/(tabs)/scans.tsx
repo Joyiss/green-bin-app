@@ -12,7 +12,12 @@ import {
   type ScanHistoryCardItem,
   type ScanHistoryCardThumbnailVariant,
 } from '@/components/scan-history-card';
-import { deleteRecentScan, getRecentScans, type RecentScan } from '../../storage/recentScans';
+import {
+  clearRecentScans,
+  deleteRecentScan,
+  getRecentScans,
+  type RecentScan,
+} from '../../storage/recentScans';
 
 type ScanHistorySection = {
   id: string;
@@ -171,6 +176,15 @@ export default function RecentScansScreen() {
     }
   }, []);
 
+  const closeAllSwipeables = useCallback(() => {
+    Object.values(swipeableRefs.current).forEach((swipeable) => {
+      swipeable?.close();
+    });
+
+    openSwipeableRef.current = null;
+    swipeableRefs.current = {};
+  }, []);
+
   const handleDeleteScan = useCallback(
     async (scanId: string) => {
       const previousScans = recentScans;
@@ -195,6 +209,40 @@ export default function RecentScansScreen() {
     },
     [recentScans]
   );
+
+  const handleConfirmClearAll = useCallback(async () => {
+    const previousScans = recentScans;
+
+    closeAllSwipeables();
+    setRecentScans([]);
+
+    try {
+      await clearRecentScans();
+    } catch {
+      setRecentScans(previousScans);
+      Alert.alert('Could not clear scans. Please try again.');
+    }
+  }, [closeAllSwipeables, recentScans]);
+
+  const handleClearAllPress = useCallback(() => {
+    Alert.alert(
+      'Clear all scans?',
+      'This will remove your recent scan history from this device.',
+      [
+        {
+          style: 'cancel',
+          text: 'Cancel',
+        },
+        {
+          style: 'destructive',
+          text: 'Clear All',
+          onPress: () => {
+            void handleConfirmClearAll();
+          },
+        },
+      ]
+    );
+  }, [handleConfirmClearAll]);
 
   const renderRightActions = useCallback(
     (scanId: string) => (
@@ -223,7 +271,20 @@ export default function RecentScansScreen() {
         ]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <Text style={styles.title}>scans.</Text>
+          <View style={styles.headerTopRow}>
+            <Text style={styles.title}>scans.</Text>
+            {recentScans.length > 0 ? (
+              <Pressable
+                accessibilityLabel="Clear all recent scans"
+                onPress={handleClearAllPress}
+                style={({ pressed }) => [
+                  styles.clearAllButton,
+                  pressed && styles.clearAllButtonPressed,
+                ]}>
+                <Text style={styles.clearAllText}>Clear All</Text>
+              </Pressable>
+            ) : null}
+          </View>
           <Text style={styles.subtitle}>{getMonthlySummary(recentScans)}</Text>
         </View>
 
@@ -283,11 +344,31 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingTop: 4,
   },
+  headerTopRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
   title: {
     color: '#050505',
     fontSize: 34,
     fontWeight: '900',
     letterSpacing: -1.3,
+  },
+  clearAllButton: {
+    backgroundColor: '#ECE8E2',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  clearAllButtonPressed: {
+    opacity: 0.82,
+  },
+  clearAllText: {
+    color: '#6F6962',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.2,
   },
   subtitle: {
     color: '#898783',
