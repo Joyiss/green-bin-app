@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const RECENT_SCANS_STORAGE_KEY = 'green-bin:recent-scans';
 export const MAX_RECENT_SCANS = 50;
 
+type RecentScanStatus = 'confident' | 'uncertain' | 'unknown';
+
 export type RecentScan = {
   id: string;
   predictedItem: string | null;
@@ -12,10 +14,14 @@ export type RecentScan = {
   category: string | null;
   disposalLabel: string;
   disposalAction: string | null;
+  materialCode: string | null;
+  impactLevel: string | null;
+  status: RecentScanStatus;
   scannedAt: string;
+  updatedAt: string;
   materialTag?: string | null;
   summary?: string | null;
-  steps?: string[];
+  steps: string[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,22 +36,31 @@ function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' ? value : null;
 }
 
+function normalizeRecentScanStatus(value: unknown): RecentScanStatus {
+  if (value === 'confident' || value === 'uncertain' || value === 'unknown') {
+    return value;
+  }
+
+  return 'confident';
+}
+
 function normalizeRecentScan(value: unknown): RecentScan | null {
   if (!isRecord(value)) {
     return null;
   }
 
-  const { id, finalItem, disposalLabel, scannedAt, wasCorrected } = value;
+  const { id, finalItem, scannedAt } = value;
 
   if (
     typeof id !== 'string' ||
     typeof finalItem !== 'string' ||
-    typeof disposalLabel !== 'string' ||
-    typeof scannedAt !== 'string' ||
-    typeof wasCorrected !== 'boolean'
+    typeof scannedAt !== 'string'
   ) {
     return null;
   }
+
+  const disposalLabel = typeof value.disposalLabel === 'string' ? value.disposalLabel : 'TRASH';
+  const wasCorrected = typeof value.wasCorrected === 'boolean' ? value.wasCorrected : false;
 
   return {
     id,
@@ -56,7 +71,11 @@ function normalizeRecentScan(value: unknown): RecentScan | null {
     category: normalizeOptionalString(value.category),
     disposalLabel,
     disposalAction: normalizeOptionalString(value.disposalAction),
+    materialCode: normalizeOptionalString(value.materialCode),
+    impactLevel: normalizeOptionalString(value.impactLevel),
+    status: normalizeRecentScanStatus(value.status),
     scannedAt,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : scannedAt,
     materialTag: normalizeOptionalString(value.materialTag),
     summary: normalizeOptionalString(value.summary),
     steps: isStringArray(value.steps) ? value.steps : [],

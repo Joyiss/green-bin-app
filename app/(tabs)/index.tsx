@@ -25,6 +25,11 @@ import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
 import { setLastScannedItem } from '@/constants/scan-session';
+import {
+  saveRecentScan,
+  updateRecentScan,
+  type RecentScan,
+} from '../../storage/recentScans';
 
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 
@@ -67,17 +72,94 @@ type ScannerResultData = {
   buttonIconName: keyof typeof Ionicons.glyphMap;
 };
 
+type ActiveScanSession = {
+  id: string;
+  imageUri: string;
+  scannedAt: string;
+  predictedItem: string | null;
+  originalStatus: PredictionStatus;
+  hasSavedRecord: boolean;
+};
+
+function getDisposalActionText(disposalAction: string | null) {
+  return (disposalAction ?? 'follow local guidance').trim().toLowerCase();
+}
+
+function getImpactLevelText(impactLevel: string | null) {
+  return (impactLevel ?? 'Local Guidance').trim();
+}
+
+function getMaterialTag(response: PredictionResponse) {
+  const impact = getImpactLevelText(response.impact_level);
+  return response.material_code ? `${response.material_code} - ${impact}` : impact;
+}
+
+function getPredictionSummary(response: PredictionResponse) {
+  const action = getDisposalActionText(response.disposal_action);
+  return `${response.item} is categorized as ${response.category.toLowerCase()} and should be handled through ${action} guidance in your area.`;
+}
+
+function getPredictedItemFromPrediction(prediction: PredictionResponse) {
+  const formattedItem = prediction.item.trim();
+  if (formattedItem) {
+    return formattedItem;
+  }
+
+  const topCandidate = prediction.candidates[0]?.label?.trim();
+  return topCandidate || null;
+}
+
+function getDisposalLabel(disposalAction: string | null) {
+  const normalizedAction = disposalAction?.trim().toLowerCase() ?? '';
+
+  if (normalizedAction.includes('recycle')) {
+    return 'RECYCLE';
+  }
+
+  if (normalizedAction.includes('compost')) {
+    return 'COMPOST';
+  }
+
+  if (normalizedAction.includes('donate')) {
+    return 'DONATE';
+  }
+
+  if (
+    normalizedAction.includes('drop-off') ||
+    normalizedAction.includes('drop off') ||
+    normalizedAction.includes('e-waste') ||
+    normalizedAction.includes('bulky') ||
+    normalizedAction.includes('specialist')
+  ) {
+    return 'DROP-OFF';
+  }
+
+  return 'TRASH';
+}
+
+function createActiveScanSession(imageUri: string): ActiveScanSession {
+  const scannedAt = new Date().toISOString();
+
+  return {
+    id: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    imageUri,
+    scannedAt,
+    predictedItem: null,
+    originalStatus: 'unknown',
+    hasSavedRecord: false,
+  };
+}
+
 function toSheetData(response: PredictionResponse): ScannerResultData {
-  const action = (response.disposal_action ?? 'follow local guidance').trim().toLowerCase();
-  const impact = (response.impact_level ?? 'Local Guidance').trim();
-  const materialTag = response.material_code ? `${response.material_code} - ${impact}` : impact;
+  const action = getDisposalActionText(response.disposal_action);
+  const materialTag = getMaterialTag(response);
 
   return {
     item: response.item,
     label: `IDENTIFIED - ${response.item.toUpperCase()}`,
     title: `${action}.`,
     materialTag,
-    summary: `${response.item} is categorized as ${response.category.toLowerCase()} and should be handled through ${action} guidance in your area.`,
+    summary: getPredictionSummary(response),
     steps: response.steps,
     buttonLabel: 'Find Nearby Locations',
     buttonIconName: 'location-outline',
@@ -203,6 +285,7 @@ export default function ScannerScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const cameraRef = useRef<CameraView | null>(null);
   const predictRequestRef = useRef(0);
+  const activeScanSessionRef = useRef<ActiveScanSession | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [requestState, setRequestState] = useState<RequestState>('idle');
   const [sheetState, setSheetState] = useState<SheetViewState>('idle');
@@ -266,6 +349,10 @@ export default function ScannerScreen() {
     setCameraPreviewKey((current) => current + 1);
   };
 
+  const clearActiveScanSession = () => {
+    activeScanSessionRef.current = null;
+  };
+
   const resetManualEntry = () => {
     setCorrectionSheetMode('candidate-list');
     setManualEntryText('');
@@ -325,6 +412,7 @@ export default function ScannerScreen() {
 
   const resetScanner = () => {
     predictRequestRef.current += 1;
+    clearActiveScanSession();
     restoreCameraPreview();
     setRequestState('idle');
     setSheetState('idle');
@@ -338,8 +426,57 @@ export default function ScannerScreen() {
     }
   };
 
-  const applyPrediction = (
+  const persistConfidentRecentScan = async (
     prediction: PredictionResponse,
+    requestSource: PredictionRequestSource
+  ) => {
+    const activeSession = activeScanSessionRef.current;
+    if (!activeSession || prediction.status !== 'confident' || !prediction.item) {
+      return;
+    }
+
+    const finalItem = prediction.item;
+    const predictedItem = activeSession.predictedItem;
+    const wasCorrected =
+      requestSource === 'selection' ||
+      (predictedItem !== null &&
+        normalizeLabelKey(predictedItem) !== normalizeLabelKey(finalItem));
+    const nextRecentScan: RecentScan = {
+      id: activeSession.id,
+      predictedItem,
+      finalItem,
+      wasCorrected,
+      imageUri: activeSession.imageUri,
+      category: prediction.category || null,
+      disposalLabel: getDisposalLabel(prediction.disposal_action),
+      disposalAction: prediction.disposal_action,
+      materialCode: prediction.material_code,
+      impactLevel: prediction.impact_level,
+      status: activeSession.originalStatus,
+      scannedAt: activeSession.scannedAt,
+      updatedAt: new Date().toISOString(),
+      materialTag: getMaterialTag(prediction),
+      summary: getPredictionSummary(prediction),
+      steps: prediction.steps,
+    };
+
+    if (activeSession.hasSavedRecord) {
+      await updateRecentScan(activeSession.id, nextRecentScan);
+    } else {
+      await saveRecentScan(nextRecentScan);
+    }
+
+    if (activeScanSessionRef.current?.id === activeSession.id) {
+      activeScanSessionRef.current = {
+        ...activeScanSessionRef.current,
+        hasSavedRecord: true,
+      };
+    }
+  };
+
+  const applyPrediction = async (
+    prediction: PredictionResponse,
+    requestSource: PredictionRequestSource,
     fallbackCandidates: PredictionCandidate[] = []
   ) => {
     const nextCandidates =
@@ -349,12 +486,26 @@ export default function ScannerScreen() {
     setResult(null);
     setCandidates(nextCandidates);
 
+    if (requestSource === 'image' && activeScanSessionRef.current) {
+      activeScanSessionRef.current = {
+        ...activeScanSessionRef.current,
+        predictedItem: getPredictedItemFromPrediction(prediction),
+        originalStatus: prediction.status,
+      };
+    }
+
     if (prediction.status === 'confident' && prediction.item) {
       const nextResult = toSheetData(prediction);
       setLastScannedItem(prediction.item);
       setResult(nextResult);
       setVisibleSheetState('confident');
       setSheetState('confident');
+
+      try {
+        await persistConfidentRecentScan(prediction, requestSource);
+      } catch (error) {
+        console.warn('Could not save recent scan.', error);
+      }
       return;
     }
 
@@ -366,6 +517,10 @@ export default function ScannerScreen() {
 
     setVisibleSheetState('unknown');
     setSheetState('unknown');
+
+    if (requestSource === 'image') {
+      clearActiveScanSession();
+    }
   };
 
   const sendPredictionRequest = async ({
@@ -385,6 +540,7 @@ export default function ScannerScreen() {
     predictRequestRef.current = requestId;
 
     if (imageUri) {
+      activeScanSessionRef.current = createActiveScanSession(imageUri);
       setCapturedImageUri(imageUri);
       setResult(null);
       setCandidates([]);
@@ -420,7 +576,7 @@ export default function ScannerScreen() {
         return;
       }
 
-      applyPrediction(prediction, fallbackCandidates);
+      await applyPrediction(prediction, requestSource, fallbackCandidates);
     } catch {
       if (requestId !== predictRequestRef.current) {
         return;
@@ -429,6 +585,7 @@ export default function ScannerScreen() {
       if (selectedItem) {
         Alert.alert('Could not confirm that selection. Please try again.');
       } else {
+        clearActiveScanSession();
         restoreCameraPreview();
         setResult(null);
         setCandidates([]);
