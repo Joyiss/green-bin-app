@@ -23,7 +23,8 @@ export default function ProfileScreen() {
           styles.content,
           { paddingBottom: insets.bottom + BOTTOM_NAV_BAR_HEIGHT + 30 },
         ]}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.header}>
           <View style={styles.headerTextBlock}>
             <Text style={styles.title}>profile.</Text>
@@ -33,7 +34,9 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.placeholderPill}>
-            <Text style={styles.placeholderPillText}>{mockProfileSummary.placeholderBadge}</Text>
+            <Text style={styles.placeholderPillText}>
+              {mockProfileSummary.placeholderBadge}
+            </Text>
           </View>
         </View>
 
@@ -43,15 +46,19 @@ export default function ProfileScreen() {
               colors={['#A6D7A1', '#6DB07A']}
               end={{ x: 1, y: 1 }}
               start={{ x: 0, y: 0 }}
-              style={styles.avatar}>
+              style={styles.avatar}
+            >
               <Text style={styles.avatarText}>{mockProfileSummary.initials}</Text>
             </LinearGradient>
 
             <View style={styles.heroTextBlock}>
               <Text style={styles.heroName}>{mockProfileSummary.name}</Text>
               <Text style={styles.heroEmail}>{mockProfileSummary.email}</Text>
+
               <View style={styles.membershipPill}>
-                <Text style={styles.membershipPillText}>{mockProfileSummary.membershipLabel}</Text>
+                <Text style={styles.membershipPillText}>
+                  {mockProfileSummary.membershipLabel}
+                </Text>
               </View>
             </View>
           </View>
@@ -74,7 +81,11 @@ export default function ProfileScreen() {
         </View>
 
         {mockProfileSections.map((section) => (
-          <ProfileSectionCard key={section.id} options={section.options} title={section.title} />
+          <ProfileSectionCard
+            key={section.id}
+            options={section.options}
+            title={section.title}
+          />
         ))}
 
         <View style={styles.footnoteCard}>
