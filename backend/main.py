@@ -1,18 +1,19 @@
-import io
 import os
 from pathlib import Path
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from PIL import Image
 
-from classifier import build_selected_item_prediction, classify
-from materials import MATERIAL_LABELS
-from rules import get_rules
+try:
+    from .materials import MATERIAL_LABELS
+    from .routes.predict import router as predict_router
+except ImportError:
+    from materials import MATERIAL_LABELS
+    from routes.predict import router as predict_router
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -313,63 +314,6 @@ def _search_locations_for_material(lat: float, lon: float, material_id: int) -> 
 
     return normalized_locations
 
-
-def _empty_guidance() -> dict[str, Any]:
-    return {
-        "disposal_action": None,
-        "material_code": None,
-        "impact_level": None,
-        "steps": [],
-    }
-
-
-def _format_item_name(item: str) -> str:
-    if not item:
-        return ""
-
-    words = []
-    for word in item.split():
-        if "-" in word:
-            parts = [
-                part if part.isupper() else part.capitalize()
-                for part in word.split("-")
-            ]
-            words.append("-".join(parts))
-        else:
-            words.append(word if word.isupper() else word.capitalize())
-
-    return " ".join(words)
-
-
-def _serialize_candidates(candidates: list[tuple[str, float]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "label": label.title(),
-            "score": round(float(score), 4),
-        }
-        for label, score in candidates
-    ]
-
-
-def _build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
-    guidance = (
-        get_rules(classification["category"])
-        if classification["status"] == "confident"
-        else _empty_guidance()
-    )
-
-    return {
-        "item": _format_item_name(classification["item"]),
-        "category": classification["category"],
-        "status": classification["status"],
-        "candidates": _serialize_candidates(classification.get("candidates", [])),
-        "disposal_action": guidance["disposal_action"],
-        "material_code": guidance["material_code"],
-        "impact_level": guidance["impact_level"],
-        "steps": guidance["steps"],
-    }
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -378,37 +322,6 @@ def health() -> dict[str, str]:
 @app.get("/material_labels")
 def material_labels() -> dict[str, list[str]]:
     return {"labels": MATERIAL_LABELS}
-
-
-@app.post("/predict")
-async def predict(
-    file: UploadFile | None = File(None),
-    selected_item: str | None = Form(None),
-) -> dict[str, Any]:
-    try:
-        if selected_item:
-            classification = build_selected_item_prediction(selected_item)
-        else:
-            if file is None:
-                raise HTTPException(status_code=400, detail={"error": "Image file is required."})
-
-            image_bytes = await file.read()
-
-            try:
-                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail={"error": "Invalid image file."}) from exc
-
-            from model import get_top_predictions
-
-            predictions = get_top_predictions(image)
-            classification = classify(predictions)
-    except Exception as exc:
-        if isinstance(exc, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail={"error": "Model inference failed."}) from exc
-
-    return _build_prediction_response(classification)
 
 
 @app.get("/get_material_id")
@@ -460,3 +373,6 @@ def nearby_locations(item: str, lat: float, lon: float) -> dict[str, Any]:
         raise
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+app.include_router(predict_router)
