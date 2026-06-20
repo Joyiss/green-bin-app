@@ -160,6 +160,32 @@ class CacheRepositoryTests(unittest.TestCase):
         self.assertEqual(rows, expected_rows)
         select_builder.eq.assert_called_once_with("phash", "abcd1234")
 
+    def test_find_recognition_records_by_phash_parses_json_string_metadata(self):
+        expected_rows = [
+            {
+                "id": "record-1",
+                "phash": "abcd1234",
+                "item_label": "Calculator",
+                "metadata": "{\"classification\": {\"item\": \"Calculator\"}}",
+            },
+        ]
+        eq_builder = Mock()
+        eq_builder.execute.return_value = SimpleNamespace(data=expected_rows)
+        select_builder = Mock()
+        select_builder.eq.return_value = eq_builder
+        table_builder = Mock()
+        table_builder.select.return_value = select_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            rows = cache_repository.find_recognition_records_by_phash("abcd1234")
+
+        self.assertEqual(
+            rows[0]["metadata"],
+            {"classification": {"item": "Calculator"}},
+        )
+
     def test_find_recognition_records_by_phash_raises_clear_error_on_supabase_failure(self):
         select_builder = Mock()
         select_builder.eq.side_effect = ValueError("query failed")
@@ -319,6 +345,72 @@ class CacheRepositoryTests(unittest.TestCase):
             },
         )
         table_builder.select.assert_not_called()
+
+    def test_find_similar_embeddings_returns_plain_dicts(self):
+        expected_rows = [
+            {
+                "id": "record-1",
+                "item_label": "Calculator",
+                "similarity": 0.98,
+                "confidence": 0.91,
+                "verified": True,
+                "metadata": {"source": "shadow"},
+            },
+            {
+                "id": "record-2",
+                "item_label": "Keyboard",
+                "similarity": 0.82,
+                "confidence": 0.65,
+                "verified": False,
+                "metadata": {},
+            },
+        ]
+        rpc_builder = Mock()
+        rpc_builder.execute.return_value = SimpleNamespace(data=expected_rows)
+        mock_client = Mock()
+        mock_client.rpc.return_value = rpc_builder
+
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            rows = cache_repository.find_similar_embeddings([0.1, 0.2], limit=3)
+
+        self.assertEqual(rows, expected_rows)
+        mock_client.rpc.assert_called_once_with(
+            "match_recognition_cache_by_embedding",
+            {
+                "query_embedding": [0.1, 0.2],
+                "match_count": 3,
+            },
+        )
+
+    def test_find_similar_embeddings_raises_clear_error_on_rpc_failure(self):
+        mock_client = Mock()
+        mock_client.rpc.side_effect = ValueError("rpc failed")
+
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Failed to find similar recognition cache records by embedding: rpc failed",
+            ):
+                cache_repository.find_similar_embeddings([0.1, 0.2])
+
+    def test_find_similar_embeddings_raises_on_unexpected_row_shape(self):
+        rpc_builder = Mock()
+        rpc_builder.execute.return_value = SimpleNamespace(data=["bad-row"])
+        mock_client = Mock()
+        mock_client.rpc.return_value = rpc_builder
+
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Failed to find similar recognition cache records by embedding: Supabase returned an unexpected row shape.",
+            ):
+                cache_repository.find_similar_embeddings([0.1, 0.2])
+
+    def test_find_similar_embeddings_docstring_mentions_expected_rpc_name(self):
+        self.assertIn(
+            "match_recognition_cache_by_embedding",
+            cache_repository.find_similar_embeddings.__doc__,
+        )
 
     def test_delete_recognition_record_by_id_returns_deleted_row_or_none(self):
         expected_row = {"id": "record-123", "item_label": "Calculator"}

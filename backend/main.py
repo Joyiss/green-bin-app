@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,10 @@ except ImportError:
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 
 EARTH911_BASE_URL = os.getenv("EARTH911_BASE_URL", "https://api.earth911.com").rstrip("/")
 EARTH911_API_KEY = os.getenv("EARTH911_API_KEY")

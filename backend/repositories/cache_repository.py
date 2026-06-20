@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -44,15 +45,32 @@ def _response_data(response: Any) -> Any:
     return getattr(response, "data", None)
 
 
+def _normalize_metadata_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _normalize_cache_row(row: Any, error_prefix: str) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise RuntimeError(f"{error_prefix}: Supabase returned an unexpected row shape.")
+
+    normalized_row = dict(row)
+    if "metadata" in normalized_row:
+        normalized_row["metadata"] = _normalize_metadata_value(normalized_row["metadata"])
+
+    return normalized_row
+
+
 def _first_row_or_error(rows: Any, error_prefix: str, missing_message: str) -> dict[str, Any]:
     if not isinstance(rows, list) or not rows:
         raise RuntimeError(f"{error_prefix}: {missing_message}")
 
-    first_row = rows[0]
-    if not isinstance(first_row, dict):
-        raise RuntimeError(f"{error_prefix}: Supabase returned an unexpected row shape.")
-
-    return dict(first_row)
+    return _normalize_cache_row(rows[0], error_prefix)
 
 
 def save_recognition_record(
@@ -111,13 +129,10 @@ def get_recognition_record_by_id(record_id: str) -> dict[str, Any] | None:
     row = _response_data(response)
     if row is None:
         return None
-    if not isinstance(row, dict):
-        raise RuntimeError(
-            "Failed to fetch recognition cache record by id: "
-            "Supabase returned an unexpected row shape."
-        )
-
-    return dict(row)
+    return _normalize_cache_row(
+        row,
+        "Failed to fetch recognition cache record by id",
+    )
 
 
 def find_recognition_records_by_phash(phash: str) -> list[dict[str, Any]]:
@@ -143,12 +158,12 @@ def find_recognition_records_by_phash(phash: str) -> list[dict[str, Any]]:
 
     normalized_rows: list[dict[str, Any]] = []
     for row in rows:
-        if not isinstance(row, dict):
-            raise RuntimeError(
-                "Failed to find recognition cache records by phash: "
-                "Supabase returned an unexpected row shape."
+        normalized_rows.append(
+            _normalize_cache_row(
+                row,
+                "Failed to find recognition cache records by phash",
             )
-        normalized_rows.append(dict(row))
+        )
 
     return normalized_rows
 
@@ -189,8 +204,8 @@ def find_nearest_phash_match(
                     "phash_distance": 0,
                 }
 
-        logger.warning(
-            "[TEMP pHash] exact match hit: query_phash=%s checked_rows=%s best_distance=%s within_threshold=%s threshold=%s",
+        logger.info(
+            "pHash exact match hit. query_phash=%s checked_rows=%s best_distance=%s within_threshold=%s threshold=%s",
             phash,
             len(exact_matches),
             0,
@@ -224,13 +239,10 @@ def find_nearest_phash_match(
     best_distance_seen: int | None = None
 
     for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise RuntimeError(
-                "Failed to find nearest recognition cache record by phash: "
-                "Supabase returned an unexpected row shape."
-            )
-
-        normalized_row = dict(row)
+        normalized_row = _normalize_cache_row(
+            row,
+            "Failed to find nearest recognition cache record by phash",
+        )
         candidate_phash = normalized_row.get("phash")
         if candidate_phash is None:
             continue
@@ -263,8 +275,8 @@ def find_nearest_phash_match(
                 "phash_distance": distance,
             }
 
-    logger.warning(
-        "[TEMP pHash] nearest lookup stats: query_phash=%s checked_rows=%s best_distance=%s within_threshold=%s threshold=%s",
+    logger.info(
+        "pHash nearest lookup complete. query_phash=%s checked_rows=%s best_distance=%s within_threshold=%s threshold=%s",
         phash,
         checked_rows,
         best_distance_seen,
@@ -273,6 +285,82 @@ def find_nearest_phash_match(
     )
 
     return best_match
+
+
+def find_similar_embeddings(
+    embedding: list[float],
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Find similar cached records by CLIP embedding via Supabase RPC.
+
+    Requires a Postgres / pgvector function named `match_recognition_cache_by_embedding`
+    that accepts `query_embedding` and `match_count`, and returns rows including:
+    `id`, `item_label`, `similarity`, `confidence`, `verified`, and optional `metadata`.
+
+    Example SQL contract:
+
+        create or replace function match_recognition_cache_by_embedding(
+            query_embedding vector,
+            match_count integer default 5
+        )
+        returns table (
+            id uuid,
+            item_label text,
+            similarity double precision,
+            confidence double precision,
+            verified boolean,
+            metadata jsonb
+        )
+        language sql
+        stable
+        as $$
+            select
+                id,
+                item_label,
+                1 - (clip_embedding <=> query_embedding) as similarity,
+                confidence,
+                verified,
+                metadata
+            from recognition_cache
+            where clip_embedding is not null
+            order by clip_embedding <=> query_embedding
+            limit match_count;
+        $$;
+    """
+    try:
+        response = (
+            _get_supabase_client()
+            .rpc(
+                "match_recognition_cache_by_embedding",
+                {
+                    "query_embedding": embedding,
+                    "match_count": limit,
+                },
+            )
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to find similar recognition cache records by embedding: {exc}") from exc
+
+    rows = _response_data(response)
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            "Failed to find similar recognition cache records by embedding: "
+            "Supabase returned an unexpected row shape."
+        )
+
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        normalized_rows.append(
+            _normalize_cache_row(
+                row,
+                "Failed to find similar recognition cache records by embedding",
+            )
+        )
+
+    return normalized_rows
 
 
 def delete_recognition_record_by_id(record_id: str) -> dict[str, Any] | None:
@@ -298,11 +386,7 @@ def delete_recognition_record_by_id(record_id: str) -> dict[str, Any] | None:
     if not rows:
         return None
 
-    first_row = rows[0]
-    if not isinstance(first_row, dict):
-        raise RuntimeError(
-            "Failed to delete recognition cache record by id: "
-            "Supabase returned an unexpected row shape."
-        )
-
-    return dict(first_row)
+    return _normalize_cache_row(
+        rows[0],
+        "Failed to delete recognition cache record by id",
+    )

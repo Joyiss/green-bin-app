@@ -2,6 +2,7 @@ fastapi
 uvicorn
 Pillow
 imagehash
+open-clip-torch
 python-multipart
 python-dotenv
 requests
