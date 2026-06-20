@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 Pillow
+imagehash
 python-multipart
 python-dotenv
 requests

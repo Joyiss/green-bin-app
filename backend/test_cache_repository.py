@@ -175,6 +175,151 @@ class CacheRepositoryTests(unittest.TestCase):
             ):
                 cache_repository.find_recognition_records_by_phash("abcd1234")
 
+    def test_find_nearest_phash_match_returns_best_row_with_distance(self):
+        rows = [
+            {"id": "record-1", "phash": "aaaa1111", "verified": False, "confidence": 0.8},
+            {"id": "record-2", "phash": "bbbb2222", "verified": True, "confidence": 0.7},
+            {"id": "record-3", "phash": None, "verified": True, "confidence": 1.0},
+        ]
+        execute_builder = Mock()
+        execute_builder.execute.return_value = SimpleNamespace(data=rows)
+        table_builder = Mock()
+        table_builder.select.return_value = execute_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
+            patch(
+                "repositories.cache_repository.phash_distance",
+                side_effect=lambda left, right: {"aaaa1111": 5, "bbbb2222": 3}[right],
+            ),
+        ):
+            match = cache_repository.find_nearest_phash_match("queryhash")
+
+        self.assertEqual(
+            match,
+            {
+                "id": "record-2",
+                "phash": "bbbb2222",
+                "verified": True,
+                "confidence": 0.7,
+                "phash_distance": 3,
+            },
+        )
+
+    def test_find_nearest_phash_match_returns_none_when_no_rows_qualify(self):
+        rows = [
+            {"id": "record-1", "phash": "aaaa1111", "verified": False, "confidence": 0.8},
+        ]
+        execute_builder = Mock()
+        execute_builder.execute.return_value = SimpleNamespace(data=rows)
+        table_builder = Mock()
+        table_builder.select.return_value = execute_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
+            patch("repositories.cache_repository.phash_distance", return_value=7),
+        ):
+            match = cache_repository.find_nearest_phash_match("queryhash", max_distance=6)
+
+        self.assertIsNone(match)
+
+    def test_find_nearest_phash_match_tie_breaks_by_verified_then_confidence(self):
+        rows = [
+            {"id": "record-1", "phash": "aaaa1111", "verified": False, "confidence": 0.95},
+            {"id": "record-2", "phash": "bbbb2222", "verified": True, "confidence": 0.3},
+            {"id": "record-3", "phash": "cccc3333", "verified": True, "confidence": 0.8},
+        ]
+        execute_builder = Mock()
+        execute_builder.execute.return_value = SimpleNamespace(data=rows)
+        table_builder = Mock()
+        table_builder.select.return_value = execute_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
+            patch("repositories.cache_repository.phash_distance", return_value=4),
+        ):
+            match = cache_repository.find_nearest_phash_match("queryhash")
+
+        self.assertEqual(match["id"], "record-3")
+        self.assertEqual(match["phash_distance"], 4)
+
+    def test_find_nearest_phash_match_raises_clear_error_on_supabase_failure(self):
+        select_builder = Mock()
+        select_builder.execute.side_effect = ValueError("query failed")
+        table_builder = Mock()
+        table_builder.select.return_value = select_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Failed to find nearest recognition cache record by phash: query failed",
+            ):
+                cache_repository.find_nearest_phash_match("queryhash")
+
+    def test_find_nearest_phash_match_raises_on_unexpected_row_shape(self):
+        execute_builder = Mock()
+        execute_builder.execute.return_value = SimpleNamespace(data=["bad-row"])
+        table_builder = Mock()
+        table_builder.select.return_value = execute_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Failed to find nearest recognition cache record by phash: Supabase returned an unexpected row shape.",
+            ):
+                cache_repository.find_nearest_phash_match("queryhash")
+
+    def test_find_nearest_phash_match_prefers_exact_match_before_nearest_scan(self):
+        exact_matches = [
+            {"id": "record-1", "phash": "abcd1234", "verified": False, "confidence": 0.7},
+            {"id": "record-2", "phash": "abcd1234", "verified": True, "confidence": 0.6},
+        ]
+        select_builder = Mock()
+        table_builder = Mock()
+        table_builder.select.return_value = select_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with (
+            patch("repositories.cache_repository.create_client", return_value=mock_client),
+            patch(
+                "repositories.cache_repository.find_recognition_records_by_phash",
+                return_value=exact_matches,
+            ),
+        ):
+            match = cache_repository.find_nearest_phash_match("abcd1234")
+
+        self.assertEqual(
+            match,
+            {
+                "id": "record-2",
+                "phash": "abcd1234",
+                "verified": True,
+                "confidence": 0.6,
+                "phash_distance": 0,
+            },
+        )
+        table_builder.select.assert_not_called()
+
     def test_delete_recognition_record_by_id_returns_deleted_row_or_none(self):
         expected_row = {"id": "record-123", "item_label": "Calculator"}
 

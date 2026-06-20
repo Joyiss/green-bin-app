@@ -52,7 +52,7 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         else _empty_guidance()
     )
 
-    return {
+    response = {
         "item": _format_item_name(classification["item"]),
         "category": classification["category"],
         "status": classification["status"],
@@ -62,3 +62,10 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         "impact_level": guidance["impact_level"],
         "steps": guidance["steps"],
     }
+
+    if "cache_hit" in classification:
+        response["cache_hit"] = bool(classification["cache_hit"])
+    if "recognition_source" in classification:
+        response["recognition_source"] = classification["recognition_source"]
+
+    return response
