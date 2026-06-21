@@ -46,6 +46,14 @@ CLOUDFLARE_AI_MODEL = os.getenv(
     "@cf/meta/llama-3.2-11b-vision-instruct",
 )
 DETECTION_PROMPT = build_material_selection_prompt()
+BARCODE_AWARE_PROMPT_SUFFIX = (
+    "\n\n"
+    "Additional barcode fallback rule:\n"
+    "- If the image mainly shows a barcode, nutrition label, ingredients panel, or other packaging text,\n"
+    "  and the physical item itself is not visually clear, return unknown instead of guessing from the text.\n"
+    "- Do not infer the item label from barcode context alone when the object shape/material is unclear.\n"
+)
+BARCODE_AWARE_DETECTION_PROMPT = DETECTION_PROMPT + BARCODE_AWARE_PROMPT_SUFFIX
 DETECTION_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -317,6 +325,62 @@ def _build_payload(
     return payload
 
 
+def _build_barcode_context_suffix(barcode_context: dict[str, object] | None) -> str:
+    if not isinstance(barcode_context, dict):
+        return ""
+
+    barcode_value = str(barcode_context.get("barcode_value") or "").strip() or "unknown"
+    product_name = str(barcode_context.get("product_name") or "").strip() or "unknown"
+    brand = str(barcode_context.get("brand") or "").strip() or "unknown"
+    category = str(barcode_context.get("category") or "").strip() or "unknown"
+    packaging = str(barcode_context.get("packaging") or "").strip() or "unknown"
+
+    return (
+        "\n\n"
+        "Barcode lookup found product metadata, but packaging could not be mapped.\n"
+        "This metadata is product context only, not answer labels.\n"
+        "Use the image and this product context to identify the visible disposal item/package/container.\n"
+        "The answer must identify the packaging or physical item that should be disposed of, such as wrapper, plastic bag, cardboard box, glass jar, plastic bottle, soda can, drink carton, or another supported disposal label.\n"
+        "Do not answer with the food or product identity unless that exact label is already a supported disposal item in the allowed inventory.\n"
+        "Do not output product names like Frozen dairy dessert cone, Ice cream cone, Nutella, Coca-Cola, Chips, or Candy unless that exact label is a supported Green Bin disposal item.\n"
+        "Choose only from the backend's supported item labels / canonical inventory list.\n"
+        "If the visible disposal item is unclear, or the image mostly shows only a barcode, return exactly:\n"
+        '{"status":"unknown","primary_label":"","candidate_labels":[]}\n'
+        "Product context, not answer labels:\n"
+        f"- barcode_value: {barcode_value}\n"
+        f"- product_name: {product_name}\n"
+        f"- brand: {brand}\n"
+        f"- category: {category}\n"
+        f"- packaging: {packaging}\n"
+    )
+
+
+def _build_detection_prompt(
+    *,
+    barcode_aware: bool,
+    barcode_context: dict[str, object] | None = None,
+) -> str:
+    prompt_text = BARCODE_AWARE_DETECTION_PROMPT if barcode_aware else DETECTION_PROMPT
+    if barcode_aware:
+        prompt_text += _build_barcode_context_suffix(barcode_context)
+    return prompt_text
+
+
+def _apply_barcode_fallback_rules(
+    prompt_text: str,
+    *,
+    barcode_aware: bool,
+    barcode_context: dict[str, object] | None = None,
+) -> str:
+    if not barcode_aware:
+        return prompt_text
+    return (
+        prompt_text
+        + BARCODE_AWARE_PROMPT_SUFFIX
+        + _build_barcode_context_suffix(barcode_context)
+    )
+
+
 def _cloudflare_api_url() -> str:
     return (
         f"{CLOUDFLARE_API_BASE_URL}/accounts/"
@@ -502,7 +566,12 @@ def _maybe_verify_confident_result(
     return result
 
 
-def detect_object(image: Image.Image) -> dict[str, object]:
+def detect_object(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+) -> dict[str, object]:
     try:
         if not CLOUDFLARE_ACCOUNT_ID:
             raise RuntimeError("CLOUDFLARE_ACCOUNT_ID is not set in backend/.env.")
@@ -518,7 +587,10 @@ def detect_object(image: Image.Image) -> dict[str, object]:
 
         raw_output = _call_vision_model(
             image_base64,
-            DETECTION_PROMPT,
+            _build_detection_prompt(
+                barcode_aware=barcode_aware,
+                barcode_context=barcode_context,
+            ),
             response_schema=DETECTION_RESPONSE_SCHEMA,
         )
         print(f"Cloudflare Vision raw output: {raw_output!r}")
@@ -532,7 +604,11 @@ def detect_object(image: Image.Image) -> dict[str, object]:
 
             fallback_output = _call_vision_model(
                 image_base64,
-                fallback_prompt,
+                _apply_barcode_fallback_rules(
+                    fallback_prompt,
+                    barcode_aware=barcode_aware,
+                    barcode_context=barcode_context,
+                ),
                 response_schema=DETECTION_RESPONSE_SCHEMA,
             )
             print(f"Cloudflare Vision fallback raw output: {fallback_output!r}")
@@ -668,6 +744,15 @@ def build_prediction_result(
     }
 
 
-def get_top_predictions(image: Image.Image) -> dict[str, object]:
-    detection_result = detect_object(image)
+def get_top_predictions(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    detection_result = detect_object(
+        image,
+        barcode_aware=barcode_aware,
+        barcode_context=barcode_context,
+    )
     return build_prediction_result(detection_result)

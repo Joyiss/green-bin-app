@@ -30,445 +30,40 @@ def _run_recognize_item(**kwargs):
     return asyncio.run(recognize_item(**kwargs))
 
 
+def _no_clip_candidates_decision() -> dict:
+    return {
+        "use_cache": False,
+        "item_label": None,
+        "reason": "no_clip_candidates",
+        "confidence": None,
+        "top_label": None,
+        "top_score": None,
+        "label_agreement_count": 0,
+        "evaluated_count": 0,
+        "best_competing_label": None,
+        "best_competing_score": None,
+        "margin": None,
+    }
+
+
+def _strong_clip_cache_decision(label: str) -> dict:
+    return {
+        "use_cache": True,
+        "item_label": label,
+        "reason": "strong_clip_agreement",
+        "confidence": 0.97,
+        "top_label": label,
+        "top_score": 0.97,
+        "label_agreement_count": 3,
+        "evaluated_count": 3,
+        "best_competing_label": None,
+        "best_competing_score": None,
+        "margin": None,
+    }
+
+
 class RecognitionRouterTests(unittest.TestCase):
-    def test_cache_hit_skips_vlm_and_returns_cached_classification(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 0,
-            "metadata": {
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 1.0]],
-                }
-            },
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(
-            result,
-            {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [("Calculator", 1.0)],
-                "cache_hit": True,
-                "recognition_source": "phash_cache",
-            },
-        )
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-        mock_save.assert_not_called()
-
-    def test_near_cache_hit_returns_same_shape_as_exact_cache_hit(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": {
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 1.0]],
-                }
-            },
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(
-            result,
-            {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [("Calculator", 1.0)],
-                "cache_hit": True,
-                "recognition_source": "phash_cache",
-            },
-        )
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_near_cache_hit_works_with_json_string_metadata(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": (
-                "{\"classification\": {\"item\": \"Calculator\", \"category\": \"Electronics\", "
-                "\"status\": \"confident\", \"candidates\": [{\"label\": \"Calculator\", \"score\": 1.0}]}}"
-            ),
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["status"], "confident")
-        self.assertEqual(result["candidates"], [("Calculator", 1.0)])
-        self.assertTrue(result["cache_hit"])
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_exact_cache_hit_with_json_string_metadata_returns_cached_item_not_unknown(self):
-        cached_record = {
-            "id": "record-exact-json",
-            "item_label": "Calculator",
-            "phash_distance": 0,
-            "metadata": (
-                "{\"classification\": {\"item\": \"Calculator\", \"category\": \"Electronics\", "
-                "\"status\": \"confident\", \"candidates\": [{\"label\": \"Calculator\", \"score\": 1.0}]}}"
-            ),
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["status"], "confident")
-        self.assertEqual(result["category"], "Electronics")
-        self.assertTrue(result["cache_hit"])
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_cache_hit_falls_back_to_item_label_when_metadata_is_missing(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": {"classification": {"status": "confident"}},
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.build_selected_item_prediction",
-                return_value={
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [],
-                },
-            ) as mock_build,
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        self.assertTrue(result["cache_hit"])
-        mock_build.assert_called_once_with("Calculator")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_exact_cache_hit_with_malformed_metadata_and_valid_item_label_returns_normal_result(self):
-        cached_record = {
-            "id": "record-exact-fallback",
-            "item_label": "Calculator",
-            "phash_distance": 0,
-            "metadata": "{\"classification\": {\"status\": \"unknown\", \"candidates\": []}}",
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.build_selected_item_prediction",
-                return_value={
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [],
-                },
-            ) as mock_build,
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["status"], "confident")
-        self.assertEqual(result["category"], "Electronics")
-        self.assertTrue(result["cache_hit"])
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        mock_build.assert_called_once_with("Calculator")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_near_cache_hit_falls_back_to_item_label_when_metadata_is_malformed(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": "{\"classification\": {\"status\": \"confident\", \"candidates\": [1, 2]}}",
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.build_selected_item_prediction",
-                return_value={
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [],
-                },
-            ) as mock_build,
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertTrue(result["cache_hit"])
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        mock_build.assert_called_once_with("Calculator")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_cache_hit_falls_back_to_item_label_when_metadata_is_structurally_valid_but_unusable(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": {
-                "classification": {
-                    "item": "",
-                    "category": "Unknown",
-                    "status": "unknown",
-                    "candidates": [],
-                }
-            },
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.build_selected_item_prediction",
-                return_value={
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [],
-                },
-            ) as mock_build,
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["status"], "confident")
-        self.assertTrue(result["cache_hit"])
-        mock_build.assert_called_once_with("Calculator")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_cache_hit_supports_top_level_metadata_classification_shape(self):
-        cached_record = {
-            "item_label": "Calculator",
-            "phash_distance": 4,
-            "metadata": {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [{"label": "Calculator", "score": 1.0}],
-            },
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
-            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["status"], "confident")
-        self.assertEqual(result["candidates"], [("Calculator", 1.0)])
-        self.assertTrue(result["cache_hit"])
-        self.assertEqual(result["recognition_source"], "phash_cache")
-        mock_clip.assert_not_called()
-        mock_vlm.assert_not_called()
-
-    def test_unusable_cache_row_falls_through_to_vlm(self):
-        classification = {
-            "item": "Calculator",
-            "category": "Electronics",
-            "status": "confident",
-            "candidates": [("Calculator", 0.88)],
-        }
-        cached_record = {
-            "item_label": None,
-            "phash_distance": 4,
-            "metadata": "{\"classification\": {\"status\": \"confident\", \"candidates\": [1, 2]}}",
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=[0.1, 0.2],
-            ) as mock_clip,
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[],
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.88)], "margin": 0.88},
-            ) as mock_vlm,
-            patch("services.recognition_router.classify", return_value=classification),
-            patch("services.recognition_router.cache_repository.save_recognition_record"),
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["recognition_source"], "vlm")
-        self.assertFalse(result["cache_hit"])
-        mock_clip.assert_called_once()
-        mock_vlm.assert_called_once()
-
-    def test_empty_item_label_and_unknown_cached_classification_falls_through_to_vlm(self):
-        classification = {
-            "item": "Calculator",
-            "category": "Electronics",
-            "status": "confident",
-            "candidates": [("Calculator", 0.88)],
-        }
-        cached_record = {
-            "id": "record-empty-unknown",
-            "item_label": "",
-            "phash_distance": 0,
-            "metadata": {
-                "classification": {
-                    "item": "",
-                    "category": "Unknown",
-                    "status": "unknown",
-                    "candidates": [],
-                }
-            },
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=cached_record,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=[0.1, 0.2],
-            ) as mock_clip,
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[],
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.88)], "margin": 0.88},
-            ) as mock_vlm,
-            patch("services.recognition_router.classify", return_value=classification),
-            patch("services.recognition_router.cache_repository.save_recognition_record"),
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["recognition_source"], "vlm")
-        self.assertFalse(result["cache_hit"])
-        mock_clip.assert_called_once()
-        mock_vlm.assert_called_once()
-
-    def test_clip_confident_cache_hit_returns_cached_classification_without_vlm(self):
-        cached_record = {
-            "id": "clip-1",
-            "item_label": "Calculator",
-            "similarity": 0.97,
-            "confidence": "0.93",
-            "verified": True,
-            "recognition_source": "vlm",
-            "metadata": {
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 0.97]],
-                }
-            },
-        }
-        router_decision = {
-            "use_cache": True,
-            "item_label": "Calculator",
-            "reason": "strong_clip_agreement",
-            "confidence": 0.97,
-            "top_label": "Calculator",
-            "top_score": 0.97,
-            "label_agreement_count": 4,
-            "evaluated_count": 5,
-            "best_competing_label": "Remote control",
-            "best_competing_score": 0.7,
-            "margin": 0.27,
-        }
-        clip_embedding = [0.1, 0.2, 0.3]
-
+    def test_known_barcode_short_circuits_before_ocr_clip_and_vlm(self):
         with (
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch(
@@ -476,137 +71,44 @@ class RecognitionRouterTests(unittest.TestCase):
                 return_value=None,
             ),
             patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=clip_embedding,
-            ) as mock_clip,
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[
-                    cached_record,
-                    {
-                        "id": "clip-2",
-                        "item_label": " calculator ",
-                        "similarity": 0.95,
-                        "confidence": 0.88,
-                        "verified": False,
-                        "recognition_source": "vlm",
-                        "metadata": {"source": "neighbor"},
-                    },
-                ],
-            ) as mock_search,
-            patch(
-                "services.recognition_router.evaluate_clip_candidates",
-                return_value=router_decision,
-            ) as mock_router,
+                "services.recognition_router.barcode_service.detect_barcode",
+                return_value={
+                    "barcode_value": "9780399578694",
+                    "barcode_type": "EAN_13",
+                },
+            ),
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
             patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
-            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+            patch(
+                "services.recognition_router.cache_repository.save_recognition_record"
+            ) as mock_save,
         ):
             result = _run_recognize_item(file=_make_upload_file())
 
+        self.assertEqual(result["item"], "Book")
+        self.assertEqual(result["category"], "Paper")
+        self.assertEqual(result["recognition_source"], "barcode")
+        self.assertFalse(result["cache_hit"])
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_not_called()
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
         self.assertEqual(
-            result,
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
             {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [("Calculator", 0.97)],
-                "cache_hit": True,
-                "recognition_source": "clip_cache",
+                "save_record": True,
+                "save_clip_embedding": False,
+                "reason": "known_barcode",
             },
         )
-        mock_clip.assert_called_once()
-        mock_search.assert_called_once_with(clip_embedding, limit=5)
-        mock_router.assert_called_once_with(
-            [
-                {
-                    "id": "clip-1",
-                    "item_label": "Calculator",
-                    "similarity": 0.97,
-                    "confidence": 0.93,
-                    "verified": True,
-                    "recognition_source": "vlm",
-                    "metadata": {
-                        "classification": {
-                            "item": "Calculator",
-                            "category": "Electronics",
-                            "status": "confident",
-                            "candidates": [["Calculator", 0.97]],
-                        }
-                    },
-                },
-                {
-                    "id": "clip-2",
-                    "item_label": " calculator ",
-                    "similarity": 0.95,
-                    "confidence": 0.88,
-                    "verified": False,
-                    "recognition_source": "vlm",
-                    "metadata": {"source": "neighbor"},
-                },
-            ]
-        )
-        mock_vlm.assert_not_called()
-        mock_save.assert_not_called()
 
-    def test_clip_ambiguous_fallback_saves_router_decision_and_candidates(self):
-        predictions = {"top_predictions": [("Calculator", 0.91)], "margin": 0.91}
+    def test_unknown_barcode_blocks_clip_fast_path_and_falls_back_to_vlm(self):
         classification = {
             "item": "Calculator",
             "category": "Electronics",
             "status": "confident",
-            "candidates": [("Calculator", 0.91), ("Keyboard", 0.2)],
-        }
-        clip_embedding = [0.1, 0.2, 0.3]
-        clip_candidates = [
-            {
-                "id": "shadow-1",
-                "item_label": "Pencil",
-                "similarity": 0.97,
-                "confidence": 0.7,
-                "verified": True,
-                "recognition_source": "vlm",
-                "metadata": {"source": "shadow-1"},
-            },
-            {
-                "id": "shadow-2",
-                "item_label": "Pencil",
-                "similarity": 0.95,
-                "confidence": 0.4,
-                "verified": False,
-                "recognition_source": "vlm",
-                "metadata": {"source": "shadow-2"},
-            },
-            {
-                "id": "shadow-3",
-                "item_label": "Pencil",
-                "similarity": 0.9,
-                "confidence": None,
-                "verified": True,
-                "recognition_source": "vlm",
-                "metadata": {"source": "shadow-3"},
-            },
-            {
-                "id": "shadow-4",
-                "item_label": "Pen",
-                "similarity": 0.89,
-                "confidence": 0.2,
-                "verified": False,
-                "recognition_source": "vlm",
-                "metadata": {"source": "shadow-4"},
-            },
-        ]
-        router_decision = {
-            "use_cache": False,
-            "item_label": None,
-            "reason": "small_label_margin",
-            "confidence": 0.97,
-            "top_label": "Pencil",
-            "top_score": 0.97,
-            "label_agreement_count": 3,
-            "evaluated_count": 4,
-            "best_competing_label": "Pen",
-            "best_competing_score": 0.89,
-            "margin": 0.08,
+            "candidates": [("Calculator", 0.88)],
         }
 
         with (
@@ -616,20 +118,21 @@ class RecognitionRouterTests(unittest.TestCase):
                 return_value=None,
             ),
             patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=clip_embedding,
-            ) as mock_clip,
+                "services.recognition_router.barcode_service.detect_barcode",
+                return_value={
+                    "barcode_value": "999999999999",
+                    "barcode_type": "EAN_13",
+                },
+            ),
             patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=clip_candidates,
-            ) as mock_search,
-            patch(
-                "services.recognition_router.evaluate_clip_candidates",
-                return_value=router_decision,
-            ) as mock_router,
+                "services.recognition_router.get_product_by_barcode",
+                return_value=None,
+            ),
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
             patch(
                 "services.recognition_router.vlm_service.get_top_predictions",
-                return_value=predictions,
+                return_value={"top_predictions": [("Calculator", 0.88)], "margin": 0.88},
             ) as mock_vlm,
             patch("services.recognition_router.classify", return_value=classification),
             patch(
@@ -638,126 +141,497 @@ class RecognitionRouterTests(unittest.TestCase):
         ):
             result = _run_recognize_item(file=_make_upload_file())
 
-        self.assertFalse(result["cache_hit"])
         self.assertEqual(result["recognition_source"], "vlm")
-        self.assertEqual(result["item"], "Calculator")
-        mock_clip.assert_called_once()
-        mock_search.assert_called_once_with(clip_embedding, limit=5)
-        mock_router.assert_called_once_with(
-            [
-                {
-                    "id": "shadow-1",
-                    "item_label": "Pencil",
-                    "similarity": 0.97,
-                    "confidence": 0.7,
-                    "verified": True,
-                    "recognition_source": "vlm",
-                    "metadata": {"source": "shadow-1"},
-                },
-                {
-                    "id": "shadow-2",
-                    "item_label": "Pencil",
-                    "similarity": 0.95,
-                    "confidence": 0.4,
-                    "verified": False,
-                    "recognition_source": "vlm",
-                    "metadata": {"source": "shadow-2"},
-                },
-                {
-                    "id": "shadow-3",
-                    "item_label": "Pencil",
-                    "similarity": 0.9,
-                    "confidence": None,
-                    "verified": True,
-                    "recognition_source": "vlm",
-                    "metadata": {"source": "shadow-3"},
-                },
-                {
-                    "id": "shadow-4",
-                    "item_label": "Pen",
-                    "similarity": 0.89,
-                    "confidence": 0.2,
-                    "verified": False,
-                    "recognition_source": "vlm",
-                    "metadata": {"source": "shadow-4"},
-                },
-            ]
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_called_once_with(
+            unittest.mock.ANY,
+            barcode_aware=True,
+            barcode_context=None,
         )
         mock_vlm.assert_called_once()
-        mock_save.assert_called_once_with(
-            phash="deadbeef",
-            clip_embedding=clip_embedding,
-            item_label="Calculator",
-            recognition_source="vlm",
-            confidence=0.91,
-            verified=False,
-            metadata={
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 0.91], ["Keyboard", 0.2]],
-                },
-                "route": "vlm_fallback",
-                "clip_candidates": [
-                    {
-                        "id": "shadow-1",
-                        "item_label": "Pencil",
-                        "similarity": 0.97,
-                        "confidence": 0.7,
-                        "verified": True,
-                        "recognition_source": "vlm",
-                        "metadata": {"source": "shadow-1"},
-                    },
-                    {
-                        "id": "shadow-2",
-                        "item_label": "Pencil",
-                        "similarity": 0.95,
-                        "confidence": 0.4,
-                        "verified": False,
-                        "recognition_source": "vlm",
-                        "metadata": {"source": "shadow-2"},
-                    },
-                    {
-                        "id": "shadow-3",
-                        "item_label": "Pencil",
-                        "similarity": 0.9,
-                        "confidence": None,
-                        "verified": True,
-                        "recognition_source": "vlm",
-                        "metadata": {"source": "shadow-3"},
-                    },
-                    {
-                        "id": "shadow-4",
-                        "item_label": "Pen",
-                        "similarity": 0.89,
-                        "confidence": 0.2,
-                        "verified": False,
-                        "recognition_source": "vlm",
-                        "metadata": {"source": "shadow-4"},
-                    },
-                ],
-                "router_decision": router_decision,
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["route"],
+            "unknown_barcode_vlm_fallback",
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
+            {
+                "save_record": True,
+                "save_clip_embedding": False,
+                "reason": "unknown_barcode_vlm_fallback",
+            },
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["barcode"]["product_lookup"],
+            {
+                "found": False,
+                "mapped": False,
+                "source": "open_food_facts",
+                "product_name": None,
+                "brand": None,
+                "category": None,
+                "packaging": None,
             },
         )
 
-    def test_clip_confident_decision_with_unusable_cached_row_falls_back_to_vlm(self):
-        predictions = {"top_predictions": [("Calculator", 0.88)], "margin": 0.88}
+    def test_open_food_facts_mapped_barcode_skips_vlm_and_saves_without_clip_embedding(self):
+        product = {
+            "barcode_value": "0123456789012",
+            "product_name": "Spring Water",
+            "brand": "Acme",
+            "category": "Waters",
+            "packaging": "Plastic bottle",
+            "quantity": "500 ml",
+            "source": "open_food_facts",
+            "raw_categories": ["en:waters"],
+            "raw_packaging_tags": ["en:plastic-bottle"],
+        }
+        product_mapping = {
+            "item_label": "Plastic water bottle",
+            "confidence": 0.85,
+            "reason": "open_food_facts_keyword_match",
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch(
+                "services.recognition_router.barcode_service.detect_barcode",
+                return_value={
+                    "barcode_value": "0123456789012",
+                    "barcode_type": "EAN_13",
+                },
+            ),
+            patch(
+                "services.recognition_router.get_product_by_barcode",
+                return_value=product,
+            ),
+            patch(
+                "services.recognition_router.map_product_to_item_label",
+                return_value=product_mapping,
+            ),
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
+            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
+            patch(
+                "services.recognition_router.cache_repository.save_recognition_record"
+            ) as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["item"], "Plastic water bottle")
+        self.assertEqual(result["recognition_source"], "open_food_facts")
+        self.assertFalse(result["cache_hit"])
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_not_called()
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["route"],
+            "open_food_facts_barcode_lookup",
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["barcode"]["product_lookup"],
+            {
+                "found": True,
+                "mapped": True,
+                "source": "open_food_facts",
+                "product_name": "Spring Water",
+                "brand": "Acme",
+                "category": "Waters",
+                "packaging": "Plastic bottle",
+            },
+        )
+
+    def test_open_food_facts_unmapped_product_uses_barcode_aware_vlm_and_saves_without_clip_embedding(self):
         classification = {
             "item": "Calculator",
             "category": "Electronics",
             "status": "confident",
             "candidates": [("Calculator", 0.88)],
         }
+        product = {
+            "barcode_value": "1111111111111",
+            "product_name": "Mystery Snack",
+            "brand": "Acme",
+            "category": "Snacks",
+            "packaging": "Wrapper",
+            "quantity": "40 g",
+            "source": "open_food_facts",
+            "raw_categories": ["en:snacks"],
+            "raw_packaging_tags": ["en:wrapper"],
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch(
+                "services.recognition_router.barcode_service.detect_barcode",
+                return_value={
+                    "barcode_value": "1111111111111",
+                    "barcode_type": "EAN_13",
+                },
+            ),
+            patch(
+                "services.recognition_router.get_product_by_barcode",
+                return_value=product,
+            ),
+            patch(
+                "services.recognition_router.map_product_to_item_label",
+                return_value=None,
+            ),
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.88)], "margin": 0.88},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=classification),
+            patch(
+                "services.recognition_router.cache_repository.save_recognition_record"
+            ) as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_called_once_with(
+            unittest.mock.ANY,
+            barcode_aware=True,
+            barcode_context={
+                "barcode_value": "1111111111111",
+                "product_name": "Mystery Snack",
+                "brand": "Acme",
+                "category": "Snacks",
+                "packaging": "Wrapper",
+            },
+        )
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["route"],
+            "barcode_product_context_vlm_fallback",
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["barcode"]["product_lookup"],
+            {
+                "found": True,
+                "mapped": False,
+                "source": "open_food_facts",
+                "product_name": "Mystery Snack",
+                "brand": "Acme",
+                "category": "Snacks",
+                "packaging": "Wrapper",
+            },
+        )
+
+    def test_barcode_aware_vlm_fallback_can_return_unknown_without_saving_record(self):
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch(
+                "services.recognition_router.barcode_service.detect_barcode",
+                return_value={
+                    "barcode_value": "999999999999",
+                    "barcode_type": "EAN_13",
+                },
+            ),
+            patch(
+                "services.recognition_router.get_product_by_barcode",
+                return_value=None,
+            ),
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [], "margin": 0.0},
+            ) as mock_vlm,
+            patch(
+                "services.recognition_router.cache_repository.save_recognition_record"
+            ) as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["item"], "")
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_called_once_with(
+            unittest.mock.ANY,
+            barcode_aware=True,
+            barcode_context=None,
+        )
+        mock_save.assert_not_called()
+
+    def test_phash_exact_duplicate_of_unsafe_cached_record_still_returns_early(self):
+        cached_record = {
+            "item_label": "Calculator",
+            "phash_distance": 0,
+            "metadata": {
+                "classification": {
+                    "item": "Calculator",
+                    "category": "Electronics",
+                    "status": "confident",
+                    "candidates": [["Calculator", 1.0]],
+                },
+                "signals": {
+                    "cache_policy": {
+                        "save_record": True,
+                        "save_clip_embedding": False,
+                        "reason": "unknown_barcode",
+                    }
+                },
+            },
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=cached_record,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode") as mock_barcode,
+            patch("services.recognition_router.ocr_service.extract_ocr_text") as mock_ocr,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
+            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "phash_cache")
+        self.assertTrue(result["cache_hit"])
+        mock_barcode.assert_not_called()
+        mock_ocr.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_vlm.assert_not_called()
+
+    def test_phash_near_match_of_unsafe_cached_record_continues_full_flow(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [("Calculator", 0.91)],
+        }
+        cached_record = {
+            "item_label": "Calculator",
+            "phash_distance": 3,
+            "metadata": {
+                "classification": {
+                    "item": "Calculator",
+                    "category": "Electronics",
+                    "status": "confident",
+                    "candidates": [["Calculator", 1.0]],
+                },
+                "signals": {
+                    "cache_policy": {
+                        "save_record": True,
+                        "save_clip_embedding": False,
+                        "reason": "text_heavy_weak_visual",
+                    }
+                },
+            },
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=cached_record,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None) as mock_barcode,
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
+            ) as mock_ocr,
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ) as mock_clip,
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.91)], "margin": 0.91},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=classification),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_barcode.assert_called_once()
+        mock_ocr.assert_called_once()
+        mock_clip.assert_called_once()
+        mock_vlm.assert_called_once()
+        self.assertEqual(mock_save.call_args.kwargs["clip_embedding"], [0.1, 0.2])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"]["reason"],
+            "normal_product_photo",
+        )
+
+    def test_ocr_only_text_heavy_evidence_falls_back_and_does_not_save_clip_embedding(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [("Calculator", 0.83)],
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={
+                    "text": "Duracell AA alkaline battery label closeup",
+                    "keywords": ["battery", "aa", "duracell"],
+                    "matched_label": "Battery",
+                },
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=classification),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_vlm.assert_called_once()
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(mock_save.call_args.kwargs["metadata"]["route"], "text_heavy_weak_visual")
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
+            {
+                "save_record": True,
+                "save_clip_embedding": False,
+                "reason": "text_heavy_weak_visual",
+            },
+        )
+
+    def test_ocr_clip_conflict_disables_clip_embedding_persistence(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [("Calculator", 0.83)],
+        }
+        clip_candidates = [
+            {
+                "id": "clip-1",
+                "item_label": "Calculator",
+                "similarity": 0.95,
+                "confidence": 0.8,
+                "verified": True,
+                "recognition_source": "vlm",
+                "metadata": {"source": "cached-neighbor"},
+            }
+        ]
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={
+                    "text": "battery label closeup",
+                    "keywords": ["battery"],
+                    "matched_label": "Battery",
+                },
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=clip_candidates,
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_strong_clip_cache_decision("Calculator"),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=classification),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_vlm.assert_called_once()
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(mock_save.call_args.kwargs["metadata"]["route"], "ocr_clip_conflict")
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
+            {
+                "save_record": True,
+                "save_clip_embedding": False,
+                "reason": "ocr_clip_conflict",
+            },
+        )
+
+    def test_ocr_clip_agreement_is_allowed_and_saves_lightweight_candidates(self):
+        clip_candidates = [
+            {
+                "id": "clip-1",
+                "item_label": "Calculator",
+                "similarity": 0.92,
+                "confidence": 0.85,
+                "verified": True,
+                "recognition_source": "vlm",
+                "metadata": {"source": "cached-neighbor"},
+            }
+        ]
         router_decision = {
-            "use_cache": True,
-            "item_label": "Mystery Widget",
-            "reason": "strong_clip_agreement",
-            "confidence": 0.96,
-            "top_label": "Mystery Widget",
-            "top_score": 0.96,
-            "label_agreement_count": 3,
-            "evaluated_count": 3,
+            "use_cache": False,
+            "item_label": None,
+            "reason": "weak_label_agreement",
+            "confidence": 0.92,
+            "top_label": "Calculator",
+            "top_score": 0.92,
+            "label_agreement_count": 1,
+            "evaluated_count": 1,
             "best_competing_label": None,
             "best_competing_score": None,
             "margin": None,
@@ -769,124 +643,80 @@ class RecognitionRouterTests(unittest.TestCase):
                 "services.recognition_router.cache_repository.find_nearest_phash_match",
                 return_value=None,
             ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={
+                    "text": "calc",
+                    "keywords": ["calculator"],
+                    "matched_label": "Calculator",
+                },
+            ),
             patch(
                 "services.recognition_router.clip_service.create_clip_embedding",
                 return_value=[0.1, 0.2],
             ),
             patch(
                 "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[
-                    {
-                        "id": "clip-1",
-                        "item_label": "Mystery Widget",
-                        "similarity": 0.96,
-                        "confidence": 0.8,
-                        "verified": True,
-                        "metadata": {"classification": {"status": "confident", "candidates": [1, 2]}},
-                    },
-                    {
-                        "id": "clip-2",
-                        "item_label": "Mystery Widget",
-                        "similarity": 0.94,
-                        "confidence": 0.75,
-                        "verified": False,
-                        "metadata": {},
-                    },
-                ],
+                return_value=clip_candidates,
             ),
             patch(
                 "services.recognition_router.evaluate_clip_candidates",
                 return_value=router_decision,
             ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value=predictions,
-            ) as mock_vlm,
-            patch("services.recognition_router.classify", return_value=classification),
-            patch(
-                "services.recognition_router.cache_repository.save_recognition_record"
-            ) as mock_save,
+            patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
         ):
             result = _run_recognize_item(file=_make_upload_file())
 
-        self.assertEqual(result["item"], "Calculator")
-        self.assertEqual(result["recognition_source"], "vlm")
-        self.assertFalse(result["cache_hit"])
-        mock_vlm.assert_called_once()
-        mock_save.assert_called_once()
+        self.assertEqual(result["recognition_source"], "clip_cache")
+        self.assertTrue(result["cache_hit"])
+        mock_vlm.assert_not_called()
+        self.assertEqual(mock_save.call_args.kwargs["clip_embedding"], [0.1, 0.2])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
+            {
+                "save_record": True,
+                "save_clip_embedding": True,
+                "reason": "normal_product_photo",
+            },
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["clip_candidates"],
+            [
+                {
+                    "id": "clip-1",
+                    "item_label": "Calculator",
+                    "similarity": 0.92,
+                    "confidence": 0.85,
+                    "verified": True,
+                    "recognition_source": "vlm",
+                }
+            ],
+        )
+        self.assertNotIn(
+            "metadata",
+            mock_save.call_args.kwargs["metadata"]["signals"]["clip_candidates"][0],
+        )
 
-    def test_valid_upload_reads_bytes_once_and_reuses_them(self):
-        predictions = {"top_predictions": [("Calculator", 0.91)], "margin": 0.91}
+    def test_normal_product_photo_keeps_clip_embedding(self):
         classification = {
             "item": "Calculator",
             "category": "Electronics",
             "status": "confident",
             "candidates": [("Calculator", 0.91)],
         }
-        upload_file = _make_upload_file()
-        original_read = upload_file.read
-        upload_file.read = AsyncMock(wraps=original_read)
-        expected_bytes = upload_file.file.getvalue()
-        clip_embedding = [0.1, 0.2]
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef") as mock_phash,
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=None,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=clip_embedding,
-            ) as mock_clip,
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[],
-            ),
-            patch(
-                "services.recognition_router.evaluate_clip_candidates",
-                return_value={
-                    "use_cache": False,
-                    "item_label": None,
-                    "reason": "no_clip_candidates",
-                    "confidence": None,
-                    "top_label": None,
-                    "top_score": None,
-                    "label_agreement_count": 0,
-                    "evaluated_count": 0,
-                    "best_competing_label": None,
-                    "best_competing_score": None,
-                    "margin": None,
-                },
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value=predictions,
-            ) as mock_vlm,
-            patch("services.recognition_router.classify", return_value=classification),
-            patch("services.recognition_router.cache_repository.save_recognition_record"),
-        ):
-            result = _run_recognize_item(file=upload_file)
-
-        self.assertEqual(result["item"], "Calculator")
-        upload_file.read.assert_awaited_once()
-        mock_phash.assert_called_once_with(expected_bytes)
-        mock_clip.assert_called_once_with(expected_bytes)
-        mock_vlm.assert_called_once()
-
-    def test_cache_lookup_failure_logs_and_continues_with_vlm(self):
-        classification = {
-            "item": "",
-            "category": "Unknown",
-            "status": "unknown",
-            "candidates": [],
-        }
 
         with (
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch(
                 "services.recognition_router.cache_repository.find_nearest_phash_match",
-                side_effect=RuntimeError("lookup failed"),
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
             ),
             patch(
                 "services.recognition_router.clip_service.create_clip_embedding",
@@ -898,236 +728,29 @@ class RecognitionRouterTests(unittest.TestCase):
             ),
             patch(
                 "services.recognition_router.evaluate_clip_candidates",
-                return_value={
-                    "use_cache": False,
-                    "item_label": None,
-                    "reason": "no_clip_candidates",
-                    "confidence": None,
-                    "top_label": None,
-                    "top_score": None,
-                    "label_agreement_count": 0,
-                    "evaluated_count": 0,
-                    "best_competing_label": None,
-                    "best_competing_score": None,
-                    "margin": None,
-                },
+                return_value=_no_clip_candidates_decision(),
             ),
             patch(
                 "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [], "margin": 0.0},
-            ) as mock_vlm,
+                return_value={"top_predictions": [("Calculator", 0.91)], "margin": 0.91},
+            ),
             patch("services.recognition_router.classify", return_value=classification),
-            patch("services.recognition_router.cache_repository.save_recognition_record"),
-            patch("services.recognition_router.logger") as mock_logger,
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
         ):
             result = _run_recognize_item(file=_make_upload_file())
 
         self.assertEqual(result["recognition_source"], "vlm")
-        mock_vlm.assert_called_once()
-        mock_logger.warning.assert_any_call("pHash cache lookup failed: %s", unittest.mock.ANY)
-
-    def test_clip_generation_failure_still_returns_vlm_prediction_and_saves_without_embedding(self):
-        classification = {
-            "item": "Calculator",
-            "category": "Electronics",
-            "status": "confident",
-            "candidates": [("Calculator", 0.83)],
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=None,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                side_effect=RuntimeError("model unavailable"),
-            ),
-            patch("services.recognition_router.cache_repository.find_similar_embeddings") as mock_search,
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
-            ),
-            patch("services.recognition_router.classify", return_value=classification),
-            patch(
-                "services.recognition_router.cache_repository.save_recognition_record"
-            ) as mock_save,
-            patch("services.recognition_router.logger") as mock_logger,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertFalse(result["cache_hit"])
-        mock_search.assert_not_called()
-        mock_save.assert_called_once_with(
-            phash="deadbeef",
-            clip_embedding=None,
-            item_label="Calculator",
-            recognition_source="vlm",
-            confidence=0.83,
-            verified=False,
-            metadata={
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 0.83]],
-                },
-                "route": "vlm_fallback",
-                "clip_candidates": [],
+        self.assertEqual(mock_save.call_args.kwargs["clip_embedding"], [0.1, 0.2])
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
+            {
+                "save_record": True,
+                "save_clip_embedding": True,
+                "reason": "normal_product_photo",
             },
         )
-        mock_logger.warning.assert_any_call(
-            "CLIP embedding generation failed: %s",
-            unittest.mock.ANY,
-        )
 
-    def test_clip_vector_search_failure_still_returns_vlm_prediction(self):
-        classification = {
-            "item": "Calculator",
-            "category": "Electronics",
-            "status": "confident",
-            "candidates": [("Calculator", 0.83)],
-        }
-        clip_embedding = [0.1, 0.2]
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=None,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=clip_embedding,
-            ),
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                side_effect=RuntimeError("vector search failed"),
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
-            ) as mock_vlm,
-            patch("services.recognition_router.classify", return_value=classification),
-            patch(
-                "services.recognition_router.cache_repository.save_recognition_record"
-            ) as mock_save,
-            patch("services.recognition_router.logger") as mock_logger,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        mock_vlm.assert_called_once()
-        mock_save.assert_called_once_with(
-            phash="deadbeef",
-            clip_embedding=clip_embedding,
-            item_label="Calculator",
-            recognition_source="vlm",
-            confidence=0.83,
-            verified=False,
-            metadata={
-                "classification": {
-                    "item": "Calculator",
-                    "category": "Electronics",
-                    "status": "confident",
-                    "candidates": [["Calculator", 0.83]],
-                },
-                "route": "vlm_fallback",
-                "clip_candidates": [],
-            },
-        )
-        mock_logger.warning.assert_any_call(
-            "CLIP vector search failed: %s",
-            unittest.mock.ANY,
-        )
-
-    def test_cache_save_failure_logs_and_still_returns_prediction(self):
-        classification = {
-            "item": "Calculator",
-            "category": "Electronics",
-            "status": "confident",
-            "candidates": [("Calculator", 0.83)],
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=None,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=[0.1, 0.2],
-            ),
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[],
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
-            ),
-            patch("services.recognition_router.classify", return_value=classification),
-            patch(
-                "services.recognition_router.cache_repository.save_recognition_record",
-                side_effect=RuntimeError("save failed"),
-            ),
-            patch("services.recognition_router.logger") as mock_logger,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["item"], "Calculator")
-        self.assertFalse(result["cache_hit"])
-        mock_logger.warning.assert_any_call(
-            "Recognition cache save failed: %s",
-            unittest.mock.ANY,
-        )
-
-    def test_cache_save_skips_blank_or_unknown_item_labels(self):
-        classification = {
-            "item": "",
-            "category": "Unknown",
-            "status": "unknown",
-            "candidates": [],
-        }
-
-        with (
-            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
-            patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
-                return_value=None,
-            ),
-            patch(
-                "services.recognition_router.clip_service.create_clip_embedding",
-                return_value=[0.1, 0.2],
-            ),
-            patch(
-                "services.recognition_router.cache_repository.find_similar_embeddings",
-                return_value=[],
-            ),
-            patch(
-                "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [], "margin": 0.0},
-            ),
-            patch("services.recognition_router.classify", return_value=classification),
-            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
-            patch("services.recognition_router.logger") as mock_logger,
-        ):
-            result = _run_recognize_item(file=_make_upload_file())
-
-        self.assertEqual(result["status"], "unknown")
-        self.assertFalse(result["cache_hit"])
-        mock_save.assert_not_called()
-        mock_logger.info.assert_any_call(
-            "Skipping recognition cache save because classification item_label was blank or unknown. item=%s status=%s category=%s",
-            "",
-            "unknown",
-            "Unknown",
-        )
-
-    def test_selected_item_bypasses_phash_and_vlm(self):
+    def test_selected_item_bypasses_recognition_flow(self):
         manual_classification = {
             "item": "Calculator",
             "category": "Electronics",
@@ -1141,7 +764,6 @@ class RecognitionRouterTests(unittest.TestCase):
                 return_value=manual_classification,
             ) as mock_build,
             patch("services.recognition_router.phash_service.create_phash") as mock_phash,
-            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
             patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
         ):
             result = _run_recognize_item(selected_item="Calculator")
@@ -1149,7 +771,6 @@ class RecognitionRouterTests(unittest.TestCase):
         self.assertEqual(result, manual_classification)
         mock_build.assert_called_once_with("Calculator")
         mock_phash.assert_not_called()
-        mock_clip.assert_not_called()
         mock_vlm.assert_not_called()
 
     def test_invalid_image_returns_http_400(self):
@@ -1159,6 +780,58 @@ class RecognitionRouterTests(unittest.TestCase):
             _run_recognize_item(file=invalid_file)
 
         self.assertEqual(context.exception.status_code, 400)
+
+    def test_valid_upload_reads_bytes_once_and_reuses_them(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [("Calculator", 0.91)],
+        }
+        upload_file = _make_upload_file()
+        original_read = upload_file.read
+        upload_file.read = AsyncMock(wraps=original_read)
+        expected_bytes = upload_file.file.getvalue()
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef") as mock_phash,
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None) as mock_barcode,
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
+            ) as mock_ocr,
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ) as mock_clip,
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.91)], "margin": 0.91},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=classification),
+            patch("services.recognition_router.cache_repository.save_recognition_record"),
+        ):
+            result = _run_recognize_item(file=upload_file)
+
+        self.assertEqual(result["item"], "Calculator")
+        upload_file.read.assert_awaited_once()
+        mock_phash.assert_called_once_with(expected_bytes)
+        mock_barcode.assert_called_once_with(expected_bytes)
+        mock_ocr.assert_called_once_with(expected_bytes)
+        mock_clip.assert_called_once_with(expected_bytes)
+        mock_vlm.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -40,13 +40,31 @@ def _sync_service_config() -> None:
     vlm_service.UNCERTAIN_SCORE_STEP = UNCERTAIN_SCORE_STEP
 
 
-def detect_object(image: Image.Image) -> dict[str, object]:
+def detect_object(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+) -> dict[str, object]:
     _sync_service_config()
-    return vlm_service.detect_object(image)
+    return vlm_service.detect_object(
+        image,
+        barcode_aware=barcode_aware,
+        barcode_context=barcode_context,
+    )
 
 
-def get_top_predictions(image: Image.Image) -> dict[str, object]:
-    detection_result = detect_object(image)
+def get_top_predictions(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    detection_result = detect_object(
+        image,
+        barcode_aware=barcode_aware,
+        barcode_context=barcode_context,
+    )
     return vlm_service.build_prediction_result(detection_result)
 
 

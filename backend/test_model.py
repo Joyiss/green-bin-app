@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from classifier import classify
 from model import detect_object, get_top_predictions
 from PIL import Image
+from services.vlm_service import _build_detection_prompt
 
 
 class VisionModelCompatibilityTests(unittest.TestCase):
@@ -341,6 +342,40 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(result["status"], "uncertain")
         self.assertEqual(result["primary_label"], "Book")
         self.assertEqual(result["candidate_labels"], ["Book", "Calculator", "Mouse"])
+
+
+class BarcodeAwarePromptTests(unittest.TestCase):
+    def test_barcode_product_context_prompt_forbids_product_name_answers(self):
+        prompt = _build_detection_prompt(
+            barcode_aware=True,
+            barcode_context={
+                "barcode_value": "0072554001628",
+                "product_name": "Frozen dairy dessert cone",
+                "brand": "Acme",
+                "category": "Ice cream cones",
+                "packaging": "unknown",
+            },
+        )
+
+        self.assertIn("This metadata is product context only, not answer labels.", prompt)
+        self.assertIn(
+            "The answer must identify the packaging or physical item that should be disposed of",
+            prompt,
+        )
+        self.assertIn(
+            "Do not output product names like Frozen dairy dessert cone, Ice cream cone, Nutella, Coca-Cola, Chips, or Candy",
+            prompt,
+        )
+        self.assertIn(
+            "Choose only from the backend's supported item labels / canonical inventory list.",
+            prompt,
+        )
+        self.assertIn(
+            '{"status":"unknown","primary_label":"","candidate_labels":[]}',
+            prompt,
+        )
+        self.assertIn("Product context, not answer labels:", prompt)
+        self.assertIn("- product_name: Frozen dairy dessert cone", prompt)
 
 
 if __name__ == "__main__":
