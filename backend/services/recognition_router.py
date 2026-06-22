@@ -544,6 +544,7 @@ async def recognize_item(
         )
         text_heavy_weak_visual_detected = False
         ocr_clip_conflict_detected = False
+        ocr_affected_router_decision = False
 
         try:
             phash = phash_service.create_phash(image_bytes)
@@ -916,6 +917,7 @@ async def recognize_item(
 
                             if classification is not None:
                                 router_reason = "ocr_clip_agreement"
+                                ocr_affected_router_decision = True
                                 _log_router_decision("ocr_clip_agreement", router_decision)
                                 signals = _build_signals_metadata(
                                     phash_value=phash,
@@ -946,6 +948,11 @@ async def recognize_item(
                                     clip_top_label,
                                     matched_candidate_count,
                                 )
+                                logger.info(
+                                    "OCR router impact. affected=%s router_reason=%s",
+                                    ocr_affected_router_decision,
+                                    router_reason,
+                                )
                                 return _with_recognition_metadata(
                                     classification,
                                     cache_hit=cache_hit,
@@ -955,6 +962,7 @@ async def recognize_item(
                         elif normalized_clip_label is not None and not ocr_matches_clip:
                             router_reason = "ocr_clip_conflict"
                             ocr_clip_conflict_detected = True
+                            ocr_affected_router_decision = True
                             cache_policy = _build_cache_policy(
                                 save_record=True,
                                 save_clip_embedding=False,
@@ -964,6 +972,7 @@ async def recognize_item(
                         elif text_heavy_signal:
                             router_reason = "text_heavy_weak_visual"
                             text_heavy_weak_visual_detected = True
+                            ocr_affected_router_decision = True
                             cache_policy = _build_cache_policy(
                                 save_record=True,
                                 save_clip_embedding=False,
@@ -975,6 +984,7 @@ async def recognize_item(
                     elif text_heavy_signal:
                         router_reason = "text_heavy_weak_visual"
                         text_heavy_weak_visual_detected = True
+                        ocr_affected_router_decision = True
                         cache_policy = _build_cache_policy(
                             save_record=True,
                             save_clip_embedding=False,
@@ -996,6 +1006,11 @@ async def recognize_item(
                                 target_label,
                                 matched_candidate_count,
                             )
+                            logger.info(
+                                "OCR router impact. affected=%s router_reason=%s",
+                                ocr_affected_router_decision,
+                                "clip_cache",
+                            )
                             return _with_recognition_metadata(
                                 cached_classification,
                                 cache_hit=True,
@@ -1014,6 +1029,7 @@ async def recognize_item(
         if _is_text_heavy_ocr_signal(ocr_signal) and router_reason == "vlm_fallback":
             router_reason = "text_heavy_weak_visual"
             text_heavy_weak_visual_detected = True
+            ocr_affected_router_decision = True
             cache_policy = _build_cache_policy(
                 save_record=True,
                 save_clip_embedding=False,
@@ -1024,6 +1040,11 @@ async def recognize_item(
         elif ocr_clip_conflict_detected:
             router_reason = "ocr_clip_conflict"
 
+        logger.info(
+            "OCR router impact. affected=%s router_reason=%s",
+            ocr_affected_router_decision,
+            router_reason,
+        )
         logger.info("Proceeding to VLM inference after pHash, barcode, OCR, and CLIP checks.")
         predictions = vlm_service.get_top_predictions(image)
         classification = _with_recognition_metadata(
