@@ -486,12 +486,12 @@ class RecognitionRouterTests(unittest.TestCase):
             "normal_product_photo",
         )
 
-    def test_ocr_only_text_heavy_evidence_falls_back_and_does_not_save_clip_embedding(self):
+    def test_no_barcode_noisy_ocr_and_confident_vlm_result_saves_clip_embedding(self):
         classification = {
-            "item": "Calculator",
+            "item": "Monitor",
             "category": "Electronics",
             "status": "confident",
-            "candidates": [("Calculator", 0.83)],
+            "candidates": [("Monitor", 0.93)],
         }
 
         with (
@@ -504,9 +504,9 @@ class RecognitionRouterTests(unittest.TestCase):
             patch(
                 "services.recognition_router.ocr_service.extract_ocr_text",
                 return_value={
-                    "text": "Duracell AA alkaline battery label closeup",
-                    "keywords": ["battery", "aa", "duracell"],
-                    "matched_label": "Battery",
+                    "text": "model display hdmi energy star serial input monitor office screen setup",
+                    "keywords": ["display", "monitor", "office"],
+                    "matched_label": None,
                 },
             ),
             patch(
@@ -523,7 +523,7 @@ class RecognitionRouterTests(unittest.TestCase):
             ),
             patch(
                 "services.recognition_router.vlm_service.get_top_predictions",
-                return_value={"top_predictions": [("Calculator", 0.83)], "margin": 0.83},
+                return_value={"top_predictions": [("Monitor", 0.93)], "margin": 0.93},
             ) as mock_vlm,
             patch("services.recognition_router.classify", return_value=classification),
             patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
@@ -532,14 +532,14 @@ class RecognitionRouterTests(unittest.TestCase):
 
         self.assertEqual(result["recognition_source"], "vlm")
         mock_vlm.assert_called_once()
-        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        self.assertEqual(mock_save.call_args.kwargs["clip_embedding"], [0.1, 0.2])
         self.assertEqual(mock_save.call_args.kwargs["metadata"]["route"], "text_heavy_weak_visual")
         self.assertEqual(
             mock_save.call_args.kwargs["metadata"]["signals"]["cache_policy"],
             {
                 "save_record": True,
-                "save_clip_embedding": False,
-                "reason": "text_heavy_weak_visual",
+                "save_clip_embedding": True,
+                "reason": "normal_product_photo",
             },
         )
 
@@ -607,7 +607,7 @@ class RecognitionRouterTests(unittest.TestCase):
             {
                 "save_record": True,
                 "save_clip_embedding": False,
-                "reason": "ocr_clip_conflict",
+                "reason": "ocr_final_label_conflict",
             },
         )
 
@@ -749,6 +749,49 @@ class RecognitionRouterTests(unittest.TestCase):
                 "reason": "normal_product_photo",
             },
         )
+
+    def test_uncertain_or_unknown_result_does_not_save_clip_embedding(self):
+        classification = {
+            "item": "Unknown",
+            "category": "Unknown",
+            "status": "unknown",
+            "candidates": [("Unknown", 0.42)],
+        }
+
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "blurred object", "keywords": [], "matched_label": None},
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Unknown", 0.42)], "margin": 0.05},
+            ),
+            patch("services.recognition_router.classify", return_value=classification),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertFalse(mock_save.called)
 
     def test_selected_item_bypasses_recognition_flow(self):
         manual_classification = {

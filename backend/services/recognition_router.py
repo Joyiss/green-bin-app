@@ -421,6 +421,58 @@ def _build_cache_policy(
     }
 
 
+def _finalize_vlm_cache_policy(
+    *,
+    classification: dict[str, Any],
+    barcode_signal: dict[str, Any],
+    ocr_signal: dict[str, Any],
+    clip_embedding: list[float] | None,
+) -> dict[str, Any]:
+    final_label = classification.get("item")
+    final_status = classification.get("status")
+    barcode_detected = barcode_signal.get("value") is not None
+    normalized_ocr_label = _normalize_label_for_matching(ocr_signal.get("matched_label"))
+    normalized_final_label = _normalize_label_for_matching(final_label)
+
+    if barcode_detected:
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="barcode_detected",
+        )
+
+    if clip_embedding is None:
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="clip_embedding_unavailable",
+        )
+
+    if final_status != "confident" or not _is_cacheable_item_label(final_label):
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="unknown_or_uncertain_result",
+        )
+
+    if (
+        normalized_ocr_label is not None
+        and normalized_final_label is not None
+        and normalized_ocr_label != normalized_final_label
+    ):
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="ocr_final_label_conflict",
+        )
+
+    return _build_cache_policy(
+        save_record=True,
+        save_clip_embedding=True,
+        reason="normal_product_photo",
+    )
+
+
 def _normalize_ocr_signal(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return _empty_ocr_signal()
@@ -491,6 +543,34 @@ def _save_recognition_record_if_possible(
     save_clip_embedding: bool,
 ) -> None:
     item_label = classification.get("item", "")
+    signals_ocr = signals.get("ocr") if isinstance(signals, dict) else None
+    signals_barcode = signals.get("barcode") if isinstance(signals, dict) else None
+    signals_cache_policy = signals.get("cache_policy") if isinstance(signals, dict) else None
+    barcode_detected = (
+        isinstance(signals_barcode, dict)
+        and signals_barcode.get("value") is not None
+    )
+    ocr_matched_label = (
+        signals_ocr.get("matched_label")
+        if isinstance(signals_ocr, dict)
+        else None
+    )
+    cache_policy_reason = (
+        signals_cache_policy.get("reason")
+        if isinstance(signals_cache_policy, dict)
+        else None
+    )
+
+    logger.info(
+        "Recognition cache policy. save_clip_embedding=%s reason=%s barcode_detected=%s ocr_matched_label=%s final_label=%s final_status=%s",
+        bool(save_clip_embedding and clip_embedding is not None),
+        cache_policy_reason,
+        barcode_detected,
+        ocr_matched_label,
+        classification.get("item"),
+        classification.get("status"),
+    )
+
     if not save_record or phash is None or not _is_cacheable_item_label(item_label):
         return
 
@@ -1051,6 +1131,12 @@ async def recognize_item(
             classify(predictions),
             cache_hit=False,
             recognition_source="vlm",
+        )
+        cache_policy = _finalize_vlm_cache_policy(
+            classification=classification,
+            barcode_signal=barcode_signal,
+            ocr_signal=ocr_signal,
+            clip_embedding=clip_embedding,
         )
 
         if phash is not None and not _is_cacheable_item_label(classification.get("item", "")):

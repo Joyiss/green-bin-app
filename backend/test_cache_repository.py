@@ -5,6 +5,11 @@ from unittest.mock import Mock, patch
 
 from repositories import cache_repository
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - numpy is expected in backend runtime
+    np = None
+
 
 class CacheRepositoryTests(unittest.TestCase):
     def setUp(self):
@@ -98,6 +103,62 @@ class CacheRepositoryTests(unittest.TestCase):
                     item_label="Calculator",
                     recognition_source="manual-test",
                 )
+
+    def test_save_recognition_record_normalizes_numpy_scalars_to_json_safe_values(self):
+        if np is None:
+            self.skipTest("numpy is not installed")
+
+        expected_row = {
+            "id": "record-456",
+            "item_label": "Monitor",
+            "recognition_source": "vlm",
+            "clip_embedding": [0.1, 0.2],
+            "metadata": {},
+        }
+        table_builder = Mock()
+        insert_builder = Mock()
+        insert_builder.execute.return_value = SimpleNamespace(data=[expected_row])
+        table_builder.insert.return_value = insert_builder
+        mock_client = Mock()
+        mock_client.table.return_value = table_builder
+
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            cache_repository.save_recognition_record(
+                item_label="Monitor",
+                recognition_source="vlm",
+                clip_embedding=[np.float32(0.1), np.float32(0.2)],
+                confidence=np.float64(0.93),
+                metadata={
+                    "signals": {
+                        "phash": {"distance": np.int64(3)},
+                        "clip_candidates": [
+                            {
+                                "id": np.int64(7),
+                                "similarity": np.float64(0.81),
+                            }
+                        ],
+                    }
+                },
+            )
+
+        insert_payload = table_builder.insert.call_args.args[0]
+        self.assertEqual(len(insert_payload["clip_embedding"]), 2)
+        self.assertAlmostEqual(insert_payload["clip_embedding"][0], 0.1, places=6)
+        self.assertAlmostEqual(insert_payload["clip_embedding"][1], 0.2, places=6)
+        self.assertAlmostEqual(insert_payload["confidence"], 0.93, places=6)
+        self.assertEqual(
+            insert_payload["metadata"]["signals"]["phash"]["distance"],
+            3,
+        )
+        self.assertEqual(
+            insert_payload["metadata"]["signals"]["clip_candidates"][0]["id"],
+            7,
+        )
+        self.assertAlmostEqual(
+            insert_payload["metadata"]["signals"]["clip_candidates"][0]["similarity"],
+            0.81,
+            places=6,
+        )
 
     def test_get_recognition_record_by_id_returns_row_or_none(self):
         expected_row = {"id": "record-123", "item_label": "Calculator"}

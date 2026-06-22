@@ -55,6 +55,36 @@ def _normalize_metadata_value(value: Any) -> Any:
         return value
 
 
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_value(nested_value)
+            for key, nested_value in value.items()
+        }
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+
+    item_method = getattr(value, "item", None)
+    if callable(item_method):
+        try:
+            return _json_safe_value(item_method())
+        except Exception:
+            pass
+
+    tolist_method = getattr(value, "tolist", None)
+    if callable(tolist_method):
+        try:
+            return _json_safe_value(tolist_method())
+        except Exception:
+            pass
+
+    return value
+
+
 def _normalize_cache_row(row: Any, error_prefix: str) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise RuntimeError(f"{error_prefix}: Supabase returned an unexpected row shape.")
@@ -83,7 +113,7 @@ def save_recognition_record(
     verified: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = {
+    payload = _json_safe_value({
         "phash": phash,
         "clip_embedding": clip_embedding,
         "item_label": item_label,
@@ -91,7 +121,7 @@ def save_recognition_record(
         "confidence": confidence,
         "verified": verified,
         "metadata": metadata or {},
-    }
+    })
 
     try:
         response = (
