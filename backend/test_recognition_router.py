@@ -924,6 +924,16 @@ class RecognitionRouterTests(unittest.TestCase):
         self.assertEqual(result["recognition_source"], "vlm")
         self.assertIn("recognition_details", result)
         self.assertEqual(result["recognition_details"]["raw_item_label"], "Ceramic mug")
+        self.assertEqual(result["recognition_details"]["likely_material"], "Ceramic")
+        self.assertEqual(result["recognition_details"]["broad_category"], "Drinkware")
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["item_label"],
+            "Ceramic mug",
+        )
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["material_category"],
+            "Ceramic",
+        )
         mock_save.assert_not_called()
 
 

@@ -13,6 +13,7 @@ try:
     from ..repositories import cache_repository
     from . import barcode_service
     from . import ocr_service
+    from .open_label_normalizer import normalize_open_recognition
     from . import phash_service
     from .product_lookup_service import (
         get_product_by_barcode,
@@ -25,6 +26,7 @@ except ImportError:
     from repositories import cache_repository
     from services import barcode_service
     from services import ocr_service
+    from services.open_label_normalizer import normalize_open_recognition
     from services import phash_service
     from services.product_lookup_service import (
         get_product_by_barcode,
@@ -240,9 +242,11 @@ def _attach_recognition_details(
     if not isinstance(recognition_details, dict):
         return classification
 
+    normalized_recognition_details = normalize_open_recognition(recognition_details)
+
     return {
         **classification,
-        "recognition_details": recognition_details,
+        "recognition_details": normalized_recognition_details,
     }
 
 
