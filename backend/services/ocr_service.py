@@ -89,8 +89,8 @@ def _is_tesseract_available(pytesseract_module: Any) -> bool:
         pytesseract_module.get_tesseract_version()
         logger.info("Tesseract runtime is available.")
         return True
-    except Exception as exc:
-        logger.info("Tesseract runtime is unavailable: %s", exc)
+    except (Exception, SystemExit) as exc:
+        logger.warning("Tesseract runtime is unavailable or invalid: %s", exc)
         return False
 
 
@@ -142,7 +142,7 @@ def _collect_text_segments(pytesseract_module: Any, image: Image.Image) -> list[
                 variant_image,
                 config=TESSERACT_CONFIG,
             )
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             logger.info("OCR variant failed. variant=%s error=%s", variant_name, exc)
             continue
 
@@ -255,6 +255,6 @@ def extract_ocr_text(image_bytes: bytes) -> dict[str, Any]:
             "keywords": keywords,
             "matched_label": matched_label,
         }
-    except Exception as exc:
-        logger.info("OCR extraction failed safely: %s", exc)
+    except (Exception, SystemExit) as exc:
+        logger.warning("OCR extraction failed safely: %s", exc)
         return _empty_ocr_payload()

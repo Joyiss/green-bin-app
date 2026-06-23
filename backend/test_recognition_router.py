@@ -876,6 +876,56 @@ class RecognitionRouterTests(unittest.TestCase):
         mock_clip.assert_called_once_with(expected_bytes)
         mock_vlm.assert_called_once()
 
+    def test_open_mode_vlm_details_are_preserved_while_guidance_stays_safe(self):
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={
+                    "top_predictions": [],
+                    "margin": 0.0,
+                    "recognition_details": {
+                        "status": "confident",
+                        "raw_item_label": "Ceramic mug",
+                        "likely_material": "Ceramic",
+                        "broad_category": "Drinkware",
+                        "candidates": [{"label": "Ceramic mug", "confidence": 0.93}],
+                        "visual_evidence": "Handle and cup opening are visible.",
+                        "raw_output": '{"status":"confident"}',
+                    },
+                },
+            ),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["recognition_source"], "vlm")
+        self.assertIn("recognition_details", result)
+        self.assertEqual(result["recognition_details"]["raw_item_label"], "Ceramic mug")
+        mock_save.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

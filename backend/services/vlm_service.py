@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -31,9 +32,12 @@ except ImportError:
     )
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+logger = logging.getLogger(__name__)
 
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
+DEFAULT_VLM_MAX_TOKENS = 60
+OPEN_VLM_MAX_TOKENS = 120
 
 CLOUDFLARE_API_BASE_URL = os.getenv(
     "CLOUDFLARE_API_BASE_URL",
@@ -45,7 +49,27 @@ CLOUDFLARE_AI_MODEL = os.getenv(
     "CLOUDFLARE_AI_MODEL",
     "@cf/meta/llama-3.2-11b-vision-instruct",
 )
+VLM_RECOGNITION_MODE = os.getenv("VLM_RECOGNITION_MODE", "constrained")
 DETECTION_PROMPT = build_material_selection_prompt()
+OPEN_DETECTION_PROMPT = (
+    "You are a visual recognition model for a disposal app.\n"
+    "Return exactly one JSON object and nothing else.\n"
+    "No explanation, markdown, or extra text.\n"
+    "Identify the single main visible item.\n"
+    "Ignore background objects unless they create genuine ambiguity.\n"
+    "Recognition only.\n"
+    "Do not provide disposal_action.\n"
+    "Do not provide disposal, recycling, compost, or trash instructions.\n"
+    "Do not provide steps.\n"
+    "Rules:\n"
+    '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
+    "- raw_item_label, likely_material, and broad_category should each be short plain-language strings, or \"\" if unknown.\n"
+    "- candidates must contain at most 3 objects.\n"
+    "- each candidate object must contain label and confidence.\n"
+    "- visual_evidence must be a short string, 12 words or fewer, or \"\" if unknown.\n"
+    "Return shape:\n"
+    '{"status":"confident","raw_item_label":"ceramic mug","likely_material":"ceramic","broad_category":"drinkware","candidates":[{"label":"ceramic mug","confidence":0.91},{"label":"coffee mug","confidence":0.73}],"visual_evidence":"Handle, cup opening, glossy rigid body."}\n'
+)
 BARCODE_AWARE_PROMPT_SUFFIX = (
     "\n\n"
     "Additional barcode fallback rule:\n"
@@ -54,6 +78,16 @@ BARCODE_AWARE_PROMPT_SUFFIX = (
     "- Do not infer the item label from barcode context alone when the object shape/material is unclear.\n"
 )
 BARCODE_AWARE_DETECTION_PROMPT = DETECTION_PROMPT + BARCODE_AWARE_PROMPT_SUFFIX
+OPEN_BARCODE_AWARE_PROMPT_SUFFIX = (
+    "\n\n"
+    "Additional barcode fallback rule:\n"
+    "- If the image mainly shows a barcode, nutrition label, ingredients panel, or other packaging text,\n"
+    "  and the physical item itself is not visually clear, return unknown instead of guessing from the text.\n"
+    "- Do not infer the visible item from barcode context alone when the object shape/material is unclear.\n"
+)
+OPEN_BARCODE_AWARE_DETECTION_PROMPT = (
+    OPEN_DETECTION_PROMPT + OPEN_BARCODE_AWARE_PROMPT_SUFFIX
+)
 DETECTION_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -79,11 +113,62 @@ DETECTION_RESPONSE_SCHEMA = {
     },
     "required": ["status", "primary_label", "candidate_labels"],
 }
+OPEN_DETECTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["confident", "uncertain", "unknown"],
+        },
+        "raw_item_label": {"type": "string"},
+        "likely_material": {"type": "string"},
+        "broad_category": {"type": "string"},
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "label": {"type": "string"},
+                    "confidence": {
+                        "type": ["number", "null"],
+                    },
+                },
+                "required": ["label", "confidence"],
+            },
+            "minItems": 0,
+            "maxItems": 3,
+        },
+        "visual_evidence": {"type": "string"},
+    },
+    "required": [
+        "status",
+        "raw_item_label",
+        "likely_material",
+        "broad_category",
+        "candidates",
+        "visual_evidence",
+    ],
+}
 VERIFICATION_RESPONSE_SCHEMA = DETECTION_RESPONSE_SCHEMA
 CONFIDENT_SCORE = 1.0
 CONFIDENT_SCORE_STEP = 0.08
 UNCERTAIN_TOP_SCORE = 0.58
 UNCERTAIN_SCORE_STEP = 0.02
+
+
+def normalize_vlm_recognition_mode(value: object) -> str:
+    if not isinstance(value, str):
+        return "constrained"
+
+    normalized_value = value.strip().casefold()
+    if normalized_value == "open":
+        return "open"
+    if normalized_value == "constrained":
+        return "constrained"
+
+    return "constrained"
 
 
 def _clean_generated_label(raw_text: str) -> str:
@@ -292,6 +377,51 @@ def _normalize_candidate_labels(candidate_labels: list[str]) -> list[str]:
     return _dedupe_preserve_order(normalized_candidates)
 
 
+def _clean_optional_field(value: object) -> str:
+    cleaned_value = _clean_generated_label(str(value or ""))
+    if cleaned_value.lower() in {"none", "null"}:
+        return ""
+    return cleaned_value
+
+
+def _clean_free_text_field(value: object) -> str:
+    text = str(value or "").replace("\\n", "\n").strip()
+    if text.lower() in {"none", "null"}:
+        return ""
+    return text
+
+
+def _coerce_candidate_confidence(value: object) -> float | None:
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe_open_candidates(
+    candidates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    deduped_candidates: list[dict[str, object]] = []
+    seen_labels: set[str] = set()
+
+    for candidate in candidates:
+        label = str(candidate.get("label", "")).strip()
+        if not label:
+            continue
+
+        label_key = label.casefold()
+        if label_key in seen_labels:
+            continue
+
+        seen_labels.add(label_key)
+        deduped_candidates.append(candidate)
+
+    return deduped_candidates
+
+
 def _rank_candidate_predictions(
     candidate_labels: list[str],
     top_score: float,
@@ -308,11 +438,13 @@ def _build_payload(
     image_base64: str,
     prompt_text: str,
     response_schema: dict[str, object] | None = None,
+    *,
+    max_tokens: int = DEFAULT_VLM_MAX_TOKENS,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "image": image_base64,
         "prompt": prompt_text,
-        "max_tokens": 60,
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
 
@@ -355,6 +487,31 @@ def _build_barcode_context_suffix(barcode_context: dict[str, object] | None) -> 
     )
 
 
+def _build_open_barcode_context_suffix(barcode_context: dict[str, object] | None) -> str:
+    if not isinstance(barcode_context, dict):
+        return ""
+
+    barcode_value = str(barcode_context.get("barcode_value") or "").strip() or "unknown"
+    product_name = str(barcode_context.get("product_name") or "").strip() or "unknown"
+    brand = str(barcode_context.get("brand") or "").strip() or "unknown"
+    category = str(barcode_context.get("category") or "").strip() or "unknown"
+    packaging = str(barcode_context.get("packaging") or "").strip() or "unknown"
+
+    return (
+        "\n\n"
+        "Barcode lookup found product metadata, but this metadata is only context.\n"
+        "Use the image first to recognize the visible physical item or packaging.\n"
+        "Do not infer the visible item from barcode text alone when the object shape/material is unclear.\n"
+        "If the visible item is unclear, return unknown.\n"
+        "Product context:\n"
+        f"- barcode_value: {barcode_value}\n"
+        f"- product_name: {product_name}\n"
+        f"- brand: {brand}\n"
+        f"- category: {category}\n"
+        f"- packaging: {packaging}\n"
+    )
+
+
 def _build_detection_prompt(
     *,
     barcode_aware: bool,
@@ -363,6 +520,19 @@ def _build_detection_prompt(
     prompt_text = BARCODE_AWARE_DETECTION_PROMPT if barcode_aware else DETECTION_PROMPT
     if barcode_aware:
         prompt_text += _build_barcode_context_suffix(barcode_context)
+    return prompt_text
+
+
+def _build_open_detection_prompt(
+    *,
+    barcode_aware: bool,
+    barcode_context: dict[str, object] | None = None,
+) -> str:
+    prompt_text = (
+        OPEN_BARCODE_AWARE_DETECTION_PROMPT if barcode_aware else OPEN_DETECTION_PROMPT
+    )
+    if barcode_aware:
+        prompt_text += _build_open_barcode_context_suffix(barcode_context)
     return prompt_text
 
 
@@ -432,6 +602,8 @@ def _call_vision_model(
     image_base64: str,
     prompt_text: str,
     response_schema: dict[str, object] | None = None,
+    *,
+    max_tokens: int = DEFAULT_VLM_MAX_TOKENS,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
@@ -440,7 +612,12 @@ def _call_vision_model(
     response = requests.post(
         _cloudflare_api_url(),
         headers=headers,
-        json=_build_payload(image_base64, prompt_text, response_schema=response_schema),
+        json=_build_payload(
+            image_base64,
+            prompt_text,
+            response_schema=response_schema,
+            max_tokens=max_tokens,
+        ),
         timeout=60,
     )
     response.raise_for_status()
@@ -497,9 +674,7 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
         status = "unknown"
 
     if status == "uncertain" and len(normalized_candidates) < 2:
-        if normalized_primary:
-            status = "confident"
-        else:
+        if not normalized_primary:
             status = "unknown"
 
     return {
@@ -510,11 +685,188 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
     }
 
 
+def _unknown_open_detection_result(
+    raw_output: str = "",
+    *,
+    error: str | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "status": "unknown",
+        "raw_item_label": "",
+        "likely_material": "",
+        "broad_category": "",
+        "candidates": [],
+        "visual_evidence": "",
+        "raw_output": raw_output,
+    }
+    if error is not None:
+        result["error"] = error
+    return result
+
+
+def _extract_partial_open_detection_fields(raw_text: str) -> dict[str, object]:
+    if not isinstance(raw_text, str):
+        return {}
+
+    parsed: dict[str, object] = {}
+
+    status_match = re.search(
+        r'"status"\s*:\s*"(confident|uncertain|unknown)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if status_match:
+        parsed["status"] = status_match.group(1).strip().lower()
+
+    raw_item_label_match = re.search(
+        r'"raw_item_label"\s*:\s*"([^"]*)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if raw_item_label_match:
+        parsed["raw_item_label"] = _clean_optional_field(raw_item_label_match.group(1))
+
+    likely_material_match = re.search(
+        r'"likely_material"\s*:\s*"([^"]*)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if likely_material_match:
+        parsed["likely_material"] = _clean_free_text_field(
+            likely_material_match.group(1)
+        )
+
+    broad_category_match = re.search(
+        r'"broad_category"\s*:\s*"([^"]*)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if broad_category_match:
+        parsed["broad_category"] = _clean_free_text_field(
+            broad_category_match.group(1)
+        )
+
+    visual_evidence_match = re.search(
+        r'"visual_evidence"\s*:\s*"([^"]*)"',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if visual_evidence_match:
+        parsed["visual_evidence"] = _clean_free_text_field(
+            visual_evidence_match.group(1)
+        )
+
+    candidate_matches = re.finditer(
+        r'\{\s*"label"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*(null|-?\d+(?:\.\d+)?)',
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    candidates: list[dict[str, object]] = []
+    for match in candidate_matches:
+        label = _clean_optional_field(match.group(1))
+        if not label:
+            continue
+
+        confidence_value = match.group(2)
+        confidence: float | None = None
+        if confidence_value.strip().lower() != "null":
+            confidence = _coerce_candidate_confidence(confidence_value)
+
+        candidates.append({"label": label, "confidence": confidence})
+        if len(candidates) == 3:
+            break
+
+    if candidates:
+        parsed["candidates"] = _dedupe_open_candidates(candidates)
+
+    return parsed
+
+
+def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
+    parse_mode = "exact"
+    try:
+        parsed_output = _extract_json_object(raw_output)
+    except ValueError:
+        parsed_output = _extract_partial_open_detection_fields(raw_output)
+        if not parsed_output:
+            logger.warning("Open VLM JSON parse failed; returning unknown.")
+            return _unknown_open_detection_result(raw_output)
+        parse_mode = "recovered"
+
+    status = str(parsed_output.get("status", "")).strip().lower()
+    if status not in {"confident", "uncertain", "unknown"}:
+        status = "unknown"
+
+    raw_item_label = _clean_optional_field(parsed_output.get("raw_item_label", ""))
+    likely_material = _clean_free_text_field(parsed_output.get("likely_material", ""))
+    broad_category = _clean_free_text_field(parsed_output.get("broad_category", ""))
+
+    raw_candidates = parsed_output.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        raw_candidates = []
+
+    parsed_candidates: list[dict[str, object]] = []
+    for raw_candidate in raw_candidates[:3]:
+        if not isinstance(raw_candidate, dict):
+            continue
+
+        label = _clean_optional_field(raw_candidate.get("label", ""))
+        if not label:
+            continue
+
+        parsed_candidates.append(
+            {
+                "label": label,
+                "confidence": _coerce_candidate_confidence(
+                    raw_candidate.get("confidence")
+                ),
+            }
+        )
+
+    visual_evidence = _clean_free_text_field(parsed_output.get("visual_evidence", ""))
+
+    if parse_mode == "recovered":
+        recovered_has_signal = any(
+            (
+                raw_item_label,
+                likely_material,
+                broad_category,
+                parsed_candidates,
+            )
+        )
+        if not recovered_has_signal:
+            logger.warning("Open VLM JSON recovery failed; returning unknown.")
+            return _unknown_open_detection_result(raw_output)
+        logger.info(
+            "Open VLM JSON parse recovered. status=%s raw_item_label=%s candidate_count=%s",
+            status,
+            raw_item_label,
+            len(parsed_candidates),
+        )
+    else:
+        logger.info(
+            "Open VLM JSON parse exact. status=%s raw_item_label=%s candidate_count=%s",
+            status,
+            raw_item_label,
+            len(parsed_candidates),
+        )
+
+    return {
+        "status": status,
+        "raw_item_label": raw_item_label,
+        "likely_material": likely_material,
+        "broad_category": broad_category,
+        "candidates": _dedupe_open_candidates(parsed_candidates),
+        "visual_evidence": visual_evidence,
+        "raw_output": raw_output,
+    }
+
+
 def _maybe_verify_confident_result(
     image_base64: str,
     result: dict[str, object],
 ) -> dict[str, object]:
-    if result.get("status") != "uncertain":
+    if result.get("status") != "confident":
         return result
 
     primary_label = (result.get("primary_label") or "").strip()
@@ -566,7 +918,7 @@ def _maybe_verify_confident_result(
     return result
 
 
-def detect_object(
+def _detect_object_constrained(
     image: Image.Image,
     *,
     barcode_aware: bool = False,
@@ -622,8 +974,7 @@ def detect_object(
             if fallback_result.get("primary_label") or fallback_result.get("candidate_labels"):
                 result = fallback_result
 
-        verified_result = result
-        result = verified_result
+        result = _maybe_verify_confident_result(image_base64, result)
 
         if result.get("candidate_labels") and result.get("primary_label"):
             if result["primary_label"] not in result["candidate_labels"]:
@@ -643,9 +994,82 @@ def detect_object(
     return result
 
 
+def _detect_object_open(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    try:
+        if not CLOUDFLARE_ACCOUNT_ID:
+            raise RuntimeError("CLOUDFLARE_ACCOUNT_ID is not set in backend/.env.")
+        if not CLOUDFLARE_API_TOKEN:
+            raise RuntimeError("CLOUDFLARE_API_TOKEN is not set in backend/.env.")
+
+        rgb_image = image.convert("RGB")
+        buffer = io.BytesIO()
+        rgb_image.save(buffer, format="JPEG", quality=75)
+
+        image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        raw_output = _call_vision_model(
+            image_base64,
+            _build_open_detection_prompt(
+                barcode_aware=barcode_aware,
+                barcode_context=barcode_context,
+            ),
+            response_schema=OPEN_DETECTION_RESPONSE_SCHEMA,
+            max_tokens=OPEN_VLM_MAX_TOKENS,
+        )
+        print(f"Cloudflare Vision open raw output: {raw_output!r}")
+
+        result = _parse_open_detection_result(raw_output)
+    except Exception as exc:
+        print(f"Cloudflare Workers AI error: {exc}")
+        return _unknown_open_detection_result("", error=str(exc))
+
+    print(f"Cloudflare Vision open parsed result: {result!r}")
+    return result
+
+
+def detect_object(
+    image: Image.Image,
+    *,
+    barcode_aware: bool = False,
+    barcode_context: dict[str, object] | None = None,
+    recognition_mode: str | None = None,
+) -> dict[str, object]:
+    mode = normalize_vlm_recognition_mode(
+        VLM_RECOGNITION_MODE if recognition_mode is None else recognition_mode
+    )
+    if mode == "open":
+        return _detect_object_open(
+            image,
+            barcode_aware=barcode_aware,
+            barcode_context=barcode_context,
+        )
+
+    return _detect_object_constrained(
+        image,
+        barcode_aware=barcode_aware,
+        barcode_context=barcode_context,
+    )
+
+
 def build_prediction_result(
     detection_result: dict[str, object],
 ) -> dict[str, object]:
+    if "raw_item_label" in detection_result:
+        return {
+            "top_predictions": [],
+            "scores": [0.0 for _ in MATERIAL_LABELS],
+            "top1_score": 0.0,
+            "top2_score": 0.0,
+            "margin": 0.0,
+            "detected_label": "",
+            "recognition_details": detection_result,
+        }
+
     detection_status = str(detection_result.get("status", "unknown"))
     primary_label = str(detection_result.get("primary_label", "")).strip()
     candidate_labels = detection_result.get("candidate_labels", [])
@@ -749,10 +1173,12 @@ def get_top_predictions(
     *,
     barcode_aware: bool = False,
     barcode_context: dict[str, object] | None = None,
+    recognition_mode: str | None = None,
 ) -> dict[str, object]:
     detection_result = detect_object(
         image,
         barcode_aware=barcode_aware,
         barcode_context=barcode_context,
+        recognition_mode=recognition_mode,
     )
     return build_prediction_result(detection_result)

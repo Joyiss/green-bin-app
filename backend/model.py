@@ -17,13 +17,17 @@ CLOUDFLARE_API_BASE_URL = vlm_service.CLOUDFLARE_API_BASE_URL
 CLOUDFLARE_ACCOUNT_ID = vlm_service.CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_API_TOKEN = vlm_service.CLOUDFLARE_API_TOKEN
 CLOUDFLARE_AI_MODEL = vlm_service.CLOUDFLARE_AI_MODEL
+VLM_RECOGNITION_MODE = vlm_service.VLM_RECOGNITION_MODE
 DETECTION_PROMPT = vlm_service.DETECTION_PROMPT
+OPEN_DETECTION_PROMPT = vlm_service.OPEN_DETECTION_PROMPT
 DETECTION_RESPONSE_SCHEMA = vlm_service.DETECTION_RESPONSE_SCHEMA
+OPEN_DETECTION_RESPONSE_SCHEMA = vlm_service.OPEN_DETECTION_RESPONSE_SCHEMA
 VERIFICATION_RESPONSE_SCHEMA = vlm_service.VERIFICATION_RESPONSE_SCHEMA
 CONFIDENT_SCORE = vlm_service.CONFIDENT_SCORE
 CONFIDENT_SCORE_STEP = vlm_service.CONFIDENT_SCORE_STEP
 UNCERTAIN_TOP_SCORE = vlm_service.UNCERTAIN_TOP_SCORE
 UNCERTAIN_SCORE_STEP = vlm_service.UNCERTAIN_SCORE_STEP
+normalize_vlm_recognition_mode = vlm_service.normalize_vlm_recognition_mode
 
 
 def _sync_service_config() -> None:
@@ -31,8 +35,11 @@ def _sync_service_config() -> None:
     vlm_service.CLOUDFLARE_ACCOUNT_ID = CLOUDFLARE_ACCOUNT_ID
     vlm_service.CLOUDFLARE_API_TOKEN = CLOUDFLARE_API_TOKEN
     vlm_service.CLOUDFLARE_AI_MODEL = CLOUDFLARE_AI_MODEL
+    vlm_service.VLM_RECOGNITION_MODE = VLM_RECOGNITION_MODE
     vlm_service.DETECTION_PROMPT = DETECTION_PROMPT
+    vlm_service.OPEN_DETECTION_PROMPT = OPEN_DETECTION_PROMPT
     vlm_service.DETECTION_RESPONSE_SCHEMA = DETECTION_RESPONSE_SCHEMA
+    vlm_service.OPEN_DETECTION_RESPONSE_SCHEMA = OPEN_DETECTION_RESPONSE_SCHEMA
     vlm_service.VERIFICATION_RESPONSE_SCHEMA = VERIFICATION_RESPONSE_SCHEMA
     vlm_service.CONFIDENT_SCORE = CONFIDENT_SCORE
     vlm_service.CONFIDENT_SCORE_STEP = CONFIDENT_SCORE_STEP
@@ -45,12 +52,14 @@ def detect_object(
     *,
     barcode_aware: bool = False,
     barcode_context: dict[str, object] | None = None,
+    recognition_mode: str | None = None,
 ) -> dict[str, object]:
     _sync_service_config()
     return vlm_service.detect_object(
         image,
         barcode_aware=barcode_aware,
         barcode_context=barcode_context,
+        recognition_mode=recognition_mode,
     )
 
 
@@ -59,11 +68,13 @@ def get_top_predictions(
     *,
     barcode_aware: bool = False,
     barcode_context: dict[str, object] | None = None,
+    recognition_mode: str | None = None,
 ) -> dict[str, object]:
     detection_result = detect_object(
         image,
         barcode_aware=barcode_aware,
         barcode_context=barcode_context,
+        recognition_mode=recognition_mode,
     )
     return vlm_service.build_prediction_result(detection_result)
 
@@ -75,13 +86,17 @@ __all__ = [
     "CLOUDFLARE_ACCOUNT_ID",
     "CLOUDFLARE_API_TOKEN",
     "CLOUDFLARE_AI_MODEL",
+    "VLM_RECOGNITION_MODE",
     "DETECTION_PROMPT",
+    "OPEN_DETECTION_PROMPT",
     "DETECTION_RESPONSE_SCHEMA",
+    "OPEN_DETECTION_RESPONSE_SCHEMA",
     "VERIFICATION_RESPONSE_SCHEMA",
     "CONFIDENT_SCORE",
     "CONFIDENT_SCORE_STEP",
     "UNCERTAIN_TOP_SCORE",
     "UNCERTAIN_SCORE_STEP",
+    "normalize_vlm_recognition_mode",
     "requests",
     "LABEL_TO_CATEGORY",
     "MATERIAL_LABELS",

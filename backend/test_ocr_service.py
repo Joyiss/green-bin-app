@@ -42,6 +42,27 @@ class OcrServiceTests(unittest.TestCase):
             },
         )
 
+    def test_extract_ocr_text_returns_empty_payload_when_version_check_raises_system_exit(self):
+        fake_runtime = SimpleNamespace(
+            image_to_string=lambda image, config=None: "battery",
+            get_tesseract_version=lambda: (_ for _ in ()).throw(
+                SystemExit('Invalid tesseract version: ""')
+            ),
+            pytesseract=SimpleNamespace(tesseract_cmd="tesseract"),
+        )
+
+        with patch("services.ocr_service._load_pytesseract", return_value=fake_runtime):
+            result = ocr_service.extract_ocr_text(_make_image_bytes())
+
+        self.assertEqual(
+            result,
+            {
+                "text": "",
+                "keywords": [],
+                "matched_label": None,
+            },
+        )
+
     def test_strong_battery_text_maps_to_battery(self):
         fake_runtime = _fake_pytesseract_with_outputs(
             "Duracell alkaline battery",

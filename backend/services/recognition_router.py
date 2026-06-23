@@ -232,6 +232,20 @@ def _with_recognition_metadata(
     }
 
 
+def _attach_recognition_details(
+    classification: dict[str, Any],
+    prediction_result: dict[str, Any],
+) -> dict[str, Any]:
+    recognition_details = prediction_result.get("recognition_details")
+    if not isinstance(recognition_details, dict):
+        return classification
+
+    return {
+        **classification,
+        "recognition_details": recognition_details,
+    }
+
+
 def _coerce_optional_float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -881,7 +895,7 @@ async def recognize_item(
                 barcode_context=barcode_context,
             )
             classification = _with_recognition_metadata(
-                classify(predictions),
+                _attach_recognition_details(classify(predictions), predictions),
                 cache_hit=False,
                 recognition_source="vlm",
             )
@@ -1128,7 +1142,7 @@ async def recognize_item(
         logger.info("Proceeding to VLM inference after pHash, barcode, OCR, and CLIP checks.")
         predictions = vlm_service.get_top_predictions(image)
         classification = _with_recognition_metadata(
-            classify(predictions),
+            _attach_recognition_details(classify(predictions), predictions),
             cache_hit=False,
             recognition_source="vlm",
         )
