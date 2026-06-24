@@ -17,6 +17,7 @@ UNKNOWN_VALUE = "Unknown"
 _MATERIAL_CATEGORIES = {
     "plastic": "Plastic",
     "metal": "Metal",
+    "mixed material": "Mixed Material",
     "ceramic": "Ceramic",
     "glass": "Glass",
     "paper": "Paper",
@@ -132,6 +133,17 @@ _GENERIC_SHAPE_TERMS = {
 
 _METAL_HINT_TERMS = ("stainless steel", "stainless", "steel", "aluminum", "aluminium", "metal")
 _PLASTIC_HINT_TERMS = ("plastic", "pet", "pete")
+_GLASS_HINT_TERMS = ("glass",)
+_GENERIC_BOTTLE_TERMS = (
+    "water bottle",
+    "bottle",
+    "reusable bottle",
+    "insulated bottle",
+    "thermos",
+    "thermoflask",
+    "flask",
+)
+_PEN_TERMS = ("pen",)
 
 
 def _clean_text(value: Any) -> str:
@@ -250,48 +262,157 @@ def _map_material_hint(value: str) -> str:
     return UNKNOWN_VALUE
 
 
-def _infer_material_category(
+def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _candidate_has_term_evidence(
+    candidates: Any,
+    terms: tuple[str, ...],
+    *,
+    required_terms: tuple[str, ...] = (),
+) -> bool:
+    if not isinstance(candidates, list):
+        return False
+
+    for candidate in candidates[:3]:
+        if not isinstance(candidate, dict):
+            continue
+
+        candidate_label = _clean_text(candidate.get("label"))
+        if not candidate_label:
+            continue
+        if required_terms and not all(term in candidate_label for term in required_terms):
+            continue
+        if not _contains_any_term(candidate_label, terms):
+            continue
+
+        confidence = candidate.get("confidence")
+        if confidence is None:
+            continue
+        try:
+            if float(confidence) < 0.85:
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        return True
+
+    return False
+
+
+def _is_generic_bottle_like_label(item_label: str, normalized_text: str) -> bool:
+    normalized_item_label = _clean_text(item_label)
+    return (
+        normalized_item_label == "water bottle"
+        or _contains_any_term(normalized_text, _GENERIC_BOTTLE_TERMS)
+    )
+
+
+def _is_pen_like_label(item_label: str, normalized_text: str) -> bool:
+    normalized_item_label = _clean_text(item_label)
+    return normalized_item_label == "pen" or _contains_any_term(normalized_text, _PEN_TERMS)
+
+
+def _infer_material_details(
     item_label: str,
     normalized_text: str,
     likely_material: str,
+    visual_evidence: str,
+    candidates: Any,
     condition_flags: list[str],
     special_flags: list[str],
-) -> str:
+) -> tuple[str, str, str]:
     hinted_material = _map_material_hint(likely_material)
+    normalized_visual_evidence = _clean_text(visual_evidence)
+
+    raw_has_plastic = _contains_any_term(normalized_text, _PLASTIC_HINT_TERMS)
+    visual_has_plastic = _contains_any_term(normalized_visual_evidence, _PLASTIC_HINT_TERMS)
+    candidate_has_plastic = _candidate_has_term_evidence(candidates, _PLASTIC_HINT_TERMS)
+
+    raw_has_metal = _contains_any_term(normalized_text, _METAL_HINT_TERMS)
+    visual_has_metal = _contains_any_term(normalized_visual_evidence, _METAL_HINT_TERMS)
+    candidate_has_metal = _candidate_has_term_evidence(candidates, _METAL_HINT_TERMS)
+
+    raw_has_glass = _contains_any_term(normalized_text, _GLASS_HINT_TERMS)
+    visual_has_glass = _contains_any_term(normalized_visual_evidence, _GLASS_HINT_TERMS)
+    candidate_has_glass = _candidate_has_term_evidence(candidates, _GLASS_HINT_TERMS)
 
     if item_label == "Pizza box" and "food_soiled" in condition_flags:
-        return _MATERIAL_CATEGORIES["food-soiled cardboard"]
-    if item_label == "Water bottle":
-        if any(term in normalized_text for term in _METAL_HINT_TERMS):
-            return _MATERIAL_CATEGORIES["metal"]
-        if any(term in normalized_text for term in _PLASTIC_HINT_TERMS):
-            return _MATERIAL_CATEGORIES["plastic"]
-        if hinted_material in {"Metal", "Plastic", "Glass"}:
-            return hinted_material
-        return UNKNOWN_VALUE
-    if item_label == "Yogurt cup":
+        return _MATERIAL_CATEGORIES["food-soiled cardboard"], "high", "keyword"
+
+    if _is_generic_bottle_like_label(item_label, normalized_text):
+        if raw_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
+        if raw_has_metal:
+            return _MATERIAL_CATEGORIES["metal"], "high", "keyword"
+        if visual_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "medium", "visual_evidence"
+        if visual_has_metal or candidate_has_metal:
+            return _MATERIAL_CATEGORIES["metal"], "medium", "visual_evidence"
+        if hinted_material == "Metal":
+            return _MATERIAL_CATEGORIES["metal"], "low", "vlm_hint"
+        if candidate_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "medium", "keyword"
+        if raw_has_glass:
+            return _MATERIAL_CATEGORIES["glass"], "high", "keyword"
+        if visual_has_glass or candidate_has_glass:
+            return _MATERIAL_CATEGORIES["glass"], "medium", "visual_evidence"
         if hinted_material == "Plastic":
-            return hinted_material
-        if any(term in normalized_text for term in _PLASTIC_HINT_TERMS):
-            return _MATERIAL_CATEGORIES["plastic"]
-        return _MATERIAL_CATEGORIES["plastic"]
+            return _MATERIAL_CATEGORIES["mixed material"], "low", "vlm_hint"
+        return _MATERIAL_CATEGORIES["mixed material"], "low", "fallback"
+
+    if _is_pen_like_label(item_label, normalized_text):
+        if raw_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
+        if visual_has_plastic or candidate_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "medium", "visual_evidence"
+        if raw_has_metal:
+            return _MATERIAL_CATEGORIES["metal"], "high", "keyword"
+        if visual_has_metal or candidate_has_metal:
+            return _MATERIAL_CATEGORIES["metal"], "medium", "visual_evidence"
+        return _MATERIAL_CATEGORIES["mixed material"], "low", "fallback"
+
+    if item_label == "Yogurt cup":
+        if raw_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
+        if visual_has_plastic or candidate_has_plastic:
+            return _MATERIAL_CATEGORIES["plastic"], "medium", "visual_evidence"
+        if hinted_material == "Plastic":
+            return _MATERIAL_CATEGORIES["plastic"], "low", "vlm_hint"
+        return _MATERIAL_CATEGORIES["plastic"], "medium", "fallback"
     if item_label == "Ceramic mug":
-        return _MATERIAL_CATEGORIES["ceramic"]
+        if _clean_text(normalized_text) in _EXACT_LABEL_ALIASES:
+            return _MATERIAL_CATEGORIES["ceramic"], "high", "alias"
+        return _MATERIAL_CATEGORIES["ceramic"], "high", "keyword"
     if item_label == "Mug" and "ceramic" in normalized_text:
-        return _MATERIAL_CATEGORIES["ceramic"]
+        return _MATERIAL_CATEGORIES["ceramic"], "high", "keyword"
     if item_label == "Wooden picture frame" or "wood" in normalized_text:
-        return _MATERIAL_CATEGORIES["wood"]
+        return _MATERIAL_CATEGORIES["wood"], "high", "keyword"
     if "battery" in special_flags:
-        return _MATERIAL_CATEGORIES["battery"]
+        return _MATERIAL_CATEGORIES["battery"], "high", "keyword"
     if "hazardous" in special_flags:
-        return _MATERIAL_CATEGORIES["hazardous"]
+        return _MATERIAL_CATEGORIES["hazardous"], "high", "keyword"
     if "electronics" in special_flags:
-        return _MATERIAL_CATEGORIES["electronics"]
+        return _MATERIAL_CATEGORIES["electronics"], "high", "keyword"
+
+    if raw_has_plastic:
+        return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
+    if visual_has_plastic or candidate_has_plastic:
+        return _MATERIAL_CATEGORIES["plastic"], "medium", "visual_evidence"
+    if raw_has_metal:
+        return _MATERIAL_CATEGORIES["metal"], "high", "keyword"
+    if visual_has_metal or candidate_has_metal:
+        return _MATERIAL_CATEGORIES["metal"], "medium", "visual_evidence"
+    if raw_has_glass:
+        return _MATERIAL_CATEGORIES["glass"], "high", "keyword"
+    if visual_has_glass or candidate_has_glass:
+        return _MATERIAL_CATEGORIES["glass"], "medium", "visual_evidence"
 
     if hinted_material != UNKNOWN_VALUE:
-        return hinted_material
+        return hinted_material, "low", "vlm_hint"
 
-    return UNKNOWN_VALUE
+    return UNKNOWN_VALUE, "low", "fallback"
 
 
 def _map_broad_category_hint(value: str) -> str:
@@ -422,6 +543,8 @@ def _supported_label_matches_material(
         return not any(term in normalized_supported_label for term in ("plastic",))
     if material_category == "Plastic":
         return "plastic" in normalized_supported_label or "yogurt container" in normalized_supported_label
+    if material_category in {"Mixed Material", "Unknown"}:
+        return "plastic" not in normalized_supported_label
     return True
 
 
@@ -430,19 +553,33 @@ def _resolve_supported_label_from_primary(
     raw_item_label: str,
     likely_material: str,
     material_category: str,
+    material_confidence: str,
+    material_source: str,
+    visual_evidence: str,
 ) -> str | None:
     if item_label in {"", UNKNOWN_VALUE}:
         return None
 
     normalized_raw_item = _clean_text(raw_item_label)
     normalized_likely_material = _clean_text(likely_material)
+    normalized_visual_evidence = _clean_text(visual_evidence)
 
     if item_label == "Water bottle":
         raw_has_plastic = any(term in normalized_raw_item for term in _PLASTIC_HINT_TERMS)
-        material_has_plastic = any(
+        visual_has_plastic = any(
+            term in normalized_visual_evidence for term in _PLASTIC_HINT_TERMS
+        )
+        likely_material_has_plastic = any(
             term in normalized_likely_material for term in _PLASTIC_HINT_TERMS
         )
-        if material_category != "Plastic" or not (raw_has_plastic or material_has_plastic):
+        plastic_evidence_is_strong = raw_has_plastic or visual_has_plastic
+        if material_category != "Plastic" or not plastic_evidence_is_strong:
+            return None
+        if material_source == "vlm_hint" and likely_material_has_plastic:
+            return None
+
+    if item_label == "Pen" and material_category == "Plastic":
+        if material_confidence == "low" or material_source == "vlm_hint":
             return None
 
     resolved_label = resolve_material_label(item_label)
@@ -461,14 +598,17 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     likely_material = recognition_details.get("likely_material", "")
     raw_broad_category = recognition_details.get("broad_category", "")
     candidates = recognition_details.get("candidates", [])
+    visual_evidence = recognition_details.get("visual_evidence", "")
 
     normalized_text = _clean_text(raw_item_label)
     condition_flags, special_flags = _extract_flags(normalized_text)
     item_label, normalization_source = _normalize_item_label(normalized_text)
-    material_category = _infer_material_category(
+    material_category, material_confidence, material_source = _infer_material_details(
         item_label,
         normalized_text,
         str(likely_material or ""),
+        str(visual_evidence or ""),
+        candidates,
         condition_flags,
         special_flags,
     )
@@ -485,6 +625,9 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
             str(raw_item_label or ""),
             str(likely_material or ""),
             material_category,
+            material_confidence,
+            material_source,
+            str(visual_evidence or ""),
         )
     if matched_supported_label is None:
         matched_supported_label = _resolve_supported_label_from_candidates(
@@ -496,6 +639,8 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     normalized_payload = {
         "item_label": item_label,
         "material_category": material_category,
+        "material_confidence": material_confidence,
+        "material_source": material_source,
         "broad_category": broad_category,
         "condition_flags": condition_flags,
         "special_handling_flags": special_flags,
@@ -509,10 +654,12 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     }
 
     logger.info(
-        "Open recognition normalized. raw_label=%s normalized_item=%s material_category=%s broad_category=%s condition_flags=%s special_flags=%s matched_supported_label=%s",
+        "Open recognition normalized. raw_label=%s normalized_item=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s matched_supported_label=%s",
         raw_item_label,
         normalized_payload["item_label"],
         normalized_payload["material_category"],
+        normalized_payload["material_confidence"],
+        normalized_payload["material_source"],
         normalized_payload["broad_category"],
         normalized_payload["condition_flags"],
         normalized_payload["special_handling_flags"],
