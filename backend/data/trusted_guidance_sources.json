@@ -1,0 +1,156 @@
+[
+    {
+    "id": "epa_national_curbside_basics",
+    "title": "EPA National Curbside Recycling Basics",
+    "source_name": "EPA Recycling Basics",
+    "source_url": "[https://www.epa.gov/recycle](https://www.epa.gov/recycle)",
+    "source_type": "federal_government",
+    "location_scope": "national",
+    "generalizable": true,
+    "requires_location_check": true,
+    "applies_to": {
+    "item_labels": ["plastic bottles", "glass jars", "aluminum cans", "steel cans", "cardboard boxes", "newspapers", "magazines", "mail"],
+    "materials": ["plastic", "glass", "metal", "paper", "cardboard"],
+    "categories": ["plastic containers", "glass", "metal cans", "paper/cardboard"],
+    "condition_flags": ["rinse_before_recycling", "check_local_rules"]
+    },
+    "content": "The EPA provides national guidance stating that basic curbside recyclables generally include specific paper products alongside rigid plastic, metal, and glass items. According to these federal guidelines, paper materials should be empty, clean, and dry, while plastic, metal, and glass items should be empty and rinsed clean of food debris before being placed in a recycling container. Cardboard boxes should be flattened. Because recycling systems in the United States are organized and managed at the local municipal or county level, local regulations dictate exactly which material types and plastic resin codes are accepted.",
+    "disposal_actions_supported": ["Recycle", "Check local guidance"],
+    "warnings": ["Placing unaccepted, dirty, or non-recyclable items into a curbside bin can contaminate clean loads and potentially damage sorting facility machinery."],
+    "limitations": ["Provides general federal recommendations only; does not override local municipal ordinances, specific haulers' rules, or regional sorting capabilities."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "epa_national_food_soiled_cardboard",
+    "title": "EPA Food-Soiled Paper and Cardboard Handling",
+    "source_name": "EPA Recycling Basics",
+    "source_url": "[https://www.epa.gov/recycle](https://www.epa.gov/recycle)",
+    "source_type": "federal_government",
+    "location_scope": "national",
+    "generalizable": true,
+    "requires_location_check": true,
+    "applies_to": {
+    "item_labels": ["pizza boxes", "paper takeout containers", "cardboard takeout containers", "paper egg cartons"],
+    "materials": ["cardboard", "paper"],
+    "categories": ["food-soiled cardboard", "paper/cardboard"],
+    "condition_flags": ["check_local_rules"]
+    },
+    "content": "National guidelines from the EPA indicate that pizza boxes may be recycled in standard paper streams provided they are completely emptied of food scraps and flattened, even if some residual grease remains. For other paper or cardboard takeout containers, the EPA notes that items should be cleared of food residues. If containers remain heavily contaminated with organic waste and cannot be cleaned, they are typically excluded from traditional dry recycling streams. The feasibility of routing wet or heavily food-soiled paper products to organic composting operations depends entirely on the availability of specialized local infrastructure.",
+    "disposal_actions_supported": ["Recycle", "Compost", "Trash", "Check local guidance"],
+    "warnings": ["Heavily soiled paper materials that cannot be cleared of grease or food residues should be excluded from dry paper recycling streams to prevent batch contamination."],
+    "limitations": ["Composting parameters and localized acceptance policies for food-soiled items vary significantly across different municipal jurisdictions."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "call2recycle_national_batteries",
+    "title": "Call2Recycle Consumer Battery Drop-off",
+    "source_name": "Call2Recycle",
+    "source_url": "[https://www.call2recycle.org/](https://www.call2recycle.org/)",
+    "source_type": "stewardship_program",
+    "location_scope": "national",
+    "generalizable": true,
+    "requires_location_check": true,
+    "applies_to": {
+    "item_labels": ["lithium-ion batteries", "nickel cadmium batteries", "nimh batteries", "small sealed lead acid batteries", "cellphones", "power tool batteries"],
+    "materials": ["lithium-ion", "nickel-cadmium", "lead-acid", "metal"],
+    "categories": ["batteries", "electronics/e-waste"],
+    "condition_flags": ["requires_dropoff", "hazardous"]
+    },
+    "content": "Call2Recycle operates a national product stewardship program for collecting consumer cellphones and rechargeable batteries weighing up to 11 pounds per battery, including Lithium-ion (Li-ion), Nickel Cadmium (Ni-Cd), Nickel Metal Hydride (NiMH), and Small Sealed Lead Acid (SSLA). For safe handling and transit, terminals must be protected prior to drop-off by bagging each battery individually in a clear plastic bag or by taping the positive terminals with clear packing, electrical, or duct tape. Damaged, defective, or recalled (DDR) batteries that exhibit swelling, leaks, or punctures require specialized handling and must not be placed in standard retail collection bins.",
+    "disposal_actions_supported": ["Drop-off"],
+    "warnings": ["Rechargeable batteries can retain residual energy and present a fire or short-circuit hazard; they must not be discarded in standard residential trash bins or curbside recycling containers."],
+    "limitations": ["Program applies specifically to consumer electronics and rechargeable batteries under 11 lbs; single-use alkaline batteries are generally excluded unless state-specific or partner-specific rules apply."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "paintcare_program_states_paint",
+    "title": "PaintCare Architectural Paint Drop-off",
+    "source_name": "PaintCare",
+    "source_url": "[https://www.paintcare.org/](https://www.paintcare.org/)",
+    "source_type": "stewardship_program",
+    "location_scope": "program_states_only",
+    "generalizable": false,
+    "requires_location_check": true,
+    "applies_to": {
+    "item_labels": ["latex paint", "oil-based paint", "interior paint", "exterior paint", "wood stains", "primers", "sealers", "clear varnishes", "lacquers", "shellacs"],
+    "materials": ["paint", "chemical liquids"],
+    "categories": ["paint/household hazardous waste"],
+    "condition_flags": ["requires_dropoff", "hazardous"]
+    },
+    "content": "PaintCare administers legislatively mandated product stewardship programs that establish designated drop-off sites for leftover residential architectural coatings in containers of 5 gallons or less. Accepted products include water-based latex, acrylic, oil-based, and alkyd paints, primers, sealers, undercoats, wood stains, and clear single-component varnishes or lacquers. Containers brought to collection sites must be securely sealed, leak-free, and have their original manufacturer label intact. Household drop-offs are accepted for both latex and oil-based varieties, while commercial volumes may face regulatory limits depending on specific state-level waste exemptions.",
+    "disposal_actions_supported": ["Drop-off"],
+    "warnings": ["Containers that are leaking, open, completely empty, or missing original labeling cannot be accepted at PaintCare sites. Do not dispose of liquid paint in domestic drains."],
+    "limitations": ["Only operational within participating states that have enacted specific paint stewardship laws. Does not accept solvents, thinners, mineral spirits, or aerosol spray cans."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "earth911_directory_guidance",
+    "title": "Earth911 Generalized Drop-off Material Directory",
+    "source_name": "Earth911 Recycling Directory",
+    "source_url": "[https://search.earth911.com/](https://search.earth911.com/)",
+    "source_type": "dropoff_directory",
+    "location_scope": "directory: user_location_required",
+    "generalizable": true,
+    "requires_location_check": true,
+    "applies_to": {
+    "item_labels": ["computers", "fluorescent bulbs", "used motor oil", "spray paint cans", "mattresses", "old clothes", "ceramic dishes", "scrap lumber", "mixed-material appliances"],
+    "materials": ["electronic", "hazardous_waste", "petroleum", "textile", "ceramic", "wood", "composite"],
+    "categories": ["electronics/e-waste", "batteries", "light bulbs", "paint/household hazardous waste", "motor oil", "aerosol cans", "furniture/bulky items", "textiles", "ceramic", "wood", "mixed-material items", "reuse/donation"],
+    "condition_flags": ["requires_dropoff", "check_local_rules"]
+    },
+    "content": "Earth911 manages a national database structured to locate local reuse, recycling, and specialized disposal options based on geographic coordinates or ZIP codes. The platform indexes disposal and drop-off avenues for specialized consumer waste categories that do not typically fit standard curbside streams, including consumer electronics, household chemicals, spent automotive fluids, mercury-containing lamps, pressurized cylinders, furniture, scrap wood, domestic ceramics, clothing, and composite items. Users leverage the registry to identify designated facilities, programmatic constraints, operational schedules, and potential handling fees.",
+    "disposal_actions_supported": ["Drop-off", "Donate/reuse", "Check local guidance"],
+    "warnings": ["Acceptance policies, material constraints, operational status, and fees are set individually by each independent facility and must be verified prior to arrival."],
+    "limitations": ["Functionality is entirely dependent on localized geographic lookups; data represents self-reported facility profiles that require direct validation by the end user."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "nyc_dsny_city_rules",
+    "title": "NYC DSNY Residential Waste and Recycling Mandates",
+    "source_name": "NYC DSNY Recycling & Disposal",
+    "source_url": "[https://www.nyc.gov/assets/dsny/site/services/recycling](https://www.nyc.gov/assets/dsny/site/services/recycling)",
+    "source_type": "city_government",
+    "location_scope": "city: New York City",
+    "generalizable": false,
+    "requires_location_check": false,
+    "applies_to": {
+    "item_labels": ["rigid plastic containers", "glass bottles", "metal food cans", "cardboard boxes", "greasy pizza boxes", "appliances", "mattresses", "ceramic plates", "clothing", "spray cans"],
+    "materials": ["plastic", "glass", "metal", "paper", "cardboard", "organic", "textile", "ceramic", "wood"],
+    "categories": ["plastic containers", "glass", "metal cans", "paper/cardboard", "food-soiled cardboard", "furniture/bulky items", "textiles", "ceramic", "wood", "light bulbs", "paint/household hazardous waste", "motor oil", "aerosol cans", "reuse/donation", "mixed-material items", "electronics/e-waste", "batteries"],
+    "condition_flags": ["bulky_item", "rinse_before_recycling", "reusable_if_undamaged", "check_local_rules"]
+    },
+    "content": "The New York City Department of Sanitation mandates strict residential source-separation. Curbside recyclable items must be divided into two distinct streams: 1) Mixed paper and cardboard (clean, dry, and flattened), and 2) Metal, glass, rigid plastics, and cartons (emptied and rinsed clean). Food-soiled paper products, such as greasy pizza boxes that have been cleared of food scraps, must be placed into the mandatory curbside organic waste collection stream for composting rather than the paper recycling stream. Empty, non-corrosive aerosol cans are accepted in the metal recycling stream. Domestic ceramics and non-recyclable rigid materials are designated as trash. Oversized bulk appliances are collected curbside, but items containing CFC or Freon gases require an advance 311 appointment for refrigerant recovery before disposal. Any mattress placed curbside for collection must be entirely enclosed in a sealed plastic bag. Consumer electronics, automotive fluids, and rechargeable batteries are legally banned from residential trash and standard curbside recycling bins, requiring diversion to specialized city SAFE disposal events, municipal drop-off sites, or participating retailers. Inbound usable clothing or home goods can be matched with local non-profits using the city's donateNYC directory.",
+    "disposal_actions_supported": ["Recycle", "Compost", "Trash", "Drop-off", "Donate/reuse"],
+    "warnings": ["Discarding electronic waste or rechargeable batteries in residential NYC refuse is illegal. Setting out unbagged mattresses or leaving Freon-containing appliances without a scheduled extraction appointment may result in civil penalties."],
+    "limitations": ["Enforceable exclusively within the municipal boundaries of New York City; rules reflect specific local sorting infrastructure and processing contracts."],
+    "confidence": "high",
+    "verified": true
+    },
+    {
+    "id": "calrecycle_california_mandates",
+    "title": "CalRecycle Statewide Waste Diversion Frameworks",
+    "source_name": "CalRecycle",
+    "source_url": "[https://calrecycle.ca.gov/](https://calrecycle.ca.gov/)",
+    "source_type": "state_government",
+    "location_scope": "state: California",
+    "generalizable": false,
+    "requires_location_check": false,
+    "applies_to": {
+    "item_labels": ["food scraps", "compostable paper", "computers", "television monitors", "household batteries", "mattresses", "carpets", "scrap lumber"],
+    "materials": ["organic", "electronic", "metal", "composite", "textile", "wood"],
+    "categories": ["organic waste", "food-soiled cardboard", "electronics/e-waste", "batteries", "furniture/bulky items", "mixed-material items", "wood", "textiles", "light bulbs"],
+    "condition_flags": ["requires_dropoff", "hazardous", "bulky_item", "check_local_rules"]
+    },
+    "content": "CalRecycle enforces statewide waste management mandates across California. Under statutory organic waste regulations (SB 1383), residents are required to divert organic materials, including food scraps, food-soiled paper, and compostable cardboard, away from landfills into localized organic collection or composting programs. state-level product stewardship networks are established to process specialized items such as consumer mattresses and commercial carpets. Furthermore, California regulations categorize household batteries, consumer electronic devices (e-waste), and mercury-containing fluorescent lamps as universal waste. This classification prohibits residents from disposing of these materials in standard municipal solid waste bins or mixed curbside recycling carts, mandating their diversion to certified handling facilities or authorized take-back networks.",
+    "disposal_actions_supported": ["Compost", "Drop-off", "Check local guidance"],
+    "warnings": ["California regulations strictly prohibit placing household batteries, electronic equipment, or mercury-containing lamps into regular residential garbage or curbside recycling collection systems."],
+    "limitations": ["Regulatory scope and associated product stewardship systems apply solely within the state jurisdiction of California."],
+    "confidence": "high",
+    "verified": true
+    }
+]

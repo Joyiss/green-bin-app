@@ -30,6 +30,9 @@ class PredictRouteTests(unittest.TestCase):
         with patch(
             "routes.predict.recognize_item",
             AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=None,
         ):
             response = client.post(
                 "/predict",
@@ -47,11 +50,13 @@ class PredictRouteTests(unittest.TestCase):
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",
+                "summary": "Calculator is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
                 "steps": [
                     "Do not place electronics in household trash.",
                     "Wipe any personal data before disposal.",
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
+                "guidance_source": "legacy_rules_fallback",
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },
@@ -88,6 +93,10 @@ class PredictRouteTests(unittest.TestCase):
                 },
             ),
             patch("services.recognition_router.cache_repository.save_recognition_record"),
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ),
         ):
             response = client.post(
                 "/predict",
@@ -135,6 +144,9 @@ class PredictRouteTests(unittest.TestCase):
         with patch(
             "routes.predict.recognize_item",
             AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
         ):
             response = client.post(
                 "/predict",
@@ -149,14 +161,16 @@ class PredictRouteTests(unittest.TestCase):
                 "category": "Metal",
                 "status": "confident",
                 "candidates": [],
-                "disposal_action": None,
+                "disposal_action": "recycle",
                 "material_code": None,
-                "impact_level": "Trusted Guidance Unavailable",
+                "impact_level": "High Impact",
+                "summary": "Water Bottle is categorized as metal and should be handled through recycle guidance in your area.",
                 "steps": [
-                    "Trusted disposal guidance is not available yet for this recognized item.",
-                    "Detected material category: Metal.",
-                    "Use local guidance or scan a supported item for trusted disposal instructions.",
+                    "Rinse out cans before disposal.",
+                    "Do not crush the container.",
+                    "Place it in your curbside recycling bin.",
                 ],
+                "guidance_source": "legacy_rules_fallback",
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -180,6 +194,9 @@ class PredictRouteTests(unittest.TestCase):
         with patch(
             "routes.predict.recognize_item",
             AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
         ):
             response = client.post(
                 "/predict",
@@ -197,11 +214,13 @@ class PredictRouteTests(unittest.TestCase):
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",
+                "summary": "Charging Cable is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
                 "steps": [
                     "Do not place electronics in household trash.",
                     "Wipe any personal data before disposal.",
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
+                "guidance_source": "legacy_rules_fallback",
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -239,7 +258,9 @@ class PredictRouteTests(unittest.TestCase):
                 "disposal_action": None,
                 "material_code": None,
                 "impact_level": None,
+                "summary": None,
                 "steps": [],
+                "guidance_source": "safe_fallback",
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -264,6 +285,10 @@ class PredictRouteTests(unittest.TestCase):
             ),
             patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
             patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ),
         ):
             response = client.post(
                 "/predict",
@@ -281,17 +306,72 @@ class PredictRouteTests(unittest.TestCase):
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",
+                "summary": "Calculator is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
                 "steps": [
                     "Do not place electronics in household trash.",
                     "Wipe any personal data before disposal.",
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
+                "guidance_source": "legacy_rules_fallback",
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },
         )
         mock_clip.assert_not_called()
         mock_vlm.assert_not_called()
+
+    def test_predict_can_return_direct_json_guidance_with_metadata(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm",
+        }
+        retrieval_result = {
+            "chunk": {
+                "id": "battery-guidance",
+                "title": "Battery Drop-off Guidance",
+                "source_name": "Call2Recycle",
+                "source_url": "https://www.call2recycle.org/",
+                "requires_location_check": True,
+                "disposal_actions_supported": ["Drop-off"],
+                "warnings": ["Do not place rechargeable batteries in curbside recycling."],
+                "limitations": ["Program availability varies by location."],
+                "content": "Rechargeable batteries should go to a designated battery drop-off program. Tape exposed terminals before transport.",
+            },
+            "chunk_id": "battery-guidance",
+            "score": 8.25,
+            "matched_fields": ["item_label_exact"],
+            "requires_location_check": True,
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[retrieval_result],
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["guidance_source"], "json_rag_direct_generated")
+        self.assertEqual(response.json()["disposal_action"], "drop-off")
+        self.assertIn("guidance_metadata", response.json())
+        self.assertEqual(
+            response.json()["guidance_metadata"]["retrieved_chunk_ids"],
+            ["battery-guidance"],
+        )
+        self.assertEqual(
+            response.json()["warnings"],
+            ["Do not place rechargeable batteries in curbside recycling."],
+        )
 
 
 if __name__ == "__main__":
