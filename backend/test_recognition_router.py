@@ -876,7 +876,7 @@ class RecognitionRouterTests(unittest.TestCase):
         mock_clip.assert_called_once_with(expected_bytes)
         mock_vlm.assert_called_once()
 
-    def test_open_mode_vlm_details_are_preserved_while_guidance_stays_safe(self):
+    def test_open_mode_confident_water_bottle_without_supported_match_becomes_final_classification(self):
         with (
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch(
@@ -907,12 +907,169 @@ class RecognitionRouterTests(unittest.TestCase):
                     "margin": 0.0,
                     "recognition_details": {
                         "status": "confident",
-                        "raw_item_label": "Ceramic mug",
-                        "likely_material": "Ceramic",
-                        "broad_category": "Drinkware",
-                        "candidates": [{"label": "Ceramic mug", "confidence": 0.93}],
-                        "visual_evidence": "Handle and cup opening are visible.",
+                        "raw_item_label": "water bottle",
+                        "likely_material": "metal",
+                        "broad_category": "drinkware",
+                        "candidates": [{"label": "water bottle", "confidence": 0.93}],
+                        "visual_evidence": "Bottle body and narrow opening are visible.",
                         "raw_output": '{"status":"confident"}',
+                        "disposal_action": "recycle",
+                        "steps": ["ignore this"],
+                    },
+                },
+            ),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["item"], "Water bottle")
+        self.assertEqual(result["category"], "Metal")
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["recognition_source"], "vlm_open")
+        self.assertFalse(result["trusted_guidance_available"])
+        self.assertIsNone(result["trusted_guidance_label"])
+        self.assertIn("recognition_details", result)
+        self.assertEqual(result["recognition_details"]["raw_item_label"], "water bottle")
+        self.assertEqual(result["recognition_details"]["likely_material"], "metal")
+        self.assertEqual(result["recognition_details"]["broad_category"], "drinkware")
+        self.assertEqual(result["recognition_details"]["disposal_action"], "recycle")
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["item_label"],
+            "Water bottle",
+        )
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["material_category"],
+            "Metal",
+        )
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["broad_category"],
+            "Drinkware",
+        )
+        self.assertIsNone(
+            result["recognition_details"]["normalized"]["matched_supported_label"]
+        )
+        self.assertEqual(mock_save.call_args.kwargs["item_label"], "Water bottle")
+        self.assertEqual(mock_save.call_args.kwargs["recognition_source"], "vlm_open")
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["recognition_details"]["raw_item_label"],
+            "water bottle",
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["recognition_details"]["normalized"]["item_label"],
+            "Water bottle",
+        )
+        self.assertEqual(
+            mock_save.call_args.kwargs["metadata"]["recognition_details"]["normalized"]["material_category"],
+            "Metal",
+        )
+        self.assertEqual(mock_save.call_args.kwargs["metadata"]["vlm_mode"], "open")
+
+    def test_open_mode_supported_match_uses_trusted_guidance_category(self):
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={
+                    "top_predictions": [],
+                    "margin": 0.0,
+                    "recognition_details": {
+                        "status": "confident",
+                        "raw_item_label": "iphone charging cable",
+                        "likely_material": "electronics",
+                        "broad_category": "electronics",
+                        "candidates": [{"label": "Charging cable", "confidence": 0.95}],
+                        "visual_evidence": "Cable connector and charging cord.",
+                        "raw_output": '{"status":"confident"}',
+                        "normalized": {
+                            "item_label": "Charging cable",
+                            "material_category": "Electronics",
+                            "broad_category": "Electronics",
+                            "condition_flags": [],
+                            "special_handling_flags": ["electronics", "dropoff_recommended"],
+                            "matched_supported_label": "Cable",
+                            "normalization_source": "exact_alias",
+                        },
+                    },
+                },
+            ),
+            patch("services.recognition_router.cache_repository.save_recognition_record"),
+        ):
+            result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["item"], "Charging cable")
+        self.assertEqual(result["category"], "Electronics")
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["recognition_source"], "vlm_open")
+        self.assertTrue(result["trusted_guidance_available"])
+        self.assertEqual(result["trusted_guidance_label"], "Cable")
+
+    def test_unknown_open_mode_output_does_not_crash(self):
+        with (
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch(
+                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                return_value=None,
+            ),
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch(
+                "services.recognition_router.ocr_service.extract_ocr_text",
+                return_value={"text": "", "keywords": [], "matched_label": None},
+            ),
+            patch(
+                "services.recognition_router.clip_service.create_clip_embedding",
+                return_value=[0.1, 0.2],
+            ),
+            patch(
+                "services.recognition_router.cache_repository.find_similar_embeddings",
+                return_value=[],
+            ),
+            patch(
+                "services.recognition_router.evaluate_clip_candidates",
+                return_value=_no_clip_candidates_decision(),
+            ),
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={
+                    "top_predictions": [],
+                    "margin": 0.0,
+                    "recognition_details": {
+                        "status": "unknown",
+                        "raw_item_label": "",
+                        "likely_material": "",
+                        "broad_category": "",
+                        "candidates": [],
+                        "visual_evidence": "",
+                        "raw_output": '{"status":"unknown"}',
+                        "normalized": {
+                            "item_label": "Unknown",
+                            "material_category": "Unknown",
+                            "broad_category": "Unknown",
+                            "condition_flags": [],
+                            "special_handling_flags": [],
+                            "matched_supported_label": None,
+                            "normalization_source": "unknown_fallback",
+                        },
                     },
                 },
             ),
@@ -921,19 +1078,8 @@ class RecognitionRouterTests(unittest.TestCase):
             result = _run_recognize_item(file=_make_upload_file())
 
         self.assertEqual(result["status"], "unknown")
-        self.assertEqual(result["recognition_source"], "vlm")
+        self.assertEqual(result["recognition_source"], "vlm_open")
         self.assertIn("recognition_details", result)
-        self.assertEqual(result["recognition_details"]["raw_item_label"], "Ceramic mug")
-        self.assertEqual(result["recognition_details"]["likely_material"], "Ceramic")
-        self.assertEqual(result["recognition_details"]["broad_category"], "Drinkware")
-        self.assertEqual(
-            result["recognition_details"]["normalized"]["item_label"],
-            "Ceramic mug",
-        )
-        self.assertEqual(
-            result["recognition_details"]["normalized"]["material_category"],
-            "Ceramic",
-        )
         mock_save.assert_not_called()
 
 

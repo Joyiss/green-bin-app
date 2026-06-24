@@ -13,7 +13,10 @@ try:
     from ..repositories import cache_repository
     from . import barcode_service
     from . import ocr_service
-    from .open_label_normalizer import normalize_open_recognition
+    from .open_label_normalizer import (
+        labels_are_consistent_for_matching,
+        normalize_open_recognition,
+    )
     from . import phash_service
     from .product_lookup_service import (
         get_product_by_barcode,
@@ -26,7 +29,10 @@ except ImportError:
     from repositories import cache_repository
     from services import barcode_service
     from services import ocr_service
-    from services.open_label_normalizer import normalize_open_recognition
+    from services.open_label_normalizer import (
+        labels_are_consistent_for_matching,
+        normalize_open_recognition,
+    )
     from services import phash_service
     from services.product_lookup_service import (
         get_product_by_barcode,
@@ -103,12 +109,41 @@ def _normalize_cached_classification(value: Any) -> dict[str, Any] | None:
             return None
         normalized_candidates.append(normalized_candidate)
 
-    return {
+    normalized_classification = {
         "item": item,
         "category": category,
         "status": status,
         "candidates": normalized_candidates,
     }
+
+    trusted_guidance_available = value.get("trusted_guidance_available")
+    if isinstance(trusted_guidance_available, bool):
+        normalized_classification["trusted_guidance_available"] = (
+            trusted_guidance_available
+        )
+
+    trusted_guidance_label = value.get("trusted_guidance_label")
+    if trusted_guidance_label is None or isinstance(trusted_guidance_label, str):
+        if trusted_guidance_label is not None:
+            normalized_classification["trusted_guidance_label"] = trusted_guidance_label
+
+    recognition_details = value.get("recognition_details")
+    if isinstance(recognition_details, dict):
+        normalized_classification["recognition_details"] = recognition_details
+
+    recognized_material_category = value.get("recognized_material_category")
+    if isinstance(recognized_material_category, str):
+        normalized_classification["recognized_material_category"] = (
+            recognized_material_category
+        )
+
+    recognized_broad_category = value.get("recognized_broad_category")
+    if isinstance(recognized_broad_category, str):
+        normalized_classification["recognized_broad_category"] = (
+            recognized_broad_category
+        )
+
+    return normalized_classification
 
 
 def _recover_confident_cached_classification(label: Any) -> dict[str, Any] | None:
@@ -139,6 +174,13 @@ def _is_usable_cached_classification(classification: dict[str, Any]) -> bool:
     status = classification.get("status")
     item = classification.get("item")
     category = classification.get("category")
+    trusted_guidance_available = classification.get("trusted_guidance_available")
+
+    if status != "confident" or not _is_real_item_label(item):
+        return False
+
+    if trusted_guidance_available is False:
+        return True
 
     return (
         status == "confident"
@@ -213,12 +255,24 @@ def _classification_snapshot(classification: dict[str, Any]) -> dict[str, Any]:
             continue
         normalized_candidates.append([candidate[0], float(candidate[1])])
 
-    return {
+    snapshot = {
         "item": classification.get("item", ""),
         "category": classification.get("category", ""),
         "status": classification.get("status", "unknown"),
         "candidates": normalized_candidates,
     }
+
+    for key in (
+        "trusted_guidance_available",
+        "trusted_guidance_label",
+        "recognition_details",
+        "recognized_material_category",
+        "recognized_broad_category",
+    ):
+        if key in classification:
+            snapshot[key] = classification.get(key)
+
+    return snapshot
 
 
 def _with_recognition_metadata(
@@ -234,20 +288,180 @@ def _with_recognition_metadata(
     }
 
 
+def _get_normalized_open_recognition_details(
+    prediction_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    recognition_details = prediction_result.get("recognition_details")
+    if not isinstance(recognition_details, dict):
+        return None
+
+    if isinstance(recognition_details.get("normalized"), dict):
+        if "vlm_mode" in recognition_details:
+            return recognition_details
+        return {
+            **recognition_details,
+            "vlm_mode": "open",
+        }
+
+    normalized_recognition_details = normalize_open_recognition(recognition_details)
+    if "vlm_mode" not in normalized_recognition_details:
+        normalized_recognition_details = {
+            **normalized_recognition_details,
+            "vlm_mode": "open",
+        }
+
+    return normalized_recognition_details
+
+
+def _normalize_open_prediction_result(prediction_result: dict[str, Any]) -> dict[str, Any]:
+    normalized_recognition_details = _get_normalized_open_recognition_details(
+        prediction_result
+    )
+    if normalized_recognition_details is None:
+        return prediction_result
+
+    return {
+        **prediction_result,
+        "recognition_details": normalized_recognition_details,
+    }
+
+
 def _attach_recognition_details(
     classification: dict[str, Any],
     prediction_result: dict[str, Any],
 ) -> dict[str, Any]:
-    recognition_details = prediction_result.get("recognition_details")
-    if not isinstance(recognition_details, dict):
+    normalized_recognition_details = _get_normalized_open_recognition_details(
+        prediction_result
+    )
+    if normalized_recognition_details is None:
         return classification
-
-    normalized_recognition_details = normalize_open_recognition(recognition_details)
 
     return {
         **classification,
         "recognition_details": normalized_recognition_details,
     }
+
+
+def _prediction_contains_open_recognition(prediction_result: dict[str, Any]) -> bool:
+    recognition_details = prediction_result.get("recognition_details")
+    return isinstance(recognition_details, dict)
+
+
+def _open_vlm_recognition_source(prediction_result: dict[str, Any]) -> str:
+    return "vlm_open" if _prediction_contains_open_recognition(prediction_result) else "vlm"
+
+
+def _build_open_vlm_classification(
+    prediction_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    recognition_details = _get_normalized_open_recognition_details(prediction_result)
+    if recognition_details is None:
+        return None
+
+    normalized = recognition_details.get("normalized")
+    if not isinstance(normalized, dict):
+        return None
+
+    if recognition_details.get("status") != "confident":
+        return None
+
+    normalized_item_label = str(normalized.get("item_label") or "").strip()
+    if not _is_real_item_label(normalized_item_label):
+        return None
+
+    matched_supported_label = normalized.get("matched_supported_label")
+    if isinstance(matched_supported_label, str) and matched_supported_label.strip():
+        trusted_classification = build_selected_item_prediction(matched_supported_label)
+        if trusted_classification.get("status") == "confident":
+            return {
+                "item": normalized_item_label,
+                "category": trusted_classification.get("category", "Unknown"),
+                "status": "confident",
+                "candidates": [],
+                "trusted_guidance_available": True,
+                "trusted_guidance_label": matched_supported_label,
+                "recognized_material_category": normalized.get(
+                    "material_category", "Unknown"
+                ),
+                "recognized_broad_category": normalized.get(
+                    "broad_category", "Unknown"
+                ),
+            }
+
+    material_category = str(normalized.get("material_category") or "").strip() or "Unknown"
+    broad_category = str(normalized.get("broad_category") or "").strip() or "Unknown"
+    final_category = material_category if material_category != "Unknown" else broad_category
+    return {
+        "item": normalized_item_label,
+        "category": final_category,
+        "status": "confident",
+        "candidates": [],
+        "trusted_guidance_available": False,
+        "trusted_guidance_label": None,
+        "recognized_material_category": material_category,
+        "recognized_broad_category": broad_category,
+    }
+
+
+def _build_vlm_classification(prediction_result: dict[str, Any]) -> dict[str, Any]:
+    open_classification = _build_open_vlm_classification(prediction_result)
+    if open_classification is not None:
+        return open_classification
+
+    return classify(prediction_result)
+
+
+def _open_recognition_conflicts_with_ocr(
+    classification: dict[str, Any],
+    ocr_signal: dict[str, Any],
+) -> bool:
+    ocr_matched_label = ocr_signal.get("matched_label") if isinstance(ocr_signal, dict) else None
+    if not isinstance(ocr_matched_label, str) or not ocr_matched_label.strip():
+        return False
+
+    if classification.get("trusted_guidance_available") is True:
+        trusted_guidance_label = classification.get("trusted_guidance_label")
+        if isinstance(trusted_guidance_label, str) and labels_are_consistent_for_matching(
+            trusted_guidance_label,
+            ocr_matched_label,
+        ):
+            return False
+
+    recognized_item = classification.get("item")
+    if isinstance(recognized_item, str) and labels_are_consistent_for_matching(
+        recognized_item,
+        ocr_matched_label,
+    ):
+        return False
+
+    return True
+
+
+def _should_cache_open_vlm_classification(
+    classification: dict[str, Any],
+    ocr_signal: dict[str, Any],
+) -> bool:
+    if classification.get("status") != "confident":
+        return False
+    if not _is_real_item_label(classification.get("item")):
+        return False
+    return not _open_recognition_conflicts_with_ocr(classification, ocr_signal)
+
+
+def _log_final_classification(classification: dict[str, Any]) -> None:
+    safe_fallback_guidance_used = (
+        classification.get("status") == "confident"
+        and classification.get("trusted_guidance_available") is False
+    )
+    logger.info(
+        "Final classification built. item=%s status=%s category=%s material_category=%s recognition_source=%s safe_fallback_guidance=%s",
+        classification.get("item"),
+        classification.get("status"),
+        classification.get("category"),
+        classification.get("recognized_material_category"),
+        classification.get("recognition_source"),
+        safe_fallback_guidance_used,
+    )
 
 
 def _coerce_optional_float(value: Any) -> float | None:
@@ -561,6 +775,7 @@ def _save_recognition_record_if_possible(
     save_clip_embedding: bool,
 ) -> None:
     item_label = classification.get("item", "")
+    trusted_guidance_available = classification.get("trusted_guidance_available")
     signals_ocr = signals.get("ocr") if isinstance(signals, dict) else None
     signals_barcode = signals.get("barcode") if isinstance(signals, dict) else None
     signals_cache_policy = signals.get("cache_policy") if isinstance(signals, dict) else None
@@ -589,8 +804,31 @@ def _save_recognition_record_if_possible(
         classification.get("status"),
     )
 
-    if not save_record or phash is None or not _is_cacheable_item_label(item_label):
+    is_open_confident_cacheable = (
+        trusted_guidance_available is False
+        and classification.get("status") == "confident"
+        and _is_real_item_label(item_label)
+    )
+
+    if (
+        not save_record
+        or phash is None
+        or (
+            not _is_cacheable_item_label(item_label)
+            and not is_open_confident_cacheable
+        )
+    ):
         return
+
+    recognition_details = classification.get("recognition_details")
+    metadata = {
+        "classification": _classification_snapshot(classification),
+        "route": route,
+        "signals": signals,
+    }
+    if isinstance(recognition_details, dict):
+        metadata["recognition_details"] = recognition_details
+        metadata["vlm_mode"] = recognition_details.get("vlm_mode", "open")
 
     cache_repository.save_recognition_record(
         phash=phash,
@@ -599,11 +837,7 @@ def _save_recognition_record_if_possible(
         recognition_source=recognition_source,
         confidence=_classification_confidence(classification),
         verified=False,
-        metadata={
-            "classification": _classification_snapshot(classification),
-            "route": route,
-            "signals": signals,
-        },
+        metadata=metadata,
     )
 
 
@@ -893,18 +1127,29 @@ async def recognize_item(
                     "category": barcode_signal["product_lookup"].get("category"),
                     "packaging": barcode_signal["product_lookup"].get("packaging"),
                 }
-            predictions = vlm_service.get_top_predictions(
-                image,
-                barcode_aware=True,
-                barcode_context=barcode_context,
+            predictions = _normalize_open_prediction_result(
+                vlm_service.get_top_predictions(
+                    image,
+                    barcode_aware=True,
+                    barcode_context=barcode_context,
+                )
             )
+            recognition_source = _open_vlm_recognition_source(predictions)
             classification = _with_recognition_metadata(
-                _attach_recognition_details(classify(predictions), predictions),
+                _attach_recognition_details(_build_vlm_classification(predictions), predictions),
                 cache_hit=False,
-                recognition_source="vlm",
+                recognition_source=recognition_source,
             )
+            _log_final_classification(classification)
 
-            if phash is not None and not _is_cacheable_item_label(classification.get("item", "")):
+            should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
+                classification,
+                ocr_signal,
+            )
+            if phash is not None and not (
+                _is_cacheable_item_label(classification.get("item", ""))
+                or should_cache_open_result
+            ):
                 logger.info(
                     "Skipping recognition cache save because classification item_label was blank or unknown. item=%s status=%s category=%s",
                     classification.get("item"),
@@ -917,7 +1162,7 @@ async def recognize_item(
                         phash=phash,
                         clip_embedding=None,
                         classification=classification,
-                        recognition_source="vlm",
+                        recognition_source=recognition_source,
                         route=router_reason,
                         signals=_build_signals_metadata(
                             phash_value=phash,
@@ -1144,12 +1389,16 @@ async def recognize_item(
             router_reason,
         )
         logger.info("Proceeding to VLM inference after pHash, barcode, OCR, and CLIP checks.")
-        predictions = vlm_service.get_top_predictions(image)
-        classification = _with_recognition_metadata(
-            _attach_recognition_details(classify(predictions), predictions),
-            cache_hit=False,
-            recognition_source="vlm",
+        predictions = _normalize_open_prediction_result(
+            vlm_service.get_top_predictions(image)
         )
+        recognition_source = _open_vlm_recognition_source(predictions)
+        classification = _with_recognition_metadata(
+            _attach_recognition_details(_build_vlm_classification(predictions), predictions),
+            cache_hit=False,
+            recognition_source=recognition_source,
+        )
+        _log_final_classification(classification)
         cache_policy = _finalize_vlm_cache_policy(
             classification=classification,
             barcode_signal=barcode_signal,
@@ -1157,7 +1406,14 @@ async def recognize_item(
             clip_embedding=clip_embedding,
         )
 
-        if phash is not None and not _is_cacheable_item_label(classification.get("item", "")):
+        should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
+            classification,
+            ocr_signal,
+        )
+        if phash is not None and not (
+            _is_cacheable_item_label(classification.get("item", ""))
+            or should_cache_open_result
+        ):
             logger.info(
                 "Skipping recognition cache save because classification item_label was blank or unknown. item=%s status=%s category=%s",
                 classification.get("item"),
@@ -1170,7 +1426,7 @@ async def recognize_item(
                     phash=phash,
                     clip_embedding=clip_embedding,
                     classification=classification,
-                    recognition_source="vlm",
+                    recognition_source=recognition_source,
                     route=router_reason,
                     signals=_build_signals_metadata(
                         phash_value=phash,

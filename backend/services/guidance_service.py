@@ -17,6 +17,21 @@ def _empty_guidance() -> dict[str, Any]:
     }
 
 
+def _open_guidance_unavailable(classification: dict[str, Any]) -> dict[str, Any]:
+    recognized_material = classification.get("recognized_material_category")
+    steps = ["Trusted disposal guidance is not available yet for this recognized item."]
+    if isinstance(recognized_material, str) and recognized_material and recognized_material != "Unknown":
+        steps.append(f"Detected material category: {recognized_material}.")
+    steps.append("Use local guidance or scan a supported item for trusted disposal instructions.")
+
+    return {
+        "disposal_action": None,
+        "material_code": None,
+        "impact_level": "Trusted Guidance Unavailable",
+        "steps": steps,
+    }
+
+
 def _format_item_name(item: str) -> str:
     if not item:
         return ""
@@ -46,11 +61,17 @@ def _serialize_candidates(candidates: list[tuple[str, float]]) -> list[dict[str,
 
 
 def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
-    guidance = (
-        get_rules(classification["category"])
-        if classification["status"] == "confident"
-        else _empty_guidance()
-    )
+    if (
+        classification.get("status") == "confident"
+        and classification.get("trusted_guidance_available") is False
+    ):
+        guidance = _open_guidance_unavailable(classification)
+    else:
+        guidance = (
+            get_rules(classification["category"])
+            if classification["status"] == "confident"
+            else _empty_guidance()
+        )
 
     response = {
         "item": _format_item_name(classification["item"]),

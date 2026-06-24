@@ -520,3 +520,7 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     )
 
     return enriched_details
+
+
+def labels_are_consistent_for_matching(primary_label: str, candidate_label: str) -> bool:
+    return _labels_are_consistent(primary_label, candidate_label)

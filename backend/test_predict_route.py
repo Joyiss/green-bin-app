@@ -99,6 +99,152 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["recognition_source"], "vlm")
         self.assertFalse(response.json()["cache_hit"])
 
+    def test_predict_open_water_bottle_without_supported_match_is_not_unidentified(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Water bottle",
+            "category": "Metal",
+            "status": "confident",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm_open",
+            "trusted_guidance_available": False,
+            "recognized_material_category": "Metal",
+            "recognized_broad_category": "Drinkware",
+            "recognition_details": {
+                "status": "confident",
+                "raw_item_label": "water bottle",
+                "likely_material": "metal",
+                "broad_category": "drinkware",
+                "candidates": [{"label": "water bottle", "confidence": 0.94}],
+                "visual_evidence": "Bottle silhouette and narrow opening visible.",
+                "disposal_action": "trash",
+                "steps": ["do not trust this"],
+                "normalized": {
+                    "item_label": "Water bottle",
+                    "material_category": "Metal",
+                    "broad_category": "Drinkware",
+                    "condition_flags": [],
+                    "special_handling_flags": [],
+                    "matched_supported_label": None,
+                    "normalization_source": "keyword_rule",
+                },
+            },
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "item": "Water Bottle",
+                "category": "Metal",
+                "status": "confident",
+                "candidates": [],
+                "disposal_action": None,
+                "material_code": None,
+                "impact_level": "Trusted Guidance Unavailable",
+                "steps": [
+                    "Trusted disposal guidance is not available yet for this recognized item.",
+                    "Detected material category: Metal.",
+                    "Use local guidance or scan a supported item for trusted disposal instructions.",
+                ],
+                "cache_hit": False,
+                "recognition_source": "vlm_open",
+            },
+        )
+
+    def test_predict_open_supported_match_can_use_existing_trusted_guidance(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Charging cable",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm_open",
+            "trusted_guidance_available": True,
+            "trusted_guidance_label": "Cable",
+            "recognized_material_category": "Electronics",
+            "recognized_broad_category": "Electronics",
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "item": "Charging Cable",
+                "category": "Electronics",
+                "status": "confident",
+                "candidates": [],
+                "disposal_action": "e-waste recycling",
+                "material_code": None,
+                "impact_level": "High Impact",
+                "steps": [
+                    "Do not place electronics in household trash.",
+                    "Wipe any personal data before disposal.",
+                    "Take the item to an e-waste center or retailer drop-off.",
+                ],
+                "cache_hit": False,
+                "recognition_source": "vlm_open",
+            },
+        )
+
+    def test_predict_unknown_open_result_stays_safe(self):
+        client = TestClient(app)
+        classification = {
+            "item": "",
+            "category": "Unknown",
+            "status": "unknown",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm_open",
+            "trusted_guidance_available": False,
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "item": "",
+                "category": "Unknown",
+                "status": "unknown",
+                "candidates": [],
+                "disposal_action": None,
+                "material_code": None,
+                "impact_level": None,
+                "steps": [],
+                "cache_hit": False,
+                "recognition_source": "vlm_open",
+            },
+        )
+
     def test_predict_near_phash_cache_hit_matches_exact_cache_response_shape(self):
         client = TestClient(app)
         cached_record = {
