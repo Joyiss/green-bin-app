@@ -1,17 +1,199 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 try:
     from ..rules import get_rules
-    from . import guidance_retrieval_service
+    from . import guidance_llm_service, guidance_retrieval_service
+    from .guidance_key_service import normalize_guidance_phrase
 except ImportError:
     from rules import get_rules
-    from services import guidance_retrieval_service
+    from services import guidance_llm_service, guidance_retrieval_service
+    from services.guidance_key_service import normalize_guidance_phrase
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_CATEGORY = "Unknown"
 CHECK_LOCAL_GUIDANCE_ACTION = "Check local guidance"
+_HIGH_RISK_KEYWORDS = {
+    "battery",
+    "batteries",
+    "rechargeable battery",
+    "lithium ion",
+    "paint",
+    "stain",
+    "solvent",
+    "electronics",
+    "electronic waste",
+    "e waste",
+    "e-waste",
+    "circuit board",
+    "phone",
+    "laptop",
+    "monitor",
+    "tv",
+    "charger",
+    "aerosol",
+    "motor oil",
+    "oil filter",
+    "gasoline",
+    "fuel",
+    "propane",
+    "pressurized can",
+    "fluorescent",
+    "fluorescent bulb",
+    "cfl",
+    "mercury bulb",
+    "chemical",
+    "cleaner",
+    "bleach",
+    "pesticide",
+    "medicine",
+    "medication",
+    "medical waste",
+    "biohazard",
+    "sharp",
+    "sharps",
+    "needle",
+    "syringe",
+    "hazardous",
+    "hazardous waste",
+    "special handling",
+}
+_HIGH_RISK_FLAGS = {
+    "battery",
+    "hazardous",
+    "electronics",
+    "special_handling",
+    "regulated",
+    "requires_dropoff",
+}
+_CAUTION_KEYWORDS = {
+    "food soiled paper",
+    "food soiled cardboard",
+    "greasy pizza box",
+    "thermal receipt",
+    "receipt paper",
+    "laminated paper",
+    "wax coated paper",
+    "waxed cardboard",
+    "shredded paper",
+    "broken glass",
+    "mirror glass",
+    "ceramic shards",
+    "treated wood",
+    "painted wood",
+    "pressure treated wood",
+    "sharp metal",
+    "unknown liquid container",
+    "dirty",
+    "oily",
+    "moldy",
+    "chemically contaminated",
+    "medical contaminated",
+    "bodily fluids",
+}
+_LOW_RISK_ALLOW_GROUPS = {
+    "allowed_paper_stationery": {
+        "paper",
+        "paper product",
+        "sheet music",
+        "music sheet",
+        "printed paper",
+        "notebook paper",
+        "loose paper",
+        "stationery",
+        "envelope",
+        "folder",
+        "worksheet",
+        "book",
+        "notebook",
+        "clean cardboard",
+        "pencil",
+        "pen",
+        "eraser",
+        "ruler",
+    },
+    "allowed_textile_soft_goods": {
+        "curtain",
+        "fabric",
+        "textile",
+        "clothing",
+        "shirt",
+        "pants",
+        "towel",
+        "blanket",
+        "backpack",
+        "bag",
+        "shoes",
+    },
+    "allowed_reusable_household": {
+        "ceramic mug",
+        "cup",
+        "plate",
+        "bowl",
+        "glass cup",
+        "water bottle",
+        "metal water bottle",
+        "thermoflask",
+        "insulated bottle",
+        "reusable container",
+        "lunch box",
+    },
+    "allowed_simple_household_objects": {
+        "plastic toy",
+        "rubber duck",
+        "toy",
+        "wooden toy",
+        "wooden spoon",
+        "plastic spoon",
+        "hanger",
+        "basket",
+        "storage bin",
+        "decoration",
+        "household item",
+    },
+    "allowed_simple_material": {
+        "clean paper",
+        "clean cardboard",
+        "untreated wood",
+        "simple plastic",
+        "hard plastic",
+        "fabric",
+        "textile",
+        "ceramic",
+        "non broken glass",
+        "simple metal",
+        "paper",
+        "cardboard",
+        "wood",
+        "plastic",
+        "metal",
+        "glass",
+    },
+}
+_LOW_RISK_DROP_OFF_ONLY_TERMS = {
+    "textile",
+    "clothing",
+    "backpack",
+    "bag",
+    "shoes",
+    "curtain",
+    "fabric",
+}
+_LLM_SKIP_REASONS = {
+    "llm_disabled",
+    "ENABLE_LLM_GUIDANCE_false",
+    "provider_not_gemini",
+    "missing_GUIDANCE_LLM_MODEL",
+    "missing_GEMINI_API_KEY",
+    "no_chunks",
+}
+_COMMON_LOW_RISK_WARNING = (
+    "Do not place this item in curbside recycling unless your local program accepts it."
+)
 
 
 def _empty_guidance() -> dict[str, Any]:
@@ -25,7 +207,194 @@ def _empty_guidance() -> dict[str, Any]:
     }
 
 
-def _open_guidance_unavailable(classification: dict[str, Any]) -> dict[str, Any]:
+def _first_non_empty_string(*values: Any) -> str | None:
+    for value in values:
+        if not isinstance(value, str):
+            continue
+
+        normalized_value = value.strip()
+        if normalized_value:
+            return normalized_value
+
+    return None
+
+
+def _merge_guidance_metadata(*metadata_values: Any) -> dict[str, Any]:
+    merged_metadata: dict[str, Any] = {}
+    for metadata in metadata_values:
+        if not isinstance(metadata, dict):
+            continue
+        merged_metadata.update(metadata)
+    return merged_metadata
+
+
+def _with_metadata(
+    guidance: dict[str, Any],
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(extra_metadata, dict) or not extra_metadata:
+        return guidance
+
+    existing_metadata = guidance.get("guidance_metadata")
+    guidance["guidance_metadata"] = _merge_guidance_metadata(
+        existing_metadata,
+        extra_metadata,
+    )
+    return guidance
+
+
+def _normalized_open_details(classification: dict[str, Any]) -> dict[str, Any]:
+    recognition_details = classification.get("recognition_details")
+    if not isinstance(recognition_details, dict):
+        return {}
+
+    normalized = recognition_details.get("normalized")
+    if not isinstance(normalized, dict):
+        return {}
+
+    return normalized
+
+
+def _normalized_open_value(classification: dict[str, Any], key: str) -> str | None:
+    value = _normalized_open_details(classification).get(key)
+    return _first_non_empty_string(value)
+
+
+def _normalized_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    normalized_values: list[str] = []
+    for item in value:
+        normalized_item = normalize_guidance_phrase(item)
+        if normalized_item:
+            normalized_values.append(normalized_item.replace(" ", "_"))
+    return normalized_values
+
+
+def _candidate_values(*values: Any) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if isinstance(value, list):
+            candidate_source = value
+        else:
+            candidate_source = [value]
+
+        for candidate in candidate_source:
+            if not isinstance(candidate, str):
+                continue
+
+            normalized_candidate = candidate.strip()
+            if not normalized_candidate:
+                continue
+            if normalized_candidate.casefold() == UNKNOWN_CATEGORY.casefold():
+                continue
+
+            dedupe_key = normalized_candidate.casefold()
+            if dedupe_key in seen:
+                continue
+
+            seen.add(dedupe_key)
+            candidates.append(normalized_candidate)
+
+    return candidates
+
+
+def _format_log_list(values: list[Any]) -> str:
+    return "[" + ", ".join(str(value) for value in values) + "]"
+
+
+def _log_resolution_started(
+    classification: dict[str, Any],
+    retrieval_inputs: dict[str, Any],
+) -> None:
+    logger.info(
+        "Guidance resolution started. item=%s category=%s material=%s recognition_source=%s open_normalized=%s lookup_item=%s lookup_material=%s lookup_category=%s",
+        classification.get("item"),
+        classification.get("category"),
+        _first_non_empty_string(
+            _normalized_open_value(classification, "material"),
+            _normalized_open_value(classification, "material_category"),
+            classification.get("recognized_material_category"),
+        ),
+        classification.get("recognition_source"),
+        _is_open_recognition_classification(classification),
+        retrieval_inputs.get("item_label"),
+        retrieval_inputs.get("material"),
+        retrieval_inputs.get("category"),
+    )
+
+
+def _log_retrieval_complete(retrieval_results: list[dict[str, Any]]) -> None:
+    top_chunks: list[str] = []
+    source_names: list[str] = []
+    matched_fields: list[str] = []
+
+    for result in retrieval_results[:3]:
+        chunk = result.get("chunk", {})
+        chunk_id = _first_non_empty_string(result.get("chunk_id"), chunk.get("id")) or "unknown"
+        score = round(float(result.get("score") or 0.0), 4)
+        top_chunks.append(f"{chunk_id}:{score}")
+
+        source_name = _first_non_empty_string(chunk.get("source_name"))
+        if source_name and source_name not in source_names:
+            source_names.append(source_name)
+
+        result_fields = list(result.get("matched_fields") or [])
+        if result_fields:
+            matched_fields.append(f"{chunk_id}={'|'.join(str(field) for field in result_fields)}")
+
+    logger.info(
+        "Guidance retrieval complete. count=%s top_chunks=%s sources=%s matched_fields=%s",
+        len(retrieval_results),
+        _format_log_list(top_chunks),
+        _format_log_list(source_names),
+        _format_log_list(matched_fields),
+    )
+
+
+def _log_guidance_selected(
+    guidance: dict[str, Any],
+    *,
+    chunk_ids: list[str] | None = None,
+    requires_location_check: bool | None = None,
+    reason: str | None = None,
+    item: str | None = None,
+    category: str | None = None,
+    low_risk_eligible: bool | None = None,
+) -> None:
+    log_parts = [f"source={guidance.get('guidance_source')}"]
+    if chunk_ids is not None:
+        log_parts.append(f"chunks={_format_log_list(chunk_ids)}")
+    if guidance.get("disposal_action") is not None:
+        log_parts.append(f"disposal_action={guidance.get('disposal_action')}")
+    else:
+        log_parts.append("disposal_action=None")
+    if requires_location_check is not None:
+        log_parts.append(f"requires_location_check={requires_location_check}")
+    if item:
+        log_parts.append(f"item={item}")
+    if category:
+        log_parts.append(f"category={category}")
+    if low_risk_eligible is not None:
+        log_parts.append(f"low_risk_eligible={low_risk_eligible}")
+    if reason:
+        log_parts.append(f"reason={reason}")
+
+    logger.info("Guidance selected. %s", " ".join(log_parts))
+
+
+def _is_open_recognition_classification(classification: dict[str, Any]) -> bool:
+    return isinstance(classification.get("recognition_details"), dict)
+
+
+def _open_guidance_unavailable(
+    classification: dict[str, Any],
+    *,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     recognized_material = _first_non_empty_string(
         _normalized_open_value(classification, "material"),
         _normalized_open_value(classification, "material_category"),
@@ -41,7 +410,7 @@ def _open_guidance_unavailable(classification: dict[str, Any]) -> dict[str, Any]
         "Use local guidance or scan a supported item for trusted disposal instructions."
     )
 
-    return {
+    guidance = {
         "disposal_action": None,
         "material_code": None,
         "impact_level": "Trusted Guidance Unavailable",
@@ -49,10 +418,14 @@ def _open_guidance_unavailable(classification: dict[str, Any]) -> dict[str, Any]
         "steps": steps,
         "guidance_source": "safe_fallback",
     }
+    return _with_metadata(guidance, extra_metadata)
 
 
-def _default_safe_guidance() -> dict[str, Any]:
-    return {
+def _default_safe_guidance(
+    *,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    guidance = {
         "disposal_action": None,
         "material_code": None,
         "impact_level": "Trusted Guidance Unavailable",
@@ -62,6 +435,205 @@ def _default_safe_guidance() -> dict[str, Any]:
         ],
         "guidance_source": "safe_fallback",
     }
+    return _with_metadata(guidance, extra_metadata)
+
+
+def _normalized_phrase(value: Any) -> str:
+    normalized_value = normalize_guidance_phrase(value)
+    return normalized_value or ""
+
+
+def _contains_any_phrase(haystack: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in haystack for phrase in phrases)
+
+
+def _deterministic_low_risk_group(
+    classification: dict[str, Any],
+    low_risk_evaluation: dict[str, Any],
+) -> str:
+    reason = _first_non_empty_string(low_risk_evaluation.get("reason")) or ""
+    item_text = _normalized_phrase(classification.get("item"))
+    material_text = _normalized_phrase(
+        _first_non_empty_string(
+            _normalized_open_value(classification, "material"),
+            _normalized_open_value(classification, "material_category"),
+            classification.get("recognized_material_category"),
+            classification.get("category"),
+        )
+    )
+
+    if reason == "allowed_paper_stationery":
+        return "paper_stationery"
+    if reason == "allowed_textile_soft_goods":
+        return "textile_soft_goods"
+    if reason == "allowed_reusable_household":
+        return "durable_reusable_object"
+    if reason == "allowed_simple_household_objects":
+        if _contains_any_phrase(item_text, ("toy", "rubik", "duck", "container", "bottle")):
+            return "durable_reusable_object"
+    if _contains_any_phrase(item_text, ("container", "bin", "basket", "storage", "bottle", "mug", "cup", "bowl", "plate", "lunch box")):
+        return "durable_reusable_object"
+    if _contains_any_phrase(material_text, ("paper", "cardboard")):
+        return "paper_stationery"
+    if _contains_any_phrase(material_text, ("textile", "fabric", "cloth")):
+        return "textile_soft_goods"
+    if "plastic" in material_text:
+        return "simple_plastic_object"
+    if _contains_any_phrase(material_text, ("metal", "glass", "ceramic")):
+        return "simple_metal_glass_ceramic_object"
+    if "wood" in material_text:
+        return "simple_wood_object"
+    return "durable_reusable_object"
+
+
+def _deterministic_low_risk_guidance(
+    classification: dict[str, Any],
+    *,
+    low_risk_evaluation: dict[str, Any],
+    failure_reason: str | None,
+) -> dict[str, Any]:
+    formatted_item = _format_item_name(
+        _first_non_empty_string(classification.get("item")) or "This item"
+    )
+    item_text = _normalized_phrase(classification.get("item"))
+    material_text = _normalized_phrase(
+        _first_non_empty_string(
+            _normalized_open_value(classification, "material"),
+            _normalized_open_value(classification, "material_category"),
+            classification.get("recognized_material_category"),
+            classification.get("category"),
+        )
+    )
+    group = _deterministic_low_risk_group(classification, low_risk_evaluation)
+    disposal_action: str | None = None
+    summary: str
+    steps: list[str]
+
+    if group == "paper_stationery":
+        disposal_action = "check local guidance"
+        if "pencil" in item_text:
+            summary = (
+                f"Try to use or donate the {formatted_item.lower()} if it is still usable; "
+                "otherwise follow local trash guidance for small used pencil pieces."
+            )
+            steps = [
+                f"Use the {formatted_item.lower()} until it is finished, or donate unused pencils if they are still usable.",
+                "Do not assume pencils belong in curbside recycling because they often contain mixed materials.",
+                "If it is too small, broken, or not reusable, follow local trash guidance.",
+            ]
+        else:
+            summary = (
+                f"If the {formatted_item.lower()} is clean and dry, check whether your local program accepts this type of paper."
+            )
+            steps = [
+                f"Reuse or donate the {formatted_item.lower()} if someone can still use it.",
+                "If it is clean and dry, check local paper recycling rules before placing it in recycling.",
+                "Remove obvious non-paper attachments when possible, or follow local trash guidance if it is not accepted.",
+            ]
+    elif group == "textile_soft_goods":
+        disposal_action = "donate/reuse"
+        summary = (
+            f"Reuse, repair, or donate the {formatted_item.lower()} if it is still usable; otherwise check local textile options before throwing it away."
+        )
+        steps = [
+            f"Donate, reuse, or repair the {formatted_item.lower()} if it is still clean and functional.",
+            "Check local textile recycling, donation, or reuse drop-off options before disposal.",
+            "If no local textile option is available, follow local trash guidance.",
+        ]
+    elif group == "simple_plastic_object":
+        disposal_action = (
+            "donate/reuse"
+            if _contains_any_phrase(item_text, ("toy", "container", "basket", "bin"))
+            else "check local guidance"
+        )
+        if "container" in item_text:
+            summary = (
+                f"Reuse the {formatted_item.lower()} if it is clean and functional; otherwise check local rules before recycling or throwing it away."
+            )
+            steps = [
+                "Reuse it for storage if it is clean and safe to keep.",
+                "Check local recycling rules or drop-off options for this type of plastic container.",
+                "If your local program does not accept it, follow local trash guidance.",
+            ]
+        else:
+            summary = (
+                f"If the {formatted_item.lower()} is still usable, reuse or donate it; otherwise check local rules for this type of plastic before disposal."
+            )
+            steps = [
+                f"Keep using the {formatted_item.lower()} or donate it if it is still functional.",
+                "Do not assume mixed or rigid plastic items are accepted in curbside recycling.",
+                "If local reuse, recycling, or drop-off options are not available, follow local trash guidance.",
+            ]
+    elif group == "simple_metal_glass_ceramic_object":
+        disposal_action = "donate/reuse"
+        summary = (
+            f"If the {formatted_item.lower()} is still usable and unbroken, reuse or donate it first; otherwise check local rules for this material."
+        )
+        steps = [
+            f"Keep using the {formatted_item.lower()} or donate it if it is still functional and unbroken.",
+            f"Check local recycling or drop-off options for {material_text or 'this material'} before relying on them.",
+            "Do not assume curbside acceptance, and follow local trash guidance if no better option exists.",
+        ]
+    elif group == "simple_wood_object":
+        disposal_action = "donate/reuse"
+        summary = (
+            f"Reuse, repair, or donate the {formatted_item.lower()} if it is still usable; otherwise check local wood disposal options before throwing it away."
+        )
+        steps = [
+            f"Keep using the {formatted_item.lower()} or donate it if it is still functional.",
+            "Do not assume small wooden household items belong in curbside recycling.",
+            "If local reuse or drop-off options are not available, follow local trash guidance.",
+        ]
+    else:
+        disposal_action = "donate/reuse"
+        if "container" in item_text:
+            summary = (
+                f"Reuse the {formatted_item.lower()} if it is clean and functional; otherwise check local rules before recycling or throwing it away."
+            )
+            steps = [
+                "Reuse it for storage if it is clean and safe to keep.",
+                "Check local recycling rules or drop-off options for this type of plastic container.",
+                "If your local program does not accept it, follow local trash guidance.",
+            ]
+        elif _contains_any_phrase(item_text, ("rubik", "toy", "duck")):
+            summary = (
+                f"Reuse or donate the {formatted_item.lower()} if it still works; if it is broken, check local options before throwing it away."
+            )
+            steps = [
+                f"Keep using the {formatted_item.lower()}, repair it, or donate it if it is clean and functional.",
+                "Do not assume mixed plastic toys are accepted in curbside recycling.",
+                "If no reuse, donation, or local drop-off option is available, follow local trash guidance.",
+            ]
+        else:
+            summary = (
+                f"Reuse the {formatted_item.lower()} if it is still usable; otherwise check local recycling or drop-off options before disposal."
+            )
+            steps = [
+                f"Keep using the {formatted_item.lower()}, repair it, or donate it if it is still functional.",
+                "Check local recycling or drop-off rules that apply to this item or material.",
+                "If no reuse or local recovery option is available, follow local trash guidance.",
+            ]
+
+    guidance = {
+        "disposal_action": disposal_action,
+        "material_code": None,
+        "impact_level": "Low Confidence Guidance",
+        "summary": summary,
+        "steps": steps,
+        "warnings": [_COMMON_LOW_RISK_WARNING],
+        "guidance_source": "llm_general_fallback",
+        "guidance_metadata": {
+            "llm_mode": "general_safe_fallback",
+            "confidence": "low",
+            "sources_used": [],
+            "llm_fallback_reason": failure_reason,
+            "deterministic_fallback_used": True,
+            "low_risk_reason": low_risk_evaluation.get("reason"),
+            "matched_terms": list(low_risk_evaluation.get("matched_terms") or []),
+            "fallback_group": group,
+        },
+    }
+    return guidance
 
 
 def _format_item_name(item: str) -> str:
@@ -90,39 +662,6 @@ def _serialize_candidates(candidates: list[tuple[str, float]]) -> list[dict[str,
         }
         for label, score in candidates
     ]
-
-
-def _first_non_empty_string(*values: Any) -> str | None:
-    for value in values:
-        if not isinstance(value, str):
-            continue
-
-        normalized_value = value.strip()
-        if normalized_value:
-            return normalized_value
-
-    return None
-
-
-def _normalized_open_details(classification: dict[str, Any]) -> dict[str, Any]:
-    recognition_details = classification.get("recognition_details")
-    if not isinstance(recognition_details, dict):
-        return {}
-
-    normalized = recognition_details.get("normalized")
-    if not isinstance(normalized, dict):
-        return {}
-
-    return normalized
-
-
-def _normalized_open_value(classification: dict[str, Any], key: str) -> str | None:
-    value = _normalized_open_details(classification).get(key)
-    return _first_non_empty_string(value)
-
-
-def _is_open_recognition_classification(classification: dict[str, Any]) -> bool:
-    return isinstance(classification.get("recognition_details"), dict)
 
 
 def _build_default_summary(
@@ -163,22 +702,24 @@ def _choose_disposal_action(chunk: dict[str, Any]) -> str | None:
         if str(action).strip()
     ]
     actionable = [
-        action for action in supported_actions if action.casefold() != CHECK_LOCAL_GUIDANCE_ACTION.casefold()
+        action
+        for action in supported_actions
+        if action.casefold() != CHECK_LOCAL_GUIDANCE_ACTION.casefold()
     ]
 
     if len(actionable) != 1:
         return None
 
-    return actionable[0].lower()
+    normalized_action = actionable[0].strip().lower().replace("drop off", "drop-off")
+    return normalized_action
 
 
 def _sentences_from_text(value: str) -> list[str]:
-    sentences = [
+    return [
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?])\s+", value.strip())
         if sentence.strip()
     ]
-    return sentences
 
 
 def _build_json_summary(primary_chunk: dict[str, Any]) -> str:
@@ -187,7 +728,10 @@ def _build_json_summary(primary_chunk: dict[str, Any]) -> str:
         summary_sentences = _sentences_from_text(content)[:2]
         summary = " ".join(summary_sentences).strip()
     else:
-        summary = _first_non_empty_string(primary_chunk.get("title")) or "Trusted source guidance was retrieved for this item."
+        summary = (
+            _first_non_empty_string(primary_chunk.get("title"))
+            or "Trusted source guidance was retrieved for this item."
+        )
 
     source_name = _first_non_empty_string(primary_chunk.get("source_name"))
     if source_name and source_name.casefold() == "paintcare":
@@ -198,7 +742,9 @@ def _build_json_summary(primary_chunk: dict[str, Any]) -> str:
     elif source_name and "earth911" in source_name.casefold():
         summary = f"{summary} Verify local facility acceptance before relying on this option."
     elif primary_chunk.get("requires_location_check") is True:
-        summary = f"{summary} Check local rules or program availability before relying on this guidance."
+        summary = (
+            f"{summary} Check local rules or program availability before relying on this guidance."
+        )
 
     return summary
 
@@ -209,15 +755,21 @@ def _build_json_steps(primary_chunk: dict[str, Any], disposal_action: str | None
     if disposal_action == "recycle":
         steps.append("Recycling may be appropriate based on the retrieved source guidance.")
     elif disposal_action == "compost":
-        steps.append("Composting may be appropriate where a local organics program accepts this item.")
+        steps.append(
+            "Composting may be appropriate where a local organics program accepts this item."
+        )
     elif disposal_action == "drop-off":
         steps.append("Use a designated drop-off or take-back program when one is available.")
     elif disposal_action == "trash":
-        steps.append("Use regular trash only when the retrieved source guidance explicitly supports that option.")
+        steps.append(
+            "Use regular trash only when the retrieved source guidance explicitly supports that option."
+        )
     elif disposal_action == "donate/reuse":
         steps.append("Reuse or donation may be appropriate when the item is still usable.")
     else:
-        steps.append("Multiple disposal paths may apply depending on the item condition and local program rules.")
+        steps.append(
+            "Multiple disposal paths may apply depending on the item condition and local program rules."
+        )
 
     source_name = _first_non_empty_string(primary_chunk.get("source_name"))
     if source_name and source_name.casefold() == "paintcare":
@@ -282,6 +834,8 @@ def _build_json_guidance_metadata(
 
 def _guidance_from_json_retrieval(
     retrieval_results: list[dict[str, Any]],
+    *,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not retrieval_results:
         return None
@@ -311,7 +865,10 @@ def _guidance_from_json_retrieval(
         "summary": _build_json_summary(primary_chunk),
         "steps": _build_json_steps(primary_chunk, disposal_action),
         "guidance_source": "json_rag_direct_generated",
-        "guidance_metadata": _build_json_guidance_metadata(retrieval_results),
+        "guidance_metadata": _merge_guidance_metadata(
+            _build_json_guidance_metadata(retrieval_results),
+            extra_metadata,
+        ),
     }
     if warnings:
         guidance["warnings"] = warnings
@@ -347,32 +904,65 @@ def _guidance_from_legacy_rules(
 
 def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
     if _is_open_recognition_classification(classification):
+        recognition_details = classification.get("recognition_details")
+        recognition_candidates = []
+        if isinstance(recognition_details, dict):
+            recognition_candidates = [
+                candidate.get("label")
+                for candidate in recognition_details.get("candidates", [])
+                if isinstance(candidate, dict)
+            ]
+
+        item_candidates = _candidate_values(
+            classification.get("item"),
+            _normalized_open_value(classification, "item_label"),
+            recognition_details.get("raw_item_label") if isinstance(recognition_details, dict) else None,
+            recognition_candidates,
+        )
+        material_candidates = _candidate_values(
+            classification.get("recognized_material_category"),
+            classification.get("category"),
+            _normalized_open_value(classification, "material"),
+            _normalized_open_value(classification, "material_category"),
+            recognition_details.get("likely_material") if isinstance(recognition_details, dict) else None,
+        )
+        category_candidates = _candidate_values(
+            classification.get("category"),
+            _normalized_open_value(classification, "broad_category"),
+            classification.get("recognized_broad_category"),
+            recognition_details.get("broad_category") if isinstance(recognition_details, dict) else None,
+            classification.get("trusted_guidance_label"),
+            _normalized_open_details(classification).get("matched_supported_label"),
+        )
+        condition_flags = _candidate_values(
+            _normalized_open_details(classification).get("condition_flags", []),
+            _normalized_open_details(classification).get("special_handling_flags", []),
+            _normalized_open_details(classification).get("special_flags", []),
+        )
+        condition_flags.extend(_derived_guidance_context_flags(classification))
+        condition_flags = _candidate_values(condition_flags)
+
         return {
-            "item_label": _first_non_empty_string(
-                _normalized_open_value(classification, "item_label"),
-                classification.get("trusted_guidance_label"),
-                classification.get("item"),
-            ),
-            "material": _first_non_empty_string(
-                _normalized_open_value(classification, "material"),
-                _normalized_open_value(classification, "material_category"),
-                classification.get("recognized_material_category"),
-            ),
-            "category": _first_non_empty_string(
-                _normalized_open_value(classification, "broad_category"),
-                classification.get("recognized_broad_category"),
-                classification.get("category"),
-            ),
-            "condition_flags": _normalized_open_details(classification).get(
-                "condition_flags", []
-            ),
+            "item_label": item_candidates[0] if item_candidates else None,
+            "material": material_candidates[0] if material_candidates else None,
+            "category": category_candidates[0] if category_candidates else None,
+            "item_candidates": item_candidates,
+            "material_candidates": material_candidates,
+            "category_candidates": category_candidates,
+            "condition_flags": condition_flags,
             "location": classification.get("location"),
         }
 
+    item_candidates = _candidate_values(classification.get("item"))
+    material_candidates = _candidate_values(classification.get("category"))
+    category_candidates = _candidate_values(classification.get("category"))
     return {
-        "item_label": _first_non_empty_string(classification.get("item")),
-        "material": _first_non_empty_string(classification.get("category")),
-        "category": _first_non_empty_string(classification.get("category")),
+        "item_label": item_candidates[0] if item_candidates else None,
+        "material": material_candidates[0] if material_candidates else None,
+        "category": category_candidates[0] if category_candidates else None,
+        "item_candidates": item_candidates,
+        "material_candidates": material_candidates,
+        "category_candidates": category_candidates,
         "condition_flags": [],
         "location": classification.get("location"),
     }
@@ -381,27 +971,413 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
 def _lookup_json_guidance(classification: dict[str, Any]) -> list[dict[str, Any]]:
     retrieval_inputs = _build_retrieval_inputs(classification)
     try:
-        return guidance_retrieval_service.retrieve_guidance_chunks(**retrieval_inputs)
+        return guidance_retrieval_service.retrieve_guidance_chunks(**retrieval_inputs) or []
     except Exception:
+        logger.exception(
+            "Guidance retrieval failed. lookup_item=%s lookup_material=%s lookup_category=%s",
+            retrieval_inputs.get("item_label"),
+            retrieval_inputs.get("material"),
+            retrieval_inputs.get("category"),
+        )
         return []
+
+
+def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
+    normalized_details = _normalized_open_details(classification)
+    return {
+        "recognized_item": _first_non_empty_string(classification.get("item")),
+        "normalized_item_label": _first_non_empty_string(
+            normalized_details.get("item_label"),
+            classification.get("trusted_guidance_label"),
+            classification.get("item"),
+        ),
+        "material": _first_non_empty_string(
+            normalized_details.get("material"),
+            normalized_details.get("material_category"),
+            classification.get("recognized_material_category"),
+            classification.get("category"),
+        ),
+        "broad_category": _first_non_empty_string(
+            normalized_details.get("broad_category"),
+            classification.get("recognized_broad_category"),
+            classification.get("category"),
+        ),
+        "condition_flags": _normalized_string_list(normalized_details.get("condition_flags")),
+        "location": classification.get("location"),
+    }
+
+
+def _normalize_open_text_fields(classification: dict[str, Any]) -> list[str]:
+    normalized_details = _normalized_open_details(classification)
+    raw_values = [
+        classification.get("item"),
+        normalized_details.get("item_label"),
+        normalized_details.get("material"),
+        normalized_details.get("material_category"),
+        normalized_details.get("broad_category"),
+        classification.get("recognized_material_category"),
+        classification.get("recognized_broad_category"),
+    ]
+
+    normalized_values: list[str] = []
+    for value in raw_values:
+        normalized_value = normalize_guidance_phrase(value)
+        if normalized_value:
+            normalized_values.append(normalized_value)
+    return normalized_values
+
+
+def _derived_guidance_context_flags(classification: dict[str, Any]) -> list[str]:
+    normalized_text = " ".join(_normalize_open_text_fields(classification))
+    derived_flags: list[str] = []
+
+    if "battery" in normalized_text:
+        derived_flags.extend(
+            ["battery", "requires_dropoff", "hazardous", "dropoff_recommended"]
+        )
+
+    if (
+        "electronics/e-waste" in normalized_text
+        or "electronics e waste" in normalized_text
+        or "electronics" in normalized_text
+    ):
+        derived_flags.extend(["electronics", "requires_dropoff"])
+
+    if "paint" in normalized_text or "chemical" in normalized_text:
+        derived_flags.extend(["hazardous", "requires_dropoff"])
+
+    if any(
+        keyword in normalized_text
+        for keyword in (
+            "aerosol",
+            "motor oil",
+            "fluorescent",
+            "medicine",
+            "medication",
+            "sharps",
+            "needle",
+            "syringe",
+        )
+    ):
+        derived_flags.extend(["hazardous", "special_handling"])
+
+    return _candidate_values(derived_flags)
+
+
+def _open_special_handling_flags(classification: dict[str, Any]) -> list[str]:
+    return _normalized_string_list(
+        _normalized_open_details(classification).get("special_handling_flags")
+    )
+
+
+def _open_condition_flags(classification: dict[str, Any]) -> list[str]:
+    return _candidate_values(
+        _normalized_open_details(classification).get("condition_flags", []),
+        _normalized_open_details(classification).get("special_handling_flags", []),
+        _normalized_open_details(classification).get("special_flags", []),
+        _derived_guidance_context_flags(classification),
+    )
+
+
+def _find_matching_terms(normalized_text: str, terms: set[str]) -> list[str]:
+    matched_terms = [
+        term
+        for term in sorted(terms)
+        if term in normalized_text
+    ]
+    return matched_terms
+
+
+def _build_low_risk_decision_context(classification: dict[str, Any]) -> dict[str, Any]:
+    recognition_details = classification.get("recognition_details")
+    normalized_details = _normalized_open_details(classification)
+    values = _candidate_values(
+        classification.get("item"),
+        classification.get("category"),
+        classification.get("recognized_material_category"),
+        classification.get("recognized_broad_category"),
+        normalized_details.get("item_label"),
+        normalized_details.get("material"),
+        normalized_details.get("material_category"),
+        normalized_details.get("broad_category"),
+        recognition_details.get("raw_item_label") if isinstance(recognition_details, dict) else None,
+        recognition_details.get("broad_category") if isinstance(recognition_details, dict) else None,
+    )
+    flags = _open_condition_flags(classification)
+    normalized_values = [
+        normalize_guidance_phrase(value)
+        for value in values
+        if normalize_guidance_phrase(value)
+    ]
+    normalized_flags = [
+        flag.replace("_", " ")
+        for flag in flags
+        if isinstance(flag, str) and flag.strip()
+    ]
+    decision_text = " ".join(normalized_values + normalized_flags)
+    return {
+        "decision_text": decision_text,
+        "values": normalized_values,
+        "flags": flags,
+    }
+
+
+def _evaluate_low_risk_open_item(classification: dict[str, Any]) -> dict[str, Any]:
+    item = _first_non_empty_string(classification.get("item")) or ""
+    if not _is_open_recognition_classification(classification):
+        result = {"eligible": False, "reason": "not_open_recognition", "matched_terms": []}
+        logger.info(
+            "Low-risk eligibility evaluated. item=%s eligible=%s reason=%s matched_terms=%s",
+            item,
+            result["eligible"],
+            result["reason"],
+            _format_log_list(result["matched_terms"]),
+        )
+        return result
+
+    if classification.get("trusted_guidance_available") is not False:
+        result = {"eligible": False, "reason": "trusted_guidance_supported_path", "matched_terms": []}
+        logger.info(
+            "Low-risk eligibility evaluated. item=%s eligible=%s reason=%s matched_terms=%s",
+            item,
+            result["eligible"],
+            result["reason"],
+            _format_log_list(result["matched_terms"]),
+        )
+        return result
+
+    context = _build_low_risk_decision_context(classification)
+    decision_text = context["decision_text"]
+    flags = set(context["flags"])
+    allow_matches: list[str] = []
+    allow_reason: str | None = None
+    for reason, terms in _LOW_RISK_ALLOW_GROUPS.items():
+        matched_terms = _find_matching_terms(decision_text, terms)
+        if matched_terms:
+            allow_matches = matched_terms
+            allow_reason = reason
+            break
+
+    high_risk_matches = _find_matching_terms(decision_text, _HIGH_RISK_KEYWORDS)
+    if high_risk_matches:
+        result = {
+            "eligible": False,
+            "reason": "blocked_high_risk",
+            "matched_terms": high_risk_matches,
+        }
+    else:
+        blocking_flags = sorted(flag for flag in flags if flag in _HIGH_RISK_FLAGS)
+        if blocking_flags:
+            result = {
+                "eligible": False,
+                "reason": "blocked_high_risk_flags",
+                "matched_terms": blocking_flags,
+            }
+        elif "dropoff_recommended" in flags and not any(
+            term in _LOW_RISK_DROP_OFF_ONLY_TERMS for term in allow_matches
+        ):
+            result = {
+                "eligible": False,
+                "reason": "blocked_special_handling_flag",
+                "matched_terms": ["dropoff_recommended"],
+            }
+        else:
+            caution_matches = _find_matching_terms(decision_text, _CAUTION_KEYWORDS)
+            if caution_matches:
+                result = {
+                    "eligible": False,
+                    "reason": "blocked_caution_specific_rules",
+                    "matched_terms": caution_matches,
+                }
+            elif allow_reason is not None:
+                result = {
+                    "eligible": True,
+                    "reason": allow_reason,
+                    "matched_terms": allow_matches,
+                }
+            else:
+                result = {
+                    "eligible": False,
+                    "reason": "default_unknown_safe_fallback",
+                    "matched_terms": [],
+                }
+
+    logger.info(
+        "Low-risk eligibility evaluated. item=%s eligible=%s reason=%s matched_terms=%s",
+        item,
+        result["eligible"],
+        result["reason"],
+        _format_log_list(result["matched_terms"]),
+    )
+    return result
+
+
+def _legacy_rules_allowed(classification: dict[str, Any]) -> bool:
+    if not _is_open_recognition_classification(classification):
+        return True
+
+    return classification.get("trusted_guidance_available") is True
 
 
 def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
     if classification.get("status") != "confident":
-        return _empty_guidance()
+        guidance = _empty_guidance()
+        _log_guidance_selected(
+            guidance,
+            reason="classification_not_confident",
+            item=_first_non_empty_string(classification.get("item")),
+            category=_first_non_empty_string(classification.get("category")),
+        )
+        return guidance
 
-    json_guidance = _guidance_from_json_retrieval(_lookup_json_guidance(classification))
-    if json_guidance is not None:
-        return json_guidance
+    retrieval_inputs = _build_retrieval_inputs(classification)
+    _log_resolution_started(classification, retrieval_inputs)
+    retrieval_results = _lookup_json_guidance(classification)
+    _log_retrieval_complete(retrieval_results)
+    llm_context = _build_llm_context(classification)
 
-    legacy_guidance = _guidance_from_legacy_rules(classification)
-    if legacy_guidance is not None:
-        return legacy_guidance
+    if retrieval_results:
+        llm_result = guidance_llm_service.try_generate_source_grounded_guidance(
+            **llm_context,
+            retrieval_results=retrieval_results,
+        )
+        llm_guidance = llm_result.get("guidance")
+        if isinstance(llm_guidance, dict):
+            llm_guidance["guidance_metadata"] = _merge_guidance_metadata(
+                _build_json_guidance_metadata(retrieval_results),
+                llm_guidance.get("guidance_metadata"),
+            )
+            _log_guidance_selected(
+                llm_guidance,
+                chunk_ids=llm_guidance["guidance_metadata"].get("retrieved_chunk_ids"),
+                requires_location_check=bool(
+                    llm_guidance["guidance_metadata"].get("requires_location_check")
+                ),
+            )
+            return llm_guidance
+
+        llm_fallback_reason = _first_non_empty_string(llm_result.get("failure_reason"))
+        if llm_fallback_reason in _LLM_SKIP_REASONS:
+            logger.info("Gemini guidance skipped. reason=%s", llm_fallback_reason)
+        elif llm_fallback_reason:
+            logger.info(
+                "Gemini guidance validation failed. reason=%s fallback=%s",
+                llm_fallback_reason,
+                "json_rag_direct_generated",
+            )
+        guidance = _guidance_from_json_retrieval(
+            retrieval_results,
+            extra_metadata=(
+                {"llm_fallback_reason": llm_fallback_reason}
+                if llm_fallback_reason and llm_fallback_reason not in _LLM_SKIP_REASONS
+                else None
+            ),
+        ) or _default_safe_guidance()
+        _log_guidance_selected(
+            guidance,
+            chunk_ids=guidance.get("guidance_metadata", {}).get("retrieved_chunk_ids"),
+            requires_location_check=bool(
+                guidance.get("guidance_metadata", {}).get("requires_location_check")
+            ),
+        )
+        return guidance
+
+    logger.info("Gemini guidance skipped. reason=%s", "no_retrieved_chunks")
+
+    low_risk_evaluation = _evaluate_low_risk_open_item(classification)
+    low_risk_eligible = bool(low_risk_evaluation["eligible"])
+    if low_risk_eligible:
+        llm_result = guidance_llm_service.try_generate_general_safe_guidance(
+            recognized_item=llm_context["recognized_item"],
+            normalized_item_label=llm_context["normalized_item_label"],
+            material=llm_context["material"],
+            broad_category=llm_context["broad_category"],
+            condition_flags=llm_context["condition_flags"],
+            low_risk_reason=_first_non_empty_string(low_risk_evaluation.get("reason")),
+            matched_terms=list(low_risk_evaluation.get("matched_terms") or []),
+        )
+        llm_guidance = llm_result.get("guidance")
+        if isinstance(llm_guidance, dict):
+            _log_guidance_selected(
+                llm_guidance,
+                item=_first_non_empty_string(classification.get("item")),
+                low_risk_eligible=True,
+            )
+            return llm_guidance
+
+        failure_reason = _first_non_empty_string(llm_result.get("failure_reason"))
+        if failure_reason in _LLM_SKIP_REASONS:
+            logger.info("Gemini guidance skipped. reason=%s", failure_reason)
+        elif failure_reason:
+            logger.info(
+                "Gemini guidance validation failed. reason=%s fallback=%s",
+                failure_reason,
+                "llm_general_fallback",
+            )
+            guidance = _deterministic_low_risk_guidance(
+                classification,
+                low_risk_evaluation=low_risk_evaluation,
+                failure_reason=failure_reason,
+            )
+            logger.info(
+                "Deterministic low-risk fallback used. item=%s group=%s reason=%s low_risk_reason=%s",
+                _first_non_empty_string(classification.get("item")),
+                guidance.get("guidance_metadata", {}).get("fallback_group"),
+                failure_reason,
+                low_risk_evaluation.get("reason"),
+            )
+            _log_guidance_selected(
+                guidance,
+                item=_first_non_empty_string(classification.get("item")),
+                low_risk_eligible=True,
+                reason=f"deterministic_low_risk_fallback:{low_risk_evaluation['reason']}",
+            )
+            return guidance
+
+        guidance = _open_guidance_unavailable(
+            classification,
+            extra_metadata=(
+                {"llm_fallback_reason": failure_reason}
+                if failure_reason and failure_reason not in _LLM_SKIP_REASONS
+                else None
+            ),
+        )
+        _log_guidance_selected(
+            guidance,
+            item=_first_non_empty_string(classification.get("item")),
+            low_risk_eligible=True,
+            reason=f"general_safe_fallback_unavailable:{low_risk_evaluation['reason']}",
+        )
+        return guidance
+
+    if _legacy_rules_allowed(classification):
+        legacy_guidance = _guidance_from_legacy_rules(classification)
+        if legacy_guidance is not None:
+            _log_guidance_selected(
+                legacy_guidance,
+                item=_first_non_empty_string(classification.get("item")),
+                category=_first_non_empty_string(classification.get("category")),
+            )
+            return legacy_guidance
 
     if _is_open_recognition_classification(classification):
-        return _open_guidance_unavailable(classification)
+        guidance = _open_guidance_unavailable(classification)
+        _log_guidance_selected(
+            guidance,
+            item=_first_non_empty_string(classification.get("item")),
+            low_risk_eligible=False,
+            reason=low_risk_evaluation["reason"],
+        )
+        return guidance
 
-    return _default_safe_guidance()
+    guidance = _default_safe_guidance()
+    _log_guidance_selected(
+        guidance,
+        item=_first_non_empty_string(classification.get("item")),
+        category=_first_non_empty_string(classification.get("category")),
+        reason="no_json_no_legacy_match",
+    )
+    return guidance
 
 
 def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
@@ -432,5 +1408,13 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         response["cache_hit"] = bool(classification["cache_hit"])
     if "recognition_source" in classification:
         response["recognition_source"] = classification["recognition_source"]
+
+    logger.info(
+        "Guidance resolution finished. source=%s item=%s disposal_action=%s steps_count=%s",
+        response["guidance_source"],
+        response["item"],
+        response["disposal_action"],
+        len(response["steps"]),
+    )
 
     return response

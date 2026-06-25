@@ -281,6 +281,9 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
             item_label="battery",
             material="battery",
             category="batteries",
+            item_candidates=["battery", "rechargeable batteries"],
+            material_candidates=["battery", "lithium-ion battery"],
+            category_candidates=["battery", "electronics"],
             condition_flags=["requires_dropoff", "hazardous"],
             location=None,
             chunks=load_trusted_guidance_chunks(),
@@ -294,6 +297,9 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
             item_label="battery",
             material="battery",
             category="batteries",
+            item_candidates=["battery", "rechargeable batteries"],
+            material_candidates=["battery"],
+            category_candidates=["battery", "electronics"],
             condition_flags=["requires_dropoff", "hazardous"],
             location=None,
             chunks=load_trusted_guidance_chunks(),
@@ -302,11 +308,46 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         chunk_ids = [result["chunk_id"] for result in results]
         self.assertIn("earth911_directory_guidance", chunk_ids)
 
+    def test_pencil_mixed_material_does_not_retrieve_earth911_by_generic_material(self):
+        results = retrieve_guidance_chunks(
+            item_label="Pencil",
+            material="Mixed Material",
+            category="Mixed Material",
+            item_candidates=["Pencil"],
+            material_candidates=["Mixed Material", "Unknown"],
+            category_candidates=["Mixed Material", "Household item"],
+            condition_flags=[],
+            location=None,
+            chunks=load_trusted_guidance_chunks(),
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertNotIn("earth911_directory_guidance", chunk_ids)
+
+    def test_curtain_generic_household_terms_do_not_retrieve_earth911(self):
+        results = retrieve_guidance_chunks(
+            item_label="Curtain",
+            material="Unknown",
+            category="Household item",
+            item_candidates=["Curtain"],
+            material_candidates=["Unknown", "Mixed Material"],
+            category_candidates=["Household item", "General", "Other"],
+            condition_flags=[],
+            location=None,
+            chunks=load_trusted_guidance_chunks(),
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertNotIn("earth911_directory_guidance", chunk_ids)
+
     def test_battery_retrieval_does_not_include_paintcare_chunk(self):
         results = retrieve_guidance_chunks(
             item_label="battery",
             material="battery",
             category="batteries",
+            item_candidates=["battery", "rechargeable batteries"],
+            material_candidates=["battery"],
+            category_candidates=["battery", "electronics"],
             condition_flags=["requires_dropoff", "hazardous"],
             location=None,
             chunks=load_trusted_guidance_chunks(),
@@ -339,6 +380,96 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(results, [])
+
+    def test_electronics_aliases_match_e_waste_category_chunks(self):
+        chunks = [
+            _chunk(
+                chunk_id="electronics-dropoff",
+                categories=["electronics/e-waste"],
+                condition_flags=["requires_dropoff"],
+                disposal_actions_supported=["Drop-off"],
+            )
+        ]
+
+        results = retrieve_guidance_chunks(
+            item_label=None,
+            material=None,
+            category="Electronics",
+            category_candidates=["electronics", "e-waste", "electronic waste"],
+            condition_flags=["requires_dropoff"],
+            chunks=chunks,
+        )
+
+        self.assertEqual(results[0]["chunk_id"], "electronics-dropoff")
+        self.assertIn("category", results[0]["matched_fields"])
+
+    def test_earth911_still_retrieves_for_e_waste_when_appropriate(self):
+        results = retrieve_guidance_chunks(
+            item_label="old laptop",
+            material="electronics",
+            category="electronics",
+            item_candidates=["old laptop"],
+            material_candidates=["electronics"],
+            category_candidates=["electronics", "e-waste"],
+            condition_flags=["requires_dropoff", "electronics"],
+            location=None,
+            chunks=load_trusted_guidance_chunks(),
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("earth911_directory_guidance", chunk_ids)
+
+    def test_battery_alias_match_allows_condition_flag_boost_without_paintcare_false_positive(self):
+        chunks = [
+            _chunk(
+                chunk_id="battery-dropoff",
+                categories=["batteries"],
+                condition_flags=["requires_dropoff", "hazardous"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+            _chunk(
+                chunk_id="paintcare-like",
+                source_name="PaintCare",
+                generalizable=False,
+                requires_location_check=True,
+                materials=["paint"],
+                categories=["paint/household hazardous waste"],
+                condition_flags=["requires_dropoff", "hazardous"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+        ]
+
+        results = retrieve_guidance_chunks(
+            item_label="rechargeable batteries",
+            material="battery",
+            category="electronics",
+            item_candidates=["battery", "rechargeable batteries"],
+            material_candidates=["battery"],
+            category_candidates=["battery", "electronics"],
+            condition_flags=["requires_dropoff", "hazardous", "dropoff_recommended"],
+            chunks=chunks,
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("battery-dropoff", chunk_ids)
+        self.assertNotIn("paintcare-like", chunk_ids)
+
+    def test_earth911_can_be_supplemental_to_stronger_battery_match(self):
+        results = retrieve_guidance_chunks(
+            item_label="battery",
+            material="battery",
+            category="batteries",
+            item_candidates=["battery", "rechargeable batteries"],
+            material_candidates=["battery"],
+            category_candidates=["battery", "electronics"],
+            condition_flags=["requires_dropoff", "hazardous", "battery"],
+            location=None,
+            chunks=load_trusted_guidance_chunks(),
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("call2recycle_national_batteries", chunk_ids)
+        self.assertIn("earth911_directory_guidance", chunk_ids)
 
 
 if __name__ == "__main__":

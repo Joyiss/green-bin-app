@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 type ResultSheetProps = {
   label: string;
@@ -8,6 +8,11 @@ type ResultSheetProps = {
   materialTag?: string | null;
   summary: string;
   steps: string[];
+  warnings?: string[];
+  guidanceMetadata?: Record<string, unknown> | null;
+  guidanceSource?: string;
+  condenseGuidance?: boolean;
+  onClose?: () => void;
 
   buttonLabel?: string;
   buttonIconName?: keyof typeof Ionicons.glyphMap;
@@ -20,12 +25,111 @@ type ResultSheetProps = {
   children?: ReactNode;
 };
 
+function sentenceAwareCompactText(text: string, maxLength: number) {
+  const normalized = text.trim().replace(/\s+/g, ' ');
+
+  if (!normalized || normalized.length <= maxLength) {
+    return { text: normalized, truncated: false };
+  }
+
+  const sentences = normalized.match(/[^.!?]+[.!?]?/g)?.map((sentence) => sentence.trim()) ?? [];
+  let combined = '';
+
+  for (const sentence of sentences) {
+    const nextValue = combined ? `${combined} ${sentence}` : sentence;
+    if (nextValue.length > maxLength) {
+      break;
+    }
+    combined = nextValue;
+  }
+
+  if (combined.length >= Math.floor(maxLength * 0.6)) {
+    return {
+      text: combined.endsWith('.') || combined.endsWith('!') || combined.endsWith('?')
+        ? combined
+        : `${combined}...`,
+      truncated: true,
+    };
+  }
+
+  const shortened = normalized.slice(0, Math.max(maxLength - 1, 1));
+  const lastSpaceIndex = shortened.lastIndexOf(' ');
+  const compacted = (lastSpaceIndex > Math.floor(maxLength * 0.55)
+    ? shortened.slice(0, lastSpaceIndex)
+    : shortened
+  ).trim();
+
+  return {
+    text: `${compacted}...`,
+    truncated: true,
+  };
+}
+
+function compactSummary(summary: string, maxLength = 160) {
+  return sentenceAwareCompactText(summary, maxLength);
+}
+
+function compactStep(step: string, maxLength = 128) {
+  return sentenceAwareCompactText(step, maxLength);
+}
+
+function getVisibleSteps(steps: string[], maxSteps = 3) {
+  return steps.slice(0, maxSteps).map((step) => compactStep(step));
+}
+
+function getMetadataStringArray(
+  metadata: Record<string, unknown> | null | undefined,
+  ...keys: string[]
+) {
+  if (!metadata) {
+    return [];
+  }
+
+  for (const key of keys) {
+    const value = metadata[key];
+    if (!Array.isArray(value)) {
+      continue;
+    }
+
+    const normalizedValues = value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+
+    if (normalizedValues.length) {
+      return normalizedValues;
+    }
+  }
+
+  return [];
+}
+
+function hasHiddenGuidanceDetails(
+  summaryState: { truncated: boolean },
+  steps: string[],
+  visibleSteps: { truncated: boolean }[],
+  warnings: string[],
+  sourceNames: string[],
+) {
+  return (
+    summaryState.truncated ||
+    steps.length > visibleSteps.length ||
+    visibleSteps.some((step) => step.truncated) ||
+    warnings.length > 0 ||
+    sourceNames.length > 0
+  );
+}
+
 export function ResultSheet({
   label,
   title,
   materialTag,
   summary,
   steps,
+  warnings = [],
+  guidanceMetadata,
+  guidanceSource,
+  condenseGuidance = false,
+  onClose,
   buttonLabel,
   buttonIconName = 'location-outline',
   onButtonPress,
@@ -34,50 +138,145 @@ export function ResultSheet({
   onSecondaryButtonPress,
   children,
 }: ResultSheetProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const showSecondaryButton = secondaryButtonLabel && onSecondaryButtonPress;
   const showPrimaryButton = buttonLabel && onButtonPress;
+  const summaryState = useMemo(() => compactSummary(summary), [summary]);
+  const visibleSteps = useMemo(() => getVisibleSteps(steps), [steps]);
+  const sourceNames = useMemo(
+    () => getMetadataStringArray(guidanceMetadata, 'sourceNames', 'source_names'),
+    [guidanceMetadata],
+  );
+  const showExpandedDetails = condenseGuidance
+    && hasHiddenGuidanceDetails(summaryState, steps, visibleSteps, warnings, sourceNames);
+  const footerToggleLabel = isExpanded ? 'Show less' : 'More details';
+  const resolvedSummary = condenseGuidance ? summaryState.text : summary;
+  const resolvedSteps = condenseGuidance ? visibleSteps : steps.map((step) => ({ text: step, truncated: false }));
 
   return (
     <View style={styles.sheet}>
-      <View style={styles.handle} />
+      <View style={styles.header}>
+        <View style={styles.handle} />
 
-      <Text style={styles.eyebrow}>{label}</Text>
-      <Text style={styles.title}>{title}</Text>
+        {onClose ? (
+          <Pressable
+            accessibilityLabel="Close result"
+            onPress={onClose}
+            style={({ pressed }) => [
+              styles.closeButton,
+              pressed && styles.buttonPressed,
+            ]}>
+            <Ionicons color="#5B6470" name="close" size={18} />
+          </Pressable>
+        ) : null}
 
-      {materialTag ? (
-        <View style={styles.tag}>
-          <Ionicons color="#5B6470" name="leaf-outline" size={14} />
-          <Text style={styles.tagText}>{materialTag}</Text>
-        </View>
-      ) : null}
+        <Text style={styles.eyebrow}>{label}</Text>
+        <Text style={styles.title}>{title}</Text>
 
-      <Text style={styles.summary}>{summary}</Text>
+        {materialTag ? (
+          <View style={styles.tag}>
+            <Ionicons color="#5B6470" name="leaf-outline" size={14} />
+            <Text numberOfLines={1} style={styles.tagText}>
+              {materialTag}
+            </Text>
+          </View>
+        ) : null}
+      </View>
 
-      {steps.length ? (
-        <View style={styles.steps}>
-          {steps.map((step, index) => (
-            <View key={`${step}-${index}`} style={styles.stepRow}>
-              <View style={styles.stepIndex}>
-                <Text style={styles.stepIndexText}>{index + 1}</Text>
+      <ScrollView
+        bounces={false}
+        contentContainerStyle={styles.bodyContent}
+        showsVerticalScrollIndicator={false}
+        style={styles.body}>
+        <Text style={styles.summary}>{resolvedSummary}</Text>
+
+        {resolvedSteps.length ? (
+          <View style={styles.steps}>
+            {resolvedSteps.map((step, index) => (
+              <View key={`${step.text}-${index}`} style={styles.stepRow}>
+                <View style={styles.stepIndex}>
+                  <Text style={styles.stepIndexText}>{index + 1}</Text>
+                </View>
+                <Text style={styles.stepText}>{step.text}</Text>
               </View>
-              <Text style={styles.stepText}>{step}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
+            ))}
+          </View>
+        ) : null}
 
-      {children}
+        {isExpanded && condenseGuidance ? (
+          <View style={styles.expandedDetails}>
+            {summaryState.truncated ? (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionLabel}>Full summary</Text>
+                <Text style={styles.detailText}>{summary}</Text>
+              </View>
+            ) : null}
+
+            {steps.length > 0 ? (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionLabel}>All steps</Text>
+                <View style={styles.detailList}>
+                  {steps.map((step, index) => (
+                    <Text key={`${step}-full-${index}`} style={styles.detailText}>
+                      {index + 1}. {step}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {warnings.length ? (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionLabel}>Warnings</Text>
+                <View style={styles.detailList}>
+                  {warnings.map((warning, index) => (
+                    <Text key={`${warning}-${index}`} style={styles.detailText}>
+                      {warning}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {sourceNames.length ? (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionLabel}>Sources</Text>
+                <View style={styles.detailList}>
+                  {sourceNames.map((sourceName, index) => (
+                    <Text key={`${sourceName}-${index}`} style={styles.detailText}>
+                      {sourceName}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+          </View>
+        ) : null}
+
+        {showExpandedDetails ? (
+          <Pressable
+            onPress={() => setIsExpanded((current) => !current)}
+            style={({ pressed }) => [
+              styles.detailsToggle,
+              pressed && styles.buttonPressed,
+            ]}>
+            <Text style={styles.detailsToggleText}>{footerToggleLabel}</Text>
+          </Pressable>
+        ) : null}
+
+        {children}
+      </ScrollView>
 
       {(showSecondaryButton || showPrimaryButton) ? (
-        <View style={styles.buttonStack}>
+        <View style={styles.footer}>
           {showSecondaryButton ? (
             <Pressable
               onPress={onSecondaryButtonPress}
               style={({ pressed }) => [
                 styles.secondaryButton,
                 pressed && styles.buttonPressed,
-              ]}
-            >
+              ]}>
               <Ionicons color="#333333" name={secondaryButtonIconName} size={17} />
               <Text style={styles.secondaryButtonText}>{secondaryButtonLabel}</Text>
             </Pressable>
@@ -89,8 +288,7 @@ export function ResultSheet({
               style={({ pressed }) => [
                 styles.button,
                 pressed && styles.buttonPressed,
-              ]}
-            >
+              ]}>
               <Ionicons color="#FFFFFF" name={buttonIconName} size={18} />
               <Text style={styles.buttonText}>{buttonLabel}</Text>
             </Pressable>
@@ -105,22 +303,40 @@ const styles = StyleSheet.create({
   sheet: {
     backgroundColor: '#FFFEFC',
     borderRadius: 32,
-    gap: 12,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 18,
+    maxHeight: '100%',
+    minHeight: 220,
+    overflow: 'hidden',
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 16 },
     shadowOpacity: 0.12,
     shadowRadius: 24,
+  },
+  header: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 10,
+    position: 'relative',
   },
   handle: {
     alignSelf: 'center',
     backgroundColor: '#E6E1DA',
     borderRadius: 999,
     height: 5,
-    marginBottom: 4,
+    marginBottom: 12,
     width: 38,
+  },
+  closeButton: {
+    alignItems: 'center',
+    backgroundColor: '#F4F1EC',
+    borderColor: '#E3DED6',
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 30,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 18,
+    top: 22,
+    width: 30,
   },
   eyebrow: {
     color: '#9A948C',
@@ -135,6 +351,8 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: -1.3,
     textAlign: 'center',
+    marginBottom: 10,
+    marginTop: 8,
   },
   tag: {
     alignItems: 'center',
@@ -145,12 +363,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 10,
   },
   tagText: {
     color: '#4E5661',
     fontSize: 12,
     fontWeight: '700',
+  },
+  body: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  bodyContent: {
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingBottom: 14,
   },
   summary: {
     color: '#66605B',
@@ -159,12 +386,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   steps: {
-    gap: 12,
+    gap: 10,
     marginTop: 2,
   },
   stepRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
   },
   stepIndex: {
     alignItems: 'center',
@@ -185,11 +412,51 @@ const styles = StyleSheet.create({
     color: '#736C65',
     flex: 1,
     fontSize: 15,
-    lineHeight: 22,
+    lineHeight: 21,
   },
-  buttonStack: {
+  expandedDetails: {
+    backgroundColor: '#F8F5F0',
+    borderColor: '#ECE5DB',
+    borderRadius: 18,
+    borderWidth: 1,
     gap: 10,
-    marginTop: 6,
+    padding: 14,
+  },
+  detailSection: {
+    gap: 6,
+  },
+  detailSectionLabel: {
+    color: '#605951',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  detailList: {
+    gap: 6,
+  },
+  detailText: {
+    color: '#6D655E',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  footer: {
+    backgroundColor: '#FFFEFC',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingTop: 6,
+    paddingBottom: 12,
+  },
+  detailsToggle: {
+    alignItems: 'center',
+    paddingTop: 2,
+    paddingBottom: 1,
+  },
+  detailsToggleText: {
+    color: '#6A625B',
+    fontSize: 13,
+    fontWeight: '800',
+    textDecorationLine: 'underline',
   },
   secondaryButton: {
     alignItems: 'center',
@@ -200,7 +467,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 7,
     justifyContent: 'center',
-    paddingVertical: 12,
+    paddingVertical: 13,
   },
   secondaryButtonText: {
     color: '#333333',
@@ -214,7 +481,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
-    paddingVertical: 16,
+    paddingVertical: 15,
   },
   buttonPressed: {
     opacity: 0.82,

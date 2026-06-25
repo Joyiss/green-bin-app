@@ -12,7 +12,6 @@ import {
   LayoutChangeEvent,
   Linking,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -48,7 +47,13 @@ type PredictionResponse = {
   disposal_action: string | null;
   material_code: string | null;
   impact_level: string | null;
+  summary?: string | null;
   steps: string[];
+  guidance_source?: string;
+  guidanceSource?: string;
+  warnings?: string[];
+  guidance_metadata?: Record<string, unknown>;
+  guidanceMetadata?: Record<string, unknown>;
 };
 
 type SheetViewState = 'idle' | PredictionStatus;
@@ -68,8 +73,16 @@ type ScannerResultData = {
   materialTag?: string | null;
   summary: string;
   steps: string[];
-  buttonLabel: string;
-  buttonIconName: keyof typeof Ionicons.glyphMap;
+  warnings: string[];
+  guidanceSource?: string;
+  guidanceMetadata: Record<string, unknown>;
+  showNearbyButton: boolean;
+};
+
+type NormalizedGuidanceMetadata = Record<string, unknown> & {
+  requiresLocationCheck?: boolean;
+  locationSearchRecommended?: boolean;
+  sourceNames?: string[];
 };
 
 type ActiveScanSession = {
@@ -89,14 +102,165 @@ function getImpactLevelText(impactLevel: string | null) {
   return (impactLevel ?? 'Local Guidance').trim();
 }
 
-function getMaterialTag(response: PredictionResponse) {
-  const impact = getImpactLevelText(response.impact_level);
-  return response.material_code ? `${response.material_code} - ${impact}` : impact;
+function getMetadataObject(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function getMetadataStringArray(
+  metadata: Record<string, unknown> | null,
+  ...keys: string[]
+) {
+  if (!metadata) {
+    return [];
+  }
+
+  for (const key of keys) {
+    const value = metadata[key];
+    if (!Array.isArray(value)) {
+      continue;
+    }
+
+    const normalizedValues = value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean);
+
+    if (normalizedValues.length) {
+      return normalizedValues;
+    }
+  }
+
+  return [];
+}
+
+function getMetadataBoolean(
+  metadata: Record<string, unknown> | null,
+  ...keys: string[]
+) {
+  if (!metadata) {
+    return false;
+  }
+
+  return keys.some((key) => metadata[key] === true);
+}
+
+function getNormalizedGuidanceMetadata(
+  value: PredictionResponse | ScannerResultData | Record<string, unknown> | null | undefined,
+): NormalizedGuidanceMetadata {
+  const record = getMetadataObject(value);
+  if (!record) {
+    return {};
+  }
+
+  const nestedMetadata =
+    getMetadataObject(record.guidanceMetadata) ?? getMetadataObject(record.guidance_metadata);
+  const metadata = nestedMetadata ?? record;
+  const sourceNames = getMetadataStringArray(metadata, 'sourceNames', 'source_names');
+
+  return {
+    ...metadata,
+    sourceNames,
+    requiresLocationCheck: getMetadataBoolean(
+      metadata,
+      'requiresLocationCheck',
+      'requires_location_check',
+    ),
+    locationSearchRecommended: getMetadataBoolean(
+      metadata,
+      'locationSearchRecommended',
+      'location_search_recommended',
+    ),
+  };
+}
+
+function shortenImpactLabel(impactLevel: string | null) {
+  const impact = getImpactLevelText(impactLevel);
+  const normalizedImpact = impact.toLowerCase();
+
+  if (normalizedImpact === 'high impact') {
+    return 'High';
+  }
+  if (normalizedImpact === 'low impact') {
+    return 'Low';
+  }
+  if (normalizedImpact === 'check local guidance') {
+    return 'Check local';
+  }
+  if (
+    normalizedImpact === 'trusted guidance unavailable'
+    || normalizedImpact === 'low confidence guidance'
+  ) {
+    return 'Low confidence';
+  }
+
+  return impact;
+}
+
+function getCompactPillLabel(response: PredictionResponse) {
+  const material = response.material_code?.trim()
+    || (response.category && response.category !== 'Unknown' ? response.category.trim() : '');
+  const impact = shortenImpactLabel(response.impact_level);
+
+  if (material && impact) {
+    return `${material} · ${impact}`;
+  }
+  if (material) {
+    return material;
+  }
+
+  return impact;
 }
 
 function getPredictionSummary(response: PredictionResponse) {
+  const providedSummary = response.summary?.trim();
+  if (providedSummary) {
+    return providedSummary;
+  }
+
   const action = getDisposalActionText(response.disposal_action);
   return `${response.item} is categorized as ${response.category.toLowerCase()} and should be handled through ${action} guidance in your area.`;
+}
+
+function shouldShowNearbyButton(response: PredictionResponse) {
+  const normalizedAction = response.disposal_action?.trim().toLowerCase() ?? '';
+  if (
+    normalizedAction.includes('drop-off')
+    || normalizedAction.includes('drop off')
+    || normalizedAction.includes('hazardous')
+    || normalizedAction.includes('e-waste')
+    || normalizedAction.includes('check local')
+    || normalizedAction.includes('take-back')
+    || normalizedAction.includes('take back')
+  ) {
+    return true;
+  }
+
+  const metadata = getNormalizedGuidanceMetadata(response);
+  if (metadata.requiresLocationCheck || metadata.locationSearchRecommended) {
+    return true;
+  }
+
+  const guidanceText = [getPredictionSummary(response), ...response.steps]
+    .join(' ')
+    .toLowerCase();
+
+  return [
+    'drop-off',
+    'drop off',
+    'take-back',
+    'take back',
+    'facility',
+    'recycling center',
+    'local recycling program',
+    'verify local',
+    'verify the location',
+    'location verification',
+    'program availability',
+    'local availability',
+  ].some((term) => guidanceText.includes(term));
 }
 
 function getPredictedItemFromPrediction(prediction: PredictionResponse) {
@@ -152,17 +316,18 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
 
 function toSheetData(response: PredictionResponse): ScannerResultData {
   const action = getDisposalActionText(response.disposal_action);
-  const materialTag = getMaterialTag(response);
 
   return {
     item: response.item,
     label: `IDENTIFIED - ${response.item.toUpperCase()}`,
     title: `${action}.`,
-    materialTag,
+    materialTag: getCompactPillLabel(response),
     summary: getPredictionSummary(response),
     steps: response.steps,
-    buttonLabel: 'Find Nearby Locations',
-    buttonIconName: 'location-outline',
+    warnings: Array.isArray(response.warnings) ? response.warnings : [],
+    guidanceSource: response.guidanceSource ?? response.guidance_source,
+    guidanceMetadata: getNormalizedGuidanceMetadata(response),
+    showNearbyButton: shouldShowNearbyButton(response),
   };
 }
 
@@ -305,7 +470,7 @@ export default function ScannerScreen() {
   const [sheetHeight, setSheetHeight] = useState(0);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
   const bottomNavOffset = Math.max(insets.bottom, 12);
-  const resultSheetBottomOffset = bottomNavOffset + BOTTOM_NAV_BAR_HEIGHT + 12;
+  const resultSheetBottomOffset = bottomNavOffset + BOTTOM_NAV_BAR_HEIGHT + 20;
   const hiddenSheetOffset = Math.max(sheetHeight + resultSheetBottomOffset + 24, windowHeight);
 
   useEffect(() => {
@@ -455,7 +620,7 @@ export default function ScannerScreen() {
       status: activeSession.originalStatus,
       scannedAt: activeSession.scannedAt,
       updatedAt: new Date().toISOString(),
-      materialTag: getMaterialTag(prediction),
+      materialTag: getCompactPillLabel(prediction),
       summary: getPredictionSummary(prediction),
       steps: prediction.steps,
     };
@@ -736,55 +901,61 @@ export default function ScannerScreen() {
                 styles.sheetWrap,
                 {
                   bottom: resultSheetBottomOffset,
-                  maxHeight: windowHeight - insets.top - resultSheetBottomOffset - 20,
+                  maxHeight: Math.min(
+                    windowHeight * 0.78,
+                    windowHeight - insets.top - resultSheetBottomOffset - 72,
+                  ),
                   transform: [{ translateY: sheetAnimation }],
                 },
               ]}>
-              <ScrollView
-                bounces={false}
-                contentContainerStyle={styles.sheetContent}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-                style={styles.sheetScroll}>
-                {visibleSheetState === 'confident' && result ? (
-                  <ResultSheet
-                    buttonIconName={result.buttonIconName}
-                    buttonLabel={result.buttonLabel}
-                    label={result.label}
-                    materialTag={result.materialTag}
-                    onButtonPress={() =>
-                      router.navigate({
-                        pathname: '/(tabs)/nearby',
-                        params: { item: result.item },
-                      })
-                    }
-                    secondaryButtonIconName="swap-horizontal-outline"
-                    secondaryButtonLabel="Change Item"
-                    onSecondaryButtonPress={handleChangeItem}
-                    steps={result.steps}
-                    summary={result.summary}
-                    title={result.title}
-                  />
-                ) : null}
+              {visibleSheetState === 'confident' && result ? (
+                <ResultSheet
+                  buttonIconName="location-outline"
+                  buttonLabel={result.showNearbyButton ? 'Find Nearby Locations' : undefined}
+                  condenseGuidance
+                  guidanceMetadata={result.guidanceMetadata}
+                  guidanceSource={result.guidanceSource}
+                  label={result.label}
+                  materialTag={result.materialTag}
+                  onButtonPress={
+                    result.showNearbyButton
+                      ? () =>
+                          router.navigate({
+                            pathname: '/(tabs)/nearby',
+                            params: { item: result.item },
+                          })
+                      : undefined
+                  }
+                  onClose={resetScanner}
+                  secondaryButtonIconName="swap-horizontal-outline"
+                  secondaryButtonLabel="Change Item"
+                  onSecondaryButtonPress={handleChangeItem}
+                  steps={result.steps}
+                  summary={result.summary}
+                  title={result.title}
+                  warnings={result.warnings}
+                />
+              ) : null}
 
-                {visibleSheetState === 'uncertain' ? (
-                  <ResultSheet
-                    buttonIconName="camera-outline"
-                    buttonLabel="Retake Photo"
-                    label="REVIEW NEEDED"
-                    materialTag="Multiple Plausible Matches"
-                    onButtonPress={resetScanner}
-                    steps={[]}
-                    summary={
-                      isShowingManualEntry
-                        ? 'Search for the supported item label that best matches this object, then continue to load the right disposal guidance.'
-                        : candidates.length > 0
-                          ? "Pick the best match below, or choose Other to search the full supported item list."
-                          : "We couldn't load alternate matches for this scan, but you can still search the supported item list or retake the photo."
-                    }
-                    title="Which item is this?">
-                    {isShowingManualEntry ? (
-                      <View style={styles.manualEntrySection}>
+              {visibleSheetState === 'uncertain' ? (
+                <ResultSheet
+                  buttonIconName="camera-outline"
+                  buttonLabel="Retake Photo"
+                  label="REVIEW NEEDED"
+                  materialTag="Multiple Plausible Matches"
+                  onButtonPress={resetScanner}
+                  onClose={resetScanner}
+                  steps={[]}
+                  summary={
+                    isShowingManualEntry
+                      ? 'Search for the supported item label that best matches this object, then continue to load the right disposal guidance.'
+                      : candidates.length > 0
+                        ? "Pick the best match below, or choose Other to search the full supported item list."
+                        : "We couldn't load alternate matches for this scan, but you can still search the supported item list or retake the photo."
+                  }
+                  title="Which item is this?">
+                  {isShowingManualEntry ? (
+                    <View style={styles.manualEntrySection}>
                         <Text style={styles.manualEntryPrompt}>What item is this?</Text>
                         <TextInput
                           autoCapitalize="words"
@@ -932,24 +1103,24 @@ export default function ScannerScreen() {
                             Other
                           </Text>
                         </Pressable>
-                      </View>
-                    )}
-                  </ResultSheet>
-                ) : null}
+                    </View>
+                  )}
+                </ResultSheet>
+              ) : null}
 
-                {visibleSheetState === 'unknown' ? (
-                  <ResultSheet
-                    buttonIconName="camera-outline"
-                    buttonLabel="Retake Photo"
-                    label="UNIDENTIFIED"
-                    materialTag="No Strong Match"
-                    onButtonPress={resetScanner}
-                    steps={[]}
-                    summary="We couldn't identify this clearly without risking the wrong disposal guidance. Retake the photo with brighter light, a simpler background, or a closer crop."
-                    title="We couldn't identify this clearly"
-                  />
-                ) : null}
-              </ScrollView>
+              {visibleSheetState === 'unknown' ? (
+                <ResultSheet
+                  buttonIconName="camera-outline"
+                  buttonLabel="Retake Photo"
+                  label="UNIDENTIFIED"
+                  materialTag="No Strong Match"
+                  onButtonPress={resetScanner}
+                  onClose={resetScanner}
+                  steps={[]}
+                  summary="We couldn't identify this clearly without risking the wrong disposal guidance. Retake the photo with brighter light, a simpler background, or a closer crop."
+                  title="We couldn't identify this clearly"
+                />
+              ) : null}
             </Animated.View>
           ) : null}
         </View>
@@ -982,6 +1153,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+    elevation: 50,
+    zIndex: 50,
   },
   headerIconButton: {
     alignItems: 'center',
@@ -1094,17 +1267,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 12,
   },
-  sheetScroll: {
-    flex: 1,
-  },
   sheetWrap: {
     left: 16,
+    overflow: 'visible',
     position: 'absolute',
     right: 16,
     zIndex: 20,
-  },
-  sheetContent: {
-    paddingBottom: 20,
   },
   choiceButtonGroup: {
     gap: 10,

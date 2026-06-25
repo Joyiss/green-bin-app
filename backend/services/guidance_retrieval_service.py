@@ -19,6 +19,58 @@ except ImportError:
 
 MIN_RETRIEVAL_SCORE = 3.0
 _GENERIC_MATERIALS = {"metal", "plastic", "paper", "glass", "cardboard"}
+_GENERIC_LOOKUP_TERMS = {
+    "mixed material",
+    "unknown",
+    "household item",
+    "general",
+    "other",
+}
+_ALIAS_CANONICAL_MAP = {
+    "battery": "battery",
+    "batteries": "battery",
+    "rechargeable battery": "battery",
+    "rechargeable batteries": "battery",
+    "lithium ion battery": "battery",
+    "lithium ion batteries": "battery",
+    "electronics": "electronics/e-waste",
+    "electronic": "electronics/e-waste",
+    "electronics e waste": "electronics/e-waste",
+    "electronic e waste": "electronics/e-waste",
+    "e waste": "electronics/e-waste",
+    "electronic waste": "electronics/e-waste",
+}
+_EARTH911_SPECIAL_TERMS = {
+    "battery",
+    "electronics/e-waste",
+    "paint",
+    "paint/household hazardous waste",
+    "aerosol can",
+    "motor oil",
+    "light bulb",
+    "fluorescent bulb",
+    "fluorescent lamp",
+    "medicine",
+    "medication",
+    "sharp",
+    "sharps",
+    "needle",
+    "syringe",
+    "textile",
+    "clothing",
+    "appliance",
+    "hazardous",
+    "hazardous waste",
+}
+_EARTH911_SPECIAL_FLAGS = {
+    "requires_dropoff",
+    "dropoff_recommended",
+    "special_handling",
+    "hazardous",
+    "e_waste",
+    "electronics",
+    "battery",
+}
 
 
 def _normalize_string_list(values: Any) -> list[str]:
@@ -45,6 +97,72 @@ def _normalize_condition_flags(values: Any) -> list[str]:
             normalized_values.append(normalized_value.replace(" ", "_"))
 
     return normalized_values
+
+
+def _candidate_values(primary_value: Any, candidate_values: Any) -> list[str]:
+    normalized_candidates: list[str] = []
+    seen: set[str] = set()
+
+    combined_values: list[Any] = []
+    if primary_value is not None:
+        combined_values.append(primary_value)
+    if isinstance(candidate_values, list):
+        combined_values.extend(candidate_values)
+
+    for value in combined_values:
+        normalized_value = normalize_guidance_phrase(value)
+        if normalized_value and normalized_value not in seen:
+            seen.add(normalized_value)
+            normalized_candidates.append(str(value).strip())
+
+    return normalized_candidates
+
+
+def _canonical_alias(value: Any) -> str | None:
+    normalized_value = normalize_guidance_label_for_match(value)
+    if normalized_value is None:
+        return None
+
+    return _ALIAS_CANONICAL_MAP.get(normalized_value, normalized_value)
+
+
+def _is_generic_lookup_term(value: Any) -> bool:
+    normalized_value = normalize_guidance_label_for_match(value)
+    if normalized_value is None:
+        return False
+    return normalized_value in _GENERIC_LOOKUP_TERMS
+
+
+def _is_earth911_chunk(chunk: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        filter(
+            None,
+            [
+                str(chunk.get("id") or ""),
+                str(chunk.get("source_name") or ""),
+            ],
+        )
+    ).casefold()
+    return "earth911" in haystack
+
+
+def _is_earth911_special_term(value: Any) -> bool:
+    canonical_value = _canonical_alias(value)
+    if canonical_value is None:
+        return False
+    return canonical_value in _EARTH911_SPECIAL_TERMS
+
+
+def _labels_match_with_aliases(left: Any, right: Any) -> bool:
+    if labels_match_conservatively(left, right):
+        return True
+
+    canonical_left = _canonical_alias(left)
+    canonical_right = _canonical_alias(right)
+    if canonical_left is None or canonical_right is None:
+        return False
+
+    return canonical_left == canonical_right
 
 
 def _location_text(value: Any) -> str:
@@ -158,9 +276,9 @@ def _chunk_is_general_fallback(chunk: dict[str, Any]) -> bool:
 def _score_chunk(
     chunk: dict[str, Any],
     *,
-    item_label: str | None,
-    material: str | None,
-    category: str | None,
+    item_candidates: list[str],
+    material_candidates: list[str],
+    category_candidates: list[str],
     condition_flags: list[str],
 ) -> tuple[float, list[str]]:
     applies_to = chunk.get("applies_to") or {}
@@ -168,48 +286,99 @@ def _score_chunk(
     score = 0.0
     has_primary_semantic_match = False
     is_general_fallback = _chunk_is_general_fallback(chunk)
+    earth911_special_semantic_match = False
 
-    normalized_item = normalize_guidance_phrase(item_label)
-    normalized_item_singular = normalize_guidance_label_for_match(item_label)
+    effective_item_candidates = [
+        candidate for candidate in item_candidates if not _is_generic_lookup_term(candidate)
+    ]
+    effective_material_candidates = [
+        candidate for candidate in material_candidates if not _is_generic_lookup_term(candidate)
+    ]
+    effective_category_candidates = [
+        candidate for candidate in category_candidates if not _is_generic_lookup_term(candidate)
+    ]
+
     chunk_item_labels = applies_to.get("item_labels") or []
-    if normalized_item:
-        for chunk_item_label in chunk_item_labels:
-            if normalize_guidance_phrase(chunk_item_label) == normalized_item:
-                score += 8.0
-                matched_fields.append("item_label_exact")
-                has_primary_semantic_match = True
-                break
-        else:
-            if any(
-                labels_match_conservatively(chunk_item_label, normalized_item_singular)
+    if effective_item_candidates:
+        exact_item_match = any(
+            normalize_guidance_phrase(chunk_item_label)
+            == normalize_guidance_phrase(candidate_item)
+            for candidate_item in effective_item_candidates
+            for chunk_item_label in chunk_item_labels
+            if normalize_guidance_phrase(candidate_item)
+        )
+        if exact_item_match:
+            score += 8.0
+            matched_fields.append("item_label_exact")
+            has_primary_semantic_match = True
+            earth911_special_semantic_match = any(
+                _is_earth911_special_term(candidate_item)
+                or _is_earth911_special_term(chunk_item_label)
+                for candidate_item in effective_item_candidates
                 for chunk_item_label in chunk_item_labels
-            ):
-                score += 6.0
-                matched_fields.append("item_label_normalized")
-                has_primary_semantic_match = True
+                if normalize_guidance_phrase(chunk_item_label)
+                == normalize_guidance_phrase(candidate_item)
+            )
+        elif any(
+            _labels_match_with_aliases(chunk_item_label, candidate_item)
+            for candidate_item in effective_item_candidates
+            for chunk_item_label in chunk_item_labels
+        ):
+            score += 6.0
+            matched_fields.append("item_label_normalized")
+            has_primary_semantic_match = True
+            earth911_special_semantic_match = any(
+                _is_earth911_special_term(candidate_item)
+                or _is_earth911_special_term(chunk_item_label)
+                for candidate_item in effective_item_candidates
+                for chunk_item_label in chunk_item_labels
+                if _labels_match_with_aliases(chunk_item_label, candidate_item)
+            )
 
-    normalized_material = normalize_guidance_label_for_match(material)
     chunk_materials = applies_to.get("materials") or []
     material_match = False
-    if normalized_material:
+    material_match_candidate: str | None = None
+    if effective_material_candidates:
         material_match = any(
-            labels_match_conservatively(chunk_material, normalized_material)
+            _labels_match_with_aliases(chunk_material, candidate_material)
+            for candidate_material in effective_material_candidates
             for chunk_material in chunk_materials
         )
         if material_match:
+            for candidate_material in effective_material_candidates:
+                if any(
+                    _labels_match_with_aliases(chunk_material, candidate_material)
+                    for chunk_material in chunk_materials
+                ):
+                    material_match_candidate = candidate_material
+                    break
             score += 4.0
             matched_fields.append("material")
             has_primary_semantic_match = True
+            earth911_special_semantic_match = earth911_special_semantic_match or any(
+                _is_earth911_special_term(candidate_material)
+                or _is_earth911_special_term(chunk_material)
+                for candidate_material in effective_material_candidates
+                for chunk_material in chunk_materials
+                if _labels_match_with_aliases(chunk_material, candidate_material)
+            )
 
-    normalized_category = normalize_guidance_label_for_match(category)
     chunk_categories = applies_to.get("categories") or []
-    if normalized_category and any(
-        labels_match_conservatively(chunk_category, normalized_category)
+    if effective_category_candidates and any(
+        _labels_match_with_aliases(chunk_category, candidate_category)
+        for candidate_category in effective_category_candidates
         for chunk_category in chunk_categories
     ):
         score += 3.0
         matched_fields.append("category")
         has_primary_semantic_match = True
+        earth911_special_semantic_match = earth911_special_semantic_match or any(
+            _is_earth911_special_term(candidate_category)
+            or _is_earth911_special_term(chunk_category)
+            for candidate_category in effective_category_candidates
+            for chunk_category in chunk_categories
+            if _labels_match_with_aliases(chunk_category, candidate_category)
+        )
 
     if score == 0.0 and is_general_fallback:
         score += 3.0
@@ -228,7 +397,7 @@ def _score_chunk(
         and "category" not in matched_fields
         and "item_label_exact" not in matched_fields
         and "item_label_normalized" not in matched_fields
-        and normalized_material in _GENERIC_MATERIALS
+        and _canonical_alias(material_match_candidate) in _GENERIC_MATERIALS
     ):
         score = 0.0
         matched_fields = []
@@ -241,6 +410,17 @@ def _score_chunk(
     if chunk.get("verified") is True:
         score += 0.1
 
+    if _is_earth911_chunk(chunk):
+        special_flag_overlap = bool(
+            set(normalized_condition_flags) & _EARTH911_SPECIAL_FLAGS
+        )
+        if not earth911_special_semantic_match:
+            score = 0.0
+            matched_fields = []
+        elif not special_flag_overlap and "category" not in matched_fields and "item_label_exact" not in matched_fields and "item_label_normalized" not in matched_fields:
+            score = 0.0
+            matched_fields = []
+
     return score, matched_fields
 
 
@@ -249,6 +429,9 @@ def retrieve_guidance_chunks(
     item_label: str | None,
     material: str | None,
     category: str | None,
+    item_candidates: list[str] | None = None,
+    material_candidates: list[str] | None = None,
+    category_candidates: list[str] | None = None,
     condition_flags: list[str] | None = None,
     location: dict[str, Any] | None = None,
     chunks: list[dict[str, Any]] | None = None,
@@ -257,6 +440,9 @@ def retrieve_guidance_chunks(
     candidate_chunks = (
         list(chunks) if isinstance(chunks, list) else load_trusted_guidance_chunks()
     )
+    effective_item_candidates = _candidate_values(item_label, item_candidates)
+    effective_material_candidates = _candidate_values(material, material_candidates)
+    effective_category_candidates = _candidate_values(category, category_candidates)
     normalized_condition_flags = _normalize_condition_flags(condition_flags or [])
 
     matches: list[dict[str, Any]] = []
@@ -266,9 +452,9 @@ def retrieve_guidance_chunks(
 
         score, matched_fields = _score_chunk(
             chunk,
-            item_label=item_label,
-            material=material,
-            category=category,
+            item_candidates=effective_item_candidates,
+            material_candidates=effective_material_candidates,
+            category_candidates=effective_category_candidates,
             condition_flags=normalized_condition_flags,
         )
         if score < min_score:
