@@ -12,7 +12,6 @@ type ResultSheetProps = {
   guidanceMetadata?: Record<string, unknown> | null;
   guidanceSource?: string;
   condenseGuidance?: boolean;
-  onClose?: () => void;
 
   buttonLabel?: string;
   buttonIconName?: keyof typeof Ionicons.glyphMap;
@@ -110,10 +109,13 @@ function hasHiddenGuidanceDetails(
   warnings: string[],
   sourceNames: string[],
 ) {
+  const hiddenSteps = steps.slice(visibleSteps.length);
+  const truncatedVisibleSteps = visibleSteps.filter((step) => step.truncated);
+
   return (
     summaryState.truncated ||
-    steps.length > visibleSteps.length ||
-    visibleSteps.some((step) => step.truncated) ||
+    hiddenSteps.length > 0 ||
+    truncatedVisibleSteps.length > 0 ||
     warnings.length > 0 ||
     sourceNames.length > 0
   );
@@ -129,7 +131,6 @@ export function ResultSheet({
   guidanceMetadata,
   guidanceSource,
   condenseGuidance = false,
-  onClose,
   buttonLabel,
   buttonIconName = 'location-outline',
   onButtonPress,
@@ -147,6 +148,14 @@ export function ResultSheet({
     () => getMetadataStringArray(guidanceMetadata, 'sourceNames', 'source_names'),
     [guidanceMetadata],
   );
+  const hiddenSteps = useMemo(() => steps.slice(visibleSteps.length), [steps, visibleSteps]);
+  const truncatedVisibleSteps = useMemo(
+    () =>
+      visibleSteps
+        .map((step, index) => ({ ...step, index }))
+        .filter((step) => step.truncated),
+    [visibleSteps],
+  );
   const showExpandedDetails = condenseGuidance
     && hasHiddenGuidanceDetails(summaryState, steps, visibleSteps, warnings, sourceNames);
   const footerToggleLabel = isExpanded ? 'Show less' : 'More details';
@@ -157,18 +166,6 @@ export function ResultSheet({
     <View style={styles.sheet}>
       <View style={styles.header}>
         <View style={styles.handle} />
-
-        {onClose ? (
-          <Pressable
-            accessibilityLabel="Close result"
-            onPress={onClose}
-            style={({ pressed }) => [
-              styles.closeButton,
-              pressed && styles.buttonPressed,
-            ]}>
-            <Ionicons color="#5B6470" name="close" size={18} />
-          </Pressable>
-        ) : null}
 
         <Text style={styles.eyebrow}>{label}</Text>
         <Text style={styles.title}>{title}</Text>
@@ -212,13 +209,26 @@ export function ResultSheet({
               </View>
             ) : null}
 
-            {steps.length > 0 ? (
+            {hiddenSteps.length > 0 ? (
               <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>All steps</Text>
+                <Text style={styles.detailSectionLabel}>More steps</Text>
                 <View style={styles.detailList}>
-                  {steps.map((step, index) => (
+                  {hiddenSteps.map((step, index) => (
                     <Text key={`${step}-full-${index}`} style={styles.detailText}>
-                      {index + 1}. {step}
+                      {visibleSteps.length + index + 1}. {step}
+                    </Text>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {truncatedVisibleSteps.length > 0 ? (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionLabel}>Full step details</Text>
+                <View style={styles.detailList}>
+                  {truncatedVisibleSteps.map((step) => (
+                    <Text key={`${steps[step.index]}-detail-${step.index}`} style={styles.detailText}>
+                      {step.index + 1}. {steps[step.index]}
                     </Text>
                   ))}
                 </View>
@@ -324,19 +334,6 @@ const styles = StyleSheet.create({
     height: 5,
     marginBottom: 12,
     width: 38,
-  },
-  closeButton: {
-    alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderColor: '#E3DED6',
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 30,
-    justifyContent: 'center',
-    position: 'absolute',
-    right: 18,
-    top: 22,
-    width: 30,
   },
   eyebrow: {
     color: '#9A948C',

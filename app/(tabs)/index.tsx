@@ -358,7 +358,7 @@ type CameraAreaProps = {
   isLoading: boolean;
   isTorchOn: boolean;
   topInset: number;
-  onClose: () => void;
+  onClose?: () => void;
   onToggleTorch: () => void;
   onPickImage: () => void;
   onTakePhoto: () => void;
@@ -398,9 +398,13 @@ function CameraArea({
           <Pressable onPress={onToggleTorch} style={styles.headerIconButton}>
             <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
           </Pressable>
-          <Pressable onPress={onClose} style={styles.closeButton}>
-            <Ionicons color="#F3F6F9" name="close" size={20} />
-          </Pressable>
+          {onClose ? (
+            <Pressable onPress={onClose} style={styles.closeButton}>
+              <Ionicons color="#F3F6F9" name="close" size={20} />
+            </Pressable>
+          ) : (
+            <View style={styles.headerIconSpacer} />
+          )}
         </View>
 
         <View pointerEvents="none" style={styles.scanFrameWrap}>
@@ -881,7 +885,7 @@ export default function ScannerScreen() {
             isLoading={requestState === 'loading'}
             isTorchOn={isTorchOn}
             topInset={insets.top}
-            onClose={resetScanner}
+            onClose={visibleSheetState !== 'idle' ? resetScanner : undefined}
             onToggleTorch={() => setIsTorchOn((current) => !current)}
             onPickImage={handlePickImage}
             onTakePhoto={handleTakePhoto}
@@ -926,7 +930,6 @@ export default function ScannerScreen() {
                           })
                       : undefined
                   }
-                  onClose={resetScanner}
                   secondaryButtonIconName="swap-horizontal-outline"
                   secondaryButtonLabel="Change Item"
                   onSecondaryButtonPress={handleChangeItem}
@@ -944,7 +947,6 @@ export default function ScannerScreen() {
                   label="REVIEW NEEDED"
                   materialTag="Multiple Plausible Matches"
                   onButtonPress={resetScanner}
-                  onClose={resetScanner}
                   steps={[]}
                   summary={
                     isShowingManualEntry
@@ -1115,7 +1117,6 @@ export default function ScannerScreen() {
                   label="UNIDENTIFIED"
                   materialTag="No Strong Match"
                   onButtonPress={resetScanner}
-                  onClose={resetScanner}
                   steps={[]}
                   summary="We couldn't identify this clearly without risking the wrong disposal guidance. Retake the photo with brighter light, a simpler background, or a closer crop."
                   title="We couldn't identify this clearly"
@@ -1164,6 +1165,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     height: 34,
     justifyContent: 'center',
+    width: 34,
+  },
+  headerIconSpacer: {
+    height: 34,
     width: 34,
   },
   closeButton: {
