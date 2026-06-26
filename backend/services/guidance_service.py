@@ -189,7 +189,6 @@ _LLM_SKIP_REASONS = {
     "llm_disabled",
     "ENABLE_LLM_GUIDANCE_false",
     "provider_not_gemini",
-    "missing_GUIDANCE_LLM_MODEL",
     "missing_GEMINI_API_KEY",
     "no_chunks",
 }

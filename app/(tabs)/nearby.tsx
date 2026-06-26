@@ -3,14 +3,20 @@ import * as Location from 'expo-location';
 import { useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Linking,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
-import { SearchChip } from '@/components/search-chip';
 import { API_BASE_URL } from '@/constants/api';
-import { locationFilters } from '@/constants/mock-data';
 import { getLastScannedItem } from '@/constants/scan-session';
 
 type NearbyLocation = LocationCardProps & {
@@ -36,11 +42,28 @@ function getRouteItem(value: string | string[] | undefined) {
   return null;
 }
 
+function normalizeSearchText(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function getLocationSearchText(location: NearbyLocation) {
+  return [
+    location.name,
+    location.address,
+    location.type,
+    location.status,
+    location.distance,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 export default function NearbyScreen() {
   const insets = useSafeAreaInsets();
   const { item } = useLocalSearchParams<{ item?: string | string[] }>();
   const selectedItem = getRouteItem(item) ?? getLastScannedItem();
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -125,6 +148,14 @@ export default function NearbyScreen() {
   const subtitle = selectedItem
     ? `Find approved drop-off and recycling sites near you for ${selectedItem.toLowerCase()}.`
     : 'Find approved drop-off and recycling sites near you.';
+  const normalizedSearchQuery = normalizeSearchText(searchQuery);
+  const filteredLocations = normalizedSearchQuery
+    ? locations.filter((location) =>
+        getLocationSearchText(location).includes(normalizedSearchQuery)
+      )
+    : locations;
+  const showEmptySearchState =
+    !isLoading && !errorMessage && !!normalizedSearchQuery && filteredLocations.length === 0;
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
@@ -141,18 +172,17 @@ export default function NearbyScreen() {
 
       <View style={styles.searchBar}>
         <Ionicons color="#B4AEA8" name="search-outline" size={18} />
-        <Text style={styles.searchText}>Search facilities...</Text>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setSearchQuery}
+          placeholder="Search facilities..."
+          placeholderTextColor="#B4AEA8"
+          returnKeyType="search"
+          style={styles.searchInput}
+          value={searchQuery}
+        />
       </View>
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filtersRow}>
-        {locationFilters.map((filter, index) => (
-          <SearchChip key={filter.id} isActive={index === 0} label={filter.label} />
-        ))}
-      </ScrollView>
 
       <ScrollView
         contentContainerStyle={[
@@ -176,7 +206,7 @@ export default function NearbyScreen() {
 
         {!isLoading &&
           !errorMessage &&
-          locations.map((location) => (
+          filteredLocations.map((location) => (
             <LocationCard
               key={location.id}
               {...location}
@@ -187,6 +217,12 @@ export default function NearbyScreen() {
               }}
             />
           ))}
+
+        {showEmptySearchState ? (
+          <View style={styles.stateCard}>
+            <Text style={styles.stateText}>No locations match your search.</Text>
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -240,18 +276,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
-  searchText: {
+  searchInput: {
+    flex: 1,
+    padding: 0,
     color: '#B4AEA8',
     fontSize: 14,
     fontWeight: '600',
-  },
-  filtersRow: {
-    marginTop: 16,
-    maxHeight: 48,
-  },
-  scrollContent: {
-    gap: 10,
-    paddingRight: 10,
   },
   cards: {
     flex: 1,

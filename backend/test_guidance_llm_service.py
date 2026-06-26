@@ -75,7 +75,8 @@ class GuidanceLlmServiceTests(unittest.TestCase):
         self.env = {
             "ENABLE_LLM_GUIDANCE": "true",
             "GUIDANCE_LLM_PROVIDER": "gemini",
-            "GUIDANCE_LLM_MODEL": "gemini-3-flash-preview",
+            "GUIDABCE_LLM_MODEL": "gemini-2.5-flash",
+            "GUIDANCE_LLM_TIMEOUT": "",
             "GEMINI_API_KEY": "test-key",
         }
 
@@ -159,12 +160,138 @@ class GuidanceLlmServiceTests(unittest.TestCase):
         self.assertIsNotNone(result["guidance"])
         request_url = mock_post.call_args.args[0]
         request_headers = mock_post.call_args.kwargs["headers"]
+        self.assertIn(
+            "/models/gemini-2.5-flash:generateContent",
+            request_url,
+        )
         self.assertNotIn("?key=", request_url)
         self.assertEqual(
             request_headers["x-goog-api-key"],
             self.env["GEMINI_API_KEY"],
         )
         self.assertEqual(request_headers["Content-Type"], "application/json")
+
+    def test_old_model_env_name_is_ignored_for_safe_default(self):
+        env = {
+            "ENABLE_LLM_GUIDANCE": "true",
+            "GUIDANCE_LLM_PROVIDER": "gemini",
+            "GUIDANCE_LLM_MODEL": "gemini-3-flash-preview",
+            "GUIDANCE_LLM_TIMEOUT": "",
+            "GEMINI_API_KEY": "test-key",
+        }
+        response_text = json.dumps(
+            {
+                "disposal_action": "drop-off",
+                "summary": "Use a battery drop-off program and check local availability.",
+                "steps": [
+                    "Take the battery to a drop-off program.",
+                    "Verify local availability before relying on this option.",
+                ],
+                "warnings": [],
+                "confidence": "high",
+                "sources_used": ["chunk-1"],
+            }
+        )
+
+        with patch.dict(os.environ, env, clear=True), patch(
+            "services.guidance_llm_service.requests.post",
+            return_value=_gemini_http_response(response_text),
+        ) as mock_post:
+            result = try_generate_source_grounded_guidance(
+                recognized_item="Battery",
+                normalized_item_label="Battery",
+                material="Battery",
+                broad_category="Batteries",
+                condition_flags=[],
+                location=None,
+                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
+            )
+
+        self.assertIsNotNone(result["guidance"])
+        request_url = mock_post.call_args.args[0]
+        self.assertIn("/models/gemini-2.5-flash:generateContent", request_url)
+        self.assertNotIn("gemini-3-flash-preview", request_url)
+
+    def test_gemini_request_uses_configured_timeout(self):
+        env = dict(self.env)
+        env["GUIDANCE_LLM_TIMEOUT"] = "20"
+        response_text = json.dumps(
+            {
+                "disposal_action": "drop-off",
+                "summary": "Use a battery drop-off program and check local availability.",
+                "steps": [
+                    "Take the battery to a drop-off program.",
+                    "Verify local availability before relying on this option.",
+                ],
+                "warnings": [],
+                "confidence": "high",
+                "sources_used": ["chunk-1"],
+            }
+        )
+
+        with patch.dict(os.environ, env, clear=False), patch(
+            "services.guidance_llm_service.requests.post",
+            return_value=_gemini_http_response(response_text),
+        ) as mock_post, self.assertLogs(
+            "services.guidance_llm_service", level="INFO"
+        ) as captured_logs:
+            result = try_generate_source_grounded_guidance(
+                recognized_item="Battery",
+                normalized_item_label="Battery",
+                material="Battery",
+                broad_category="Batteries",
+                condition_flags=[],
+                location=None,
+                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
+            )
+
+        self.assertIsNotNone(result["guidance"])
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 20.0)
+        combined_logs = "\n".join(captured_logs.output)
+        self.assertIn("provider=gemini", combined_logs)
+        self.assertIn("model=gemini-2.5-flash", combined_logs)
+        self.assertIn("mode=source_grounded", combined_logs)
+        self.assertIn("chunk_ids=['chunk-1']", combined_logs)
+        self.assertIn("timeout_seconds=20.0", combined_logs)
+
+    def test_invalid_timeout_falls_back_safely(self):
+        env = dict(self.env)
+        env["GUIDANCE_LLM_TIMEOUT"] = "not-a-number"
+        response_text = json.dumps(
+            {
+                "disposal_action": "drop-off",
+                "summary": "Use a battery drop-off program and check local availability.",
+                "steps": [
+                    "Take the battery to a drop-off program.",
+                    "Verify local availability before relying on this option.",
+                ],
+                "warnings": [],
+                "confidence": "high",
+                "sources_used": ["chunk-1"],
+            }
+        )
+
+        with patch.dict(os.environ, env, clear=False), patch(
+            "services.guidance_llm_service.requests.post",
+            return_value=_gemini_http_response(response_text),
+        ) as mock_post, self.assertLogs(
+            "services.guidance_llm_service", level="WARNING"
+        ) as captured_logs:
+            result = try_generate_source_grounded_guidance(
+                recognized_item="Battery",
+                normalized_item_label="Battery",
+                material="Battery",
+                broad_category="Batteries",
+                condition_flags=[],
+                location=None,
+                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
+            )
+
+        self.assertIsNotNone(result["guidance"])
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 10.0)
+        combined_logs = "\n".join(captured_logs.output)
+        self.assertIn("Invalid GUIDANCE_LLM_TIMEOUT value", combined_logs)
+        self.assertIn("default_timeout_seconds=10.0", combined_logs)
 
     def test_invalid_json_falls_back(self):
         with patch.dict(os.environ, self.env, clear=False), patch(
@@ -370,7 +497,7 @@ class GuidanceLlmServiceTests(unittest.TestCase):
         error_response = Mock()
         error_response.status_code = 401
         error_response.text = (
-            "Model gemini-3-flash-preview not found. "
+            "Model gemini-2.5-flash not found. "
             + ("details " * 80)
             + "key=test-key"
         )
@@ -399,15 +526,15 @@ class GuidanceLlmServiceTests(unittest.TestCase):
         combined_logs = "\n".join(captured_logs.output)
         self.assertIn("HTTPError", combined_logs)
         self.assertIn("status_code=401", combined_logs)
-        self.assertIn("model=gemini-3-flash-preview", combined_logs)
+        self.assertIn("model=gemini-2.5-flash", combined_logs)
         self.assertIn(
-            "endpoint=https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
+            "endpoint=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
             combined_logs,
         )
         self.assertNotIn("test-key", combined_logs)
         self.assertNotIn("?key=", combined_logs)
         self.assertIn("body_preview=", combined_logs)
-        self.assertIn("Model gemini-3-flash-preview not found.", combined_logs)
+        self.assertIn("Model gemini-2.5-flash not found.", combined_logs)
         self.assertIn("...", combined_logs)
 
     def test_missing_api_key_skips_gemini_safely(self):
@@ -442,7 +569,7 @@ class GuidanceLlmServiceTests(unittest.TestCase):
         failed_response.raise_for_status.side_effect = http_error
 
         env = dict(self.env)
-        env["GUIDANCE_LLM_MODEL"] = "gemini-3-flash-preview-typo"
+        env["GUIDABCE_LLM_MODEL"] = "gemini-2.5-flash-typo"
 
         with patch.dict(os.environ, env, clear=False), patch(
             "services.guidance_llm_service.requests.post",

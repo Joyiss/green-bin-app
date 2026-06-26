@@ -100,7 +100,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "json_rag_llm_generated",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "source_grounded",
                 "confidence": "high",
                 "sources_used": ["chunk-1"],
@@ -314,7 +314,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -370,7 +370,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -456,7 +456,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -540,7 +540,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -751,7 +751,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
                 "llm_provider": "gemini",
-                "llm_model": "gemini-3-flash-preview",
+                "llm_model": "gemini-2.5-flash",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],

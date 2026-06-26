@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -14,7 +15,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
-GUIDANCE_LLM_TIMEOUT_SECONDS = 10.0
+DEFAULT_GUIDANCE_LLM_MODEL = "gemini-2.5-flash"
+DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS = 10.0
 MAX_LLM_SOURCE_CHUNKS = 3
 GENERAL_SAFE_REQUIRED_STEPS = [
     "Reuse or donate the item if it is still usable.",
@@ -61,6 +63,32 @@ def _normalize_optional_string(value: Any) -> str | None:
 
     normalized_value = str(value).strip()
     return normalized_value or None
+
+
+def _parse_guidance_llm_timeout() -> float:
+    raw_timeout = _normalize_optional_string(os.getenv("GUIDANCE_LLM_TIMEOUT"))
+    if raw_timeout is None:
+        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
+
+    try:
+        parsed_timeout = float(raw_timeout)
+    except ValueError:
+        logger.warning(
+            "Invalid GUIDANCE_LLM_TIMEOUT value. value=%s default_timeout_seconds=%.1f",
+            raw_timeout,
+            DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
+
+    if not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
+        logger.warning(
+            "Invalid GUIDANCE_LLM_TIMEOUT value. value=%s default_timeout_seconds=%.1f",
+            raw_timeout,
+            DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
+
+    return parsed_timeout
 
 
 def _normalize_string_list(value: Any) -> list[str]:
@@ -206,7 +234,10 @@ def _strip_chunk_for_llm(chunk: dict[str, Any]) -> dict[str, Any]:
 
 def _current_llm_settings() -> dict[str, Any]:
     provider = _normalize_optional_string(os.getenv("GUIDANCE_LLM_PROVIDER"))
-    model = _normalize_optional_string(os.getenv("GUIDANCE_LLM_MODEL"))
+    model = (
+        _normalize_optional_string(os.getenv("GUIDABCE_LLM_MODEL"))
+        or DEFAULT_GUIDANCE_LLM_MODEL
+    )
     api_key = _normalize_optional_string(os.getenv("GEMINI_API_KEY"))
     enabled = _env_truthy(os.getenv("ENABLE_LLM_GUIDANCE"))
 
@@ -215,6 +246,7 @@ def _current_llm_settings() -> dict[str, Any]:
         "provider": provider.casefold() if provider else None,
         "model": model,
         "api_key": api_key,
+        "timeout_seconds": _parse_guidance_llm_timeout(),
     }
 
 
@@ -225,8 +257,6 @@ def llm_skip_reason(settings: dict[str, Any] | None = None) -> str | None:
         return "ENABLE_LLM_GUIDANCE_false"
     if effective_settings.get("provider") != "gemini":
         return "provider_not_gemini"
-    if not effective_settings.get("model"):
-        return "missing_GUIDANCE_LLM_MODEL"
     if not effective_settings.get("api_key"):
         return "missing_GEMINI_API_KEY"
 
@@ -352,7 +382,7 @@ def _gemini_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
             endpoint,
             headers=headers,
             json=payload,
-            timeout=GUIDANCE_LLM_TIMEOUT_SECONDS,
+            timeout=settings["timeout_seconds"],
         )
     except requests.RequestException as exc:
         _log_gemini_request_exception(
@@ -739,7 +769,7 @@ def try_generate_source_grounded_guidance(
         settings.get("model"),
         "source_grounded",
         _chunk_ids(stripped_chunks),
-        GUIDANCE_LLM_TIMEOUT_SECONDS,
+        settings["timeout_seconds"],
     )
 
     try:
@@ -832,7 +862,7 @@ def try_generate_general_safe_guidance(
         settings.get("model"),
         "general_safe_fallback",
         [],
-        GUIDANCE_LLM_TIMEOUT_SECONDS,
+        settings["timeout_seconds"],
     )
     repair_reason: str | None = None
     previous_payload: dict[str, Any] | None = None
