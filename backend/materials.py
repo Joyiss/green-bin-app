@@ -168,6 +168,7 @@ _ALIAS_MAP = {
     "computer tower case": "Computer tower",
     "desktop tower computer": "Computer tower",
     "detergent jug": "Detergent bottle",
+    "drinking bottle": "Plastic water bottle",
     "drinks carton": "Drink carton",
     "ear buds": "Earbuds",
     "earbud": "Earbuds",

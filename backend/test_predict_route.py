@@ -46,7 +46,14 @@ class PredictRouteTests(unittest.TestCase):
                 "item": "Calculator",
                 "category": "Electronics",
                 "status": "confident",
-                "candidates": [{"label": "Calculator", "score": 0.98}],
+                "candidates": [
+                    {
+                        "label": "Calculator",
+                        "selected_item": "Calculator",
+                        "guidance_supported": True,
+                        "score": 0.98,
+                    }
+                ],
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",
@@ -163,7 +170,14 @@ class PredictRouteTests(unittest.TestCase):
                 "item": "Water Bottle",
                 "category": "Metal",
                 "status": "confident",
-                "candidates": [],
+                "candidates": [
+                    {
+                        "label": "Plastic Water Bottle",
+                        "selected_item": "Plastic water bottle",
+                        "guidance_supported": True,
+                        "score": 0.94,
+                    }
+                ],
                 "disposal_action": None,
                 "material_code": None,
                 "impact_level": "Trusted Guidance Unavailable",
@@ -177,6 +191,152 @@ class PredictRouteTests(unittest.TestCase):
                 "recognition_source": "vlm_open",
             },
         )
+
+    def test_predict_cleans_open_candidate_labels(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Water bottle",
+            "category": "Plastic",
+            "status": "confident",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm_open",
+            "trusted_guidance_available": False,
+            "recognized_material_category": "Plastic",
+            "recognized_broad_category": "Drinkware",
+            "recognition_details": {
+                "status": "confident",
+                "raw_item_label": "water bottle",
+                "likely_material": "plastic",
+                "broad_category": "drinkware",
+                "candidates": [
+                    {"label": "water bottle", "confidence": 0.94},
+                    {"label": "Water Bottle", "confidence": 0.88},
+                    {"label": "drinking bottle", "confidence": 0.82},
+                    {"label": "", "confidence": 0.7},
+                    {"label": "Other", "confidence": 0.7},
+                    {"name": "plastic water bottle", "score": 0.75},
+                ],
+                "visual_evidence": "Bottle silhouette and narrow opening visible.",
+                "normalized": {
+                    "item_label": "Water Bottle",
+                    "material_category": "Plastic",
+                    "broad_category": "Drinkware",
+                    "condition_flags": [],
+                    "special_handling_flags": [],
+                    "matched_supported_label": None,
+                    "normalization_source": "keyword_rule",
+                },
+            },
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["candidates"],
+            [
+                {
+                    "label": "Plastic Water Bottle",
+                    "selected_item": "Plastic water bottle",
+                    "guidance_supported": True,
+                    "score": 0.94,
+                },
+            ],
+        )
+        self.assertNotIn(
+            "Drinking Bottle",
+            [candidate["label"] for candidate in response.json()["candidates"]],
+        )
+
+    def test_predict_adds_main_item_as_fallback_candidate(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Charging cable",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [],
+            "cache_hit": False,
+            "recognition_source": "vlm_open",
+            "trusted_guidance_available": True,
+            "trusted_guidance_label": "Cable",
+            "recognized_material_category": "Electronics",
+            "recognized_broad_category": "Electronics",
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["candidates"],
+            [{"label": "Cable", "selected_item": "Cable", "guidance_supported": True}],
+        )
+
+    def test_selected_item_synonym_maps_to_supported_guidance(self):
+        client = TestClient(app)
+
+        response = client.post("/predict", data={"selected_item": "drinking bottle"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"], "Plastic Water Bottle")
+        self.assertEqual(response.json()["category"], "Plastic")
+        self.assertEqual(response.json()["status"], "confident")
+        self.assertNotEqual(response.json()["guidance_source"], "safe_fallback")
+        self.assertEqual(
+            response.json()["candidates"],
+            [
+                {
+                    "label": "Plastic Water Bottle",
+                    "selected_item": "Plastic water bottle",
+                    "guidance_supported": True,
+                }
+            ],
+        )
+
+    def test_selected_item_supported_label_still_works(self):
+        client = TestClient(app)
+
+        response = client.post("/predict", data={"selected_item": "Plastic water bottle"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"], "Plastic Water Bottle")
+        self.assertEqual(response.json()["category"], "Plastic")
+        self.assertEqual(response.json()["status"], "confident")
+        self.assertNotEqual(response.json()["guidance_source"], "safe_fallback")
+
+    def test_selected_item_unmapped_label_stays_unknown(self):
+        client = TestClient(app)
+
+        response = client.post("/predict", data={"selected_item": "mystery artifact"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"], "")
+        self.assertEqual(response.json()["category"], "Unknown")
+        self.assertEqual(response.json()["status"], "unknown")
+        self.assertEqual(response.json()["candidates"], [])
 
     def test_predict_low_risk_open_item_can_use_deterministic_low_risk_fallback(self):
         client = TestClient(app)
@@ -264,7 +424,9 @@ class PredictRouteTests(unittest.TestCase):
                 "item": "Charging Cable",
                 "category": "Electronics",
                 "status": "confident",
-                "candidates": [],
+                "candidates": [
+                    {"label": "Cable", "selected_item": "Cable", "guidance_supported": True}
+                ],
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",
@@ -407,7 +569,14 @@ class PredictRouteTests(unittest.TestCase):
                 "item": "Calculator",
                 "category": "Electronics",
                 "status": "confident",
-                "candidates": [{"label": "Calculator", "score": 0.98}],
+                "candidates": [
+                    {
+                        "label": "Calculator",
+                        "selected_item": "Calculator",
+                        "guidance_supported": True,
+                        "score": 0.98,
+                    }
+                ],
                 "disposal_action": "e-waste recycling",
                 "material_code": None,
                 "impact_level": "High Impact",

@@ -6,6 +6,10 @@ import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export const BOTTOM_NAV_BAR_HEIGHT = 64;
+export const BOTTOM_NAV_BAR_VERTICAL_PADDING = 8;
+export const BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET = 12;
+export const BOTTOM_NAV_BAR_TOTAL_HEIGHT =
+  BOTTOM_NAV_BAR_HEIGHT + BOTTOM_NAV_BAR_VERTICAL_PADDING * 2;
 const BOTTOM_NAV_BAR_MAX_WIDTH = 356;
 const BOTTOM_NAV_BAR_HORIZONTAL_MARGIN = 28;
 const BAR_HORIZONTAL_PADDING = 14;
@@ -36,7 +40,7 @@ const tabs = {
 export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const bottomOffset = Math.max(insets.bottom, 12);
+  const bottomOffset = Math.max(insets.bottom, BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET);
   const isAndroid = Platform.OS === 'android';
   const barWidth = Math.min(BOTTOM_NAV_BAR_MAX_WIDTH, windowWidth - BOTTOM_NAV_BAR_HORIZONTAL_MARGIN);
 
@@ -225,7 +229,7 @@ const styles = StyleSheet.create({
   shadowLayer: {
     backgroundColor: 'rgba(20, 32, 48, 0.02)',
     borderRadius: 999,
-    height: BOTTOM_NAV_BAR_HEIGHT,
+    height: BOTTOM_NAV_BAR_TOTAL_HEIGHT,
     opacity: 0.34,
     position: 'absolute',
     shadowColor: '#102033',
@@ -284,7 +288,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     minHeight: BOTTOM_NAV_BAR_HEIGHT,
     paddingHorizontal: BAR_HORIZONTAL_PADDING,
-    paddingVertical: 8,
+    paddingVertical: BOTTOM_NAV_BAR_VERTICAL_PADDING,
     position: 'relative',
     zIndex: 7,
   },
@@ -292,11 +296,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   selectedBubble: {
-    bottom: 8,
+    bottom: BOTTOM_NAV_BAR_VERTICAL_PADDING,
     borderRadius: 999,
     overflow: 'hidden',
     position: 'absolute',
-    top: 8,
+    top: BOTTOM_NAV_BAR_VERTICAL_PADDING,
     zIndex: 1,
   },
   tabButton: {

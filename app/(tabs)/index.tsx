@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import { useIsFocused } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
@@ -9,6 +10,7 @@ import {
   Alert,
   Animated,
   Image,
+  Keyboard,
   LayoutChangeEvent,
   Linking,
   Pressable,
@@ -20,7 +22,11 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
+import {
+  BOTTOM_NAV_BAR_HEIGHT,
+  BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET,
+  BOTTOM_NAV_BAR_TOTAL_HEIGHT,
+} from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
 import { setLastScannedItem } from '@/constants/scan-session';
@@ -31,19 +37,42 @@ import {
 } from '../../storage/recentScans';
 
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
+const CAMERA_READY_FALLBACK_DELAY_MS = 450;
+const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
+const RESULT_SHEET_NAV_GAP = 16;
+const MAX_VISIBLE_CANDIDATES = 5;
+const MANUAL_KEYBOARD_GAP = 12;
+const MANUAL_SHEET_MIN_HEIGHT = 280;
 
 type PredictionStatus = 'confident' | 'uncertain' | 'unknown';
 
 type PredictionCandidate = {
   label: string;
-  score: number;
+  selectedItem: string;
+  score?: number;
 };
+
+type RawPredictionCandidate =
+  | string
+  | {
+      label?: unknown;
+      name?: unknown;
+      item_label?: unknown;
+      selected_item?: unknown;
+      selectedItem?: unknown;
+      score?: unknown;
+      confidence?: unknown;
+      similarity?: unknown;
+      guidance_supported?: unknown;
+      guidanceSupported?: unknown;
+    }
+  | [unknown, unknown?];
 
 type PredictionResponse = {
   item: string;
   category: string;
   status: PredictionStatus;
-  candidates: PredictionCandidate[];
+  candidates?: RawPredictionCandidate[] | null;
   disposal_action: string | null;
   material_code: string | null;
   impact_level: string | null;
@@ -54,13 +83,20 @@ type PredictionResponse = {
   warnings?: string[];
   guidance_metadata?: Record<string, unknown>;
   guidanceMetadata?: Record<string, unknown>;
+  recognition_details?: {
+    candidates?: RawPredictionCandidate[] | null;
+    raw_item_label?: unknown;
+    normalized?: {
+      item_label?: unknown;
+      matched_supported_label?: unknown;
+    } | null;
+  } | null;
 };
 
 type SheetViewState = 'idle' | PredictionStatus;
 type VisibleSheetState = Exclude<SheetViewState, 'idle'>;
 type RequestState = 'idle' | 'loading';
 type PredictionRequestSource = 'image' | 'selection';
-type CorrectionSheetMode = 'candidate-list' | 'manual-entry';
 
 type SupportedLabelsResponse = {
   labels: string[];
@@ -269,7 +305,7 @@ function getPredictedItemFromPrediction(prediction: PredictionResponse) {
     return formattedItem;
   }
 
-  const topCandidate = prediction.candidates[0]?.label?.trim();
+  const topCandidate = normalizePredictionCandidates(prediction)[0]?.label.trim();
   return topCandidate || null;
 }
 
@@ -331,12 +367,141 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
   };
 }
 
-function formatCandidateScore(score: number) {
-  return `${Math.round(score * 100)}% similarity`;
-}
-
 function normalizeLabelKey(value: string) {
   return value.trim().toLowerCase();
+}
+
+function isPredictionRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getCandidateLabel(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return getCandidateLabel(value[0]);
+  }
+
+  if (!isPredictionRecord(value)) {
+    return null;
+  }
+
+  for (const key of ['label', 'name', 'item_label'] as const) {
+    const label = value[key];
+    if (typeof label === 'string' && label.trim()) {
+      return label.trim();
+    }
+  }
+
+  return null;
+}
+
+function getCandidateScore(value: unknown) {
+  let score: unknown = null;
+
+  if (Array.isArray(value)) {
+    score = value[1];
+  } else if (isPredictionRecord(value)) {
+    score = value.score ?? value.confidence ?? value.similarity;
+  }
+
+  if (typeof score !== 'number' || !Number.isFinite(score)) {
+    return undefined;
+  }
+
+  return score;
+}
+
+function getCandidateSelectedItem(value: unknown, label: string) {
+  if (!isPredictionRecord(value)) {
+    return label;
+  }
+
+  const selectedItem = value.selected_item ?? value.selectedItem;
+  return typeof selectedItem === 'string' && selectedItem.trim() ? selectedItem.trim() : label;
+}
+
+function isGuidanceSupportedCandidate(value: unknown) {
+  if (!isPredictionRecord(value)) {
+    return true;
+  }
+
+  const guidanceSupported = value.guidance_supported ?? value.guidanceSupported;
+  return guidanceSupported !== false;
+}
+
+function appendNormalizedCandidate(
+  candidates: PredictionCandidate[],
+  value: unknown,
+) {
+  if (!isGuidanceSupportedCandidate(value)) {
+    return;
+  }
+
+  const label = getCandidateLabel(value);
+
+  if (!label) {
+    return;
+  }
+
+  const selectedItem = getCandidateSelectedItem(value, label);
+  const normalizedLabel = normalizeLabelKey(label);
+  const normalizedSelectedItem = normalizeLabelKey(selectedItem);
+  if (
+    !normalizedLabel ||
+    !normalizedSelectedItem ||
+    normalizedLabel === 'other' ||
+    normalizedLabel === 'unknown' ||
+    normalizedSelectedItem === 'other' ||
+    normalizedSelectedItem === 'unknown'
+  ) {
+    return;
+  }
+
+  const score = getCandidateScore(value);
+  const existingCandidate = candidates.find(
+    (candidate) => normalizeLabelKey(candidate.selectedItem) === normalizedSelectedItem
+  );
+
+  if (existingCandidate) {
+    if (existingCandidate.score === undefined && score !== undefined) {
+      existingCandidate.score = score;
+    }
+    return;
+  }
+
+  candidates.push(
+    score === undefined ? { label, selectedItem } : { label, selectedItem, score }
+  );
+}
+
+function appendCandidateList(candidates: PredictionCandidate[], values: unknown) {
+  if (!Array.isArray(values)) {
+    return;
+  }
+
+  values.forEach((value) => appendNormalizedCandidate(candidates, value));
+}
+
+function normalizePredictionCandidates(
+  prediction: PredictionResponse,
+  fallbackCandidates: PredictionCandidate[] = []
+) {
+  const normalizedCandidates: PredictionCandidate[] = [];
+  const recognitionDetails = prediction.recognition_details;
+  const normalizedDetails = recognitionDetails?.normalized;
+
+  appendNormalizedCandidate(normalizedCandidates, prediction.item);
+  appendCandidateList(normalizedCandidates, prediction.candidates);
+  appendCandidateList(normalizedCandidates, recognitionDetails?.candidates);
+  appendNormalizedCandidate(normalizedCandidates, normalizedDetails?.item_label);
+  appendNormalizedCandidate(normalizedCandidates, normalizedDetails?.matched_supported_label);
+  appendNormalizedCandidate(normalizedCandidates, recognitionDetails?.raw_item_label);
+  appendCandidateList(normalizedCandidates, fallbackCandidates);
+
+  return normalizedCandidates.slice(0, MAX_VISIBLE_CANDIDATES);
 }
 
 function CameraPermissionNotice() {
@@ -355,9 +520,13 @@ type CameraAreaProps = {
   cameraPreviewKey: number;
   capturedImageUri: string | null;
   bottomInset: number;
+  isCameraActive: boolean;
+  isCameraReady: boolean;
+  showCameraLoadingOverlay: boolean;
   isLoading: boolean;
   isTorchOn: boolean;
   topInset: number;
+  onCameraReady: () => void;
   onClose?: () => void;
   onToggleTorch: () => void;
   onPickImage: () => void;
@@ -369,73 +538,118 @@ function CameraArea({
   cameraPreviewKey,
   bottomInset,
   capturedImageUri,
+  isCameraActive,
+  isCameraReady,
+  showCameraLoadingOverlay,
   isLoading,
   isTorchOn,
   topInset,
+  onCameraReady,
   onClose,
   onToggleTorch,
   onPickImage,
   onTakePhoto,
 }: CameraAreaProps) {
+  const cameraWarmupOpacity = useRef(new Animated.Value(1)).current;
+  const shouldHideCameraUi = isCameraActive && !capturedImageUri && !isCameraReady;
+  const isCaptureDisabled = isLoading || !isCameraActive || !isCameraReady;
+  const [renderCameraWarmupOverlay, setRenderCameraWarmupOverlay] = useState(shouldHideCameraUi);
+
+  useEffect(() => {
+    if (shouldHideCameraUi) {
+      setRenderCameraWarmupOverlay(true);
+      cameraWarmupOpacity.setValue(1);
+      return;
+    }
+
+    Animated.timing(cameraWarmupOpacity, {
+      duration: 180,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setRenderCameraWarmupOverlay(false);
+      }
+    });
+  }, [cameraWarmupOpacity, shouldHideCameraUi]);
+
   return (
     <View style={styles.cameraCard}>
       {capturedImageUri ? (
         <Image source={{ uri: capturedImageUri }} style={StyleSheet.absoluteFillObject} />
       ) : (
         <CameraView
-          active
+          active={isCameraActive}
           enableTorch={isTorchOn}
           facing="back"
           key={cameraPreviewKey}
           mode="picture"
+          onCameraReady={onCameraReady}
           ref={cameraRef}
           style={StyleSheet.absoluteFillObject}
         />
       )}
 
       <View style={styles.cameraOverlay}>
-        <View style={[styles.backdropTopBar, { paddingTop: topInset + 16 }]}>
-          <Pressable onPress={onToggleTorch} style={styles.headerIconButton}>
-            <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
-          </Pressable>
-          {onClose ? (
-            <Pressable onPress={onClose} style={styles.closeButton}>
-              <Ionicons color="#F3F6F9" name="close" size={20} />
-            </Pressable>
-          ) : (
-            <View style={styles.headerIconSpacer} />
-          )}
-        </View>
+        {renderCameraWarmupOverlay ? (
+          <Animated.View
+            pointerEvents="auto"
+            style={[styles.cameraWarmupOverlay, { opacity: cameraWarmupOpacity }]}>
+            {showCameraLoadingOverlay ? (
+              <View style={styles.cameraWarmupFrame}>
+                <ActivityIndicator color="#F3F6F9" size="small" />
+                <Text style={styles.cameraWarmupTitle}>Starting camera...</Text>
+              </View>
+            ) : null}
+          </Animated.View>
+        ) : null}
 
-        <View pointerEvents="none" style={styles.scanFrameWrap}>
-          <View style={styles.scanFrame}>
-            <View style={styles.targetRing}>
-              <View style={styles.targetDot} />
+        {!shouldHideCameraUi ? (
+          <>
+            <View style={[styles.backdropTopBar, { paddingTop: topInset + 16 }]}>
+              <Pressable onPress={onToggleTorch} style={styles.headerIconButton}>
+                <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
+              </Pressable>
+              {onClose ? (
+                <Pressable onPress={onClose} style={styles.closeButton}>
+                  <Ionicons color="#F3F6F9" name="close" size={20} />
+                </Pressable>
+              ) : (
+                <View style={styles.headerIconSpacer} />
+              )}
             </View>
-          </View>
-        </View>
 
-        <View
-          style={[
-            styles.cameraControls,
-            { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + CAMERA_CONTROLS_NAV_CLEARANCE },
-          ]}>
-          <Pressable
-            disabled={isLoading}
-            onPress={onPickImage}
-            style={[styles.iconActionButton, isLoading && styles.buttonDisabled]}>
-            <Ionicons color="#FFFFFF" name="images-outline" size={22} />
-          </Pressable>
+            <View pointerEvents="none" style={styles.scanFrameWrap}>
+              <View style={styles.scanFrame}>
+                <View style={styles.targetRing}>
+                  <View style={styles.targetDot} />
+                </View>
+              </View>
+            </View>
 
-          <Pressable
-            disabled={isLoading}
-            onPress={onTakePhoto}
-            style={[styles.shutterButton, isLoading && styles.buttonDisabled]}>
-            <View style={styles.shutterInner} />
-          </Pressable>
+            <View
+              style={[
+                styles.cameraControls,
+                { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + CAMERA_CONTROLS_NAV_CLEARANCE },
+              ]}>
+              <Pressable
+                disabled={isLoading}
+                onPress={onPickImage}
+                style={[styles.iconActionButton, isLoading && styles.buttonDisabled]}>
+                <Ionicons color="#FFFFFF" name="images-outline" size={22} />
+              </Pressable>
 
-          <View style={styles.iconActionSpacer} />
-        </View>
+              <Pressable
+                disabled={isCaptureDisabled}
+                onPress={onTakePhoto}
+                style={[styles.shutterButton, isCaptureDisabled && styles.buttonDisabled]}>
+                <View style={styles.shutterInner} />
+              </Pressable>
+
+              <View style={styles.iconActionSpacer} />
+            </View>
+          </>
+        ) : null}
 
         {capturedImageUri && isLoading ? (
           <View style={styles.loadingOverlay}>
@@ -450,9 +664,12 @@ function CameraArea({
 
 export default function ScannerScreen() {
   const router = useRouter();
+  const isScreenFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const cameraRef = useRef<CameraView | null>(null);
+  const cameraReadyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraLoadingOverlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const predictRequestRef = useRef(0);
   const activeScanSessionRef = useRef<ActiveScanSession | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -461,25 +678,106 @@ export default function ScannerScreen() {
   const [visibleSheetState, setVisibleSheetState] = useState<VisibleSheetState | 'idle'>('idle');
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
   const [cameraPreviewKey, setCameraPreviewKey] = useState(0);
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [showCameraLoadingOverlay, setShowCameraLoadingOverlay] = useState(false);
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
-  const [correctionSheetMode, setCorrectionSheetMode] =
-    useState<CorrectionSheetMode>('candidate-list');
   const [materialLabels, setMaterialLabels] = useState<string[] | null>(null);
   const [isLoadingMaterialLabels, setIsLoadingMaterialLabels] = useState(false);
   const [materialLabelsError, setMaterialLabelsError] = useState<string | null>(null);
   const [manualEntryText, setManualEntryText] = useState('');
   const [selectedManualLabel, setSelectedManualLabel] = useState<string | null>(null);
+  const [manualKeyboardOffset, setManualKeyboardOffset] = useState(0);
   const [sheetHeight, setSheetHeight] = useState(0);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
-  const bottomNavOffset = Math.max(insets.bottom, 12);
-  const resultSheetBottomOffset = bottomNavOffset + BOTTOM_NAV_BAR_HEIGHT + 20;
+  const bottomNavOffset = Math.max(insets.bottom, BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET);
+  const resultSheetBottomOffset =
+    bottomNavOffset + BOTTOM_NAV_BAR_TOTAL_HEIGHT + RESULT_SHEET_NAV_GAP;
   const hiddenSheetOffset = Math.max(sheetHeight + resultSheetBottomOffset + 24, windowHeight);
 
   useEffect(() => {
     requestPermission();
   }, [requestPermission]);
+
+  useEffect(() => {
+    if (visibleSheetState !== 'uncertain') {
+      setManualKeyboardOffset(0);
+      return;
+    }
+
+    const handleKeyboardShow = (event: {
+      endCoordinates?: { height?: number; screenY?: number };
+    }) => {
+      const keyboardTop = event.endCoordinates?.screenY;
+      const keyboardHeight = event.endCoordinates?.height ?? 0;
+      const keyboardOverlap =
+        typeof keyboardTop === 'number' && keyboardTop > 0
+          ? Math.max(0, windowHeight - keyboardTop)
+          : keyboardHeight;
+
+      setManualKeyboardOffset(
+        Math.max(0, keyboardOverlap - resultSheetBottomOffset + MANUAL_KEYBOARD_GAP),
+      );
+    };
+
+    const handleKeyboardHide = () => {
+      setManualKeyboardOffset(0);
+    };
+
+    const showSubscription = Keyboard.addListener('keyboardDidShow', handleKeyboardShow);
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', handleKeyboardHide);
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+      setManualKeyboardOffset(0);
+    };
+  }, [resultSheetBottomOffset, visibleSheetState, windowHeight]);
+
+  useEffect(() => {
+    const shouldWarmCamera = isScreenFocused && permission?.granted && !capturedImageUri;
+
+    if (cameraReadyTimeoutRef.current) {
+      clearTimeout(cameraReadyTimeoutRef.current);
+      cameraReadyTimeoutRef.current = null;
+    }
+
+    if (cameraLoadingOverlayTimeoutRef.current) {
+      clearTimeout(cameraLoadingOverlayTimeoutRef.current);
+      cameraLoadingOverlayTimeoutRef.current = null;
+    }
+
+    if (!shouldWarmCamera) {
+      setIsCameraReady(false);
+      setShowCameraLoadingOverlay(false);
+      return;
+    }
+
+    setIsCameraReady(false);
+    setShowCameraLoadingOverlay(false);
+    cameraLoadingOverlayTimeoutRef.current = setTimeout(() => {
+      setShowCameraLoadingOverlay(true);
+      cameraLoadingOverlayTimeoutRef.current = null;
+    }, CAMERA_LOADING_OVERLAY_DELAY_MS);
+    // Keep the overlay from sticking if Android skips or delays the ready callback.
+    cameraReadyTimeoutRef.current = setTimeout(() => {
+      setIsCameraReady(true);
+      cameraReadyTimeoutRef.current = null;
+    }, CAMERA_READY_FALLBACK_DELAY_MS);
+
+    return () => {
+      if (cameraReadyTimeoutRef.current) {
+        clearTimeout(cameraReadyTimeoutRef.current);
+        cameraReadyTimeoutRef.current = null;
+      }
+
+      if (cameraLoadingOverlayTimeoutRef.current) {
+        clearTimeout(cameraLoadingOverlayTimeoutRef.current);
+        cameraLoadingOverlayTimeoutRef.current = null;
+      }
+    };
+  }, [cameraPreviewKey, capturedImageUri, isScreenFocused, permission?.granted]);
 
   useEffect(() => {
     if (visibleSheetState === 'idle') {
@@ -518,12 +816,26 @@ export default function ScannerScreen() {
     setCameraPreviewKey((current) => current + 1);
   };
 
+  const handleCameraReady = () => {
+    if (cameraReadyTimeoutRef.current) {
+      clearTimeout(cameraReadyTimeoutRef.current);
+      cameraReadyTimeoutRef.current = null;
+    }
+
+    if (cameraLoadingOverlayTimeoutRef.current) {
+      clearTimeout(cameraLoadingOverlayTimeoutRef.current);
+      cameraLoadingOverlayTimeoutRef.current = null;
+    }
+
+    setIsCameraReady(true);
+    setShowCameraLoadingOverlay(false);
+  };
+
   const clearActiveScanSession = () => {
     activeScanSessionRef.current = null;
   };
 
   const resetManualEntry = () => {
-    setCorrectionSheetMode('candidate-list');
     setManualEntryText('');
     setSelectedManualLabel(null);
     setMaterialLabelsError(null);
@@ -554,23 +866,15 @@ export default function ScannerScreen() {
   };
 
   const handleChangeItem = () => {
-    resetManualEntry();
-    setVisibleSheetState('uncertain');
-    setSheetState('uncertain');
-  };
-
-  const handleOpenManualEntry = () => {
-    setCorrectionSheetMode('manual-entry');
     setManualEntryText('');
     setSelectedManualLabel(null);
+    setMaterialLabelsError(null);
+    setVisibleSheetState('uncertain');
+    setSheetState('uncertain');
 
     if (!materialLabels && !isLoadingMaterialLabels) {
       void loadMaterialLabels();
     }
-  };
-
-  const handleManualEntryBack = () => {
-    resetManualEntry();
   };
 
   const handleRetryMaterialLabels = () => {
@@ -648,8 +952,7 @@ export default function ScannerScreen() {
     requestSource: PredictionRequestSource,
     fallbackCandidates: PredictionCandidate[] = []
   ) => {
-    const nextCandidates =
-      prediction.candidates.length > 0 ? prediction.candidates : fallbackCandidates;
+    const nextCandidates = normalizePredictionCandidates(prediction, fallbackCandidates);
 
     resetManualEntry();
     setResult(null);
@@ -681,6 +984,9 @@ export default function ScannerScreen() {
     if (prediction.status === 'uncertain') {
       setVisibleSheetState('uncertain');
       setSheetState('uncertain');
+      if (!materialLabels && !isLoadingMaterialLabels) {
+        void loadMaterialLabels();
+      }
       return;
     }
 
@@ -771,7 +1077,7 @@ export default function ScannerScreen() {
   };
 
   const handleTakePhoto = async () => {
-    if (!cameraRef.current || requestState === 'loading') {
+    if (!cameraRef.current || requestState === 'loading' || !isCameraReady || !isScreenFocused) {
       return;
     }
 
@@ -819,12 +1125,6 @@ export default function ScannerScreen() {
   const permissionDenied = permission && !permission.granted;
   const currentPredictedLabel = result?.item ?? candidates[0]?.label ?? null;
   const normalizedCurrentPredictedLabel = normalizeLabelKey(currentPredictedLabel ?? '');
-  const filteredCandidates = candidates.filter(
-    (candidate) => normalizeLabelKey(candidate.label) !== normalizedCurrentPredictedLabel
-  );
-  const visibleCandidateKeys = new Set(
-    filteredCandidates.map((candidate) => normalizeLabelKey(candidate.label))
-  );
   const normalizedManualEntry = normalizeLabelKey(manualEntryText);
   const exactSupportedLabel =
     materialLabels?.find((label) => {
@@ -841,7 +1141,6 @@ export default function ScannerScreen() {
           const normalizedLabel = normalizeLabelKey(label);
           return (
             normalizedLabel !== normalizedCurrentPredictedLabel &&
-            !visibleCandidateKeys.has(normalizedLabel) &&
             normalizedLabel.includes(normalizedManualEntry)
           );
         })
@@ -849,8 +1148,6 @@ export default function ScannerScreen() {
     : [];
   const canSubmitManualEntry =
     !!manualSelectionLabel && requestState !== 'loading' && !materialLabelsError;
-  const isShowingManualEntry = correctionSheetMode === 'manual-entry';
-  const canShowCandidateChoices = filteredCandidates.length > 0;
 
   const handleManualEntryChange = (value: string) => {
     setManualEntryText(value);
@@ -858,8 +1155,14 @@ export default function ScannerScreen() {
   };
 
   const handleManualSuggestionPress = (label: string) => {
+    if (requestState === 'loading') {
+      return;
+    }
+
+    Keyboard.dismiss();
     setManualEntryText(label);
     setSelectedManualLabel(label);
+    void sendPredictionRequest({ selectedItem: label });
   };
 
   const handleManualSubmit = () => {
@@ -867,8 +1170,28 @@ export default function ScannerScreen() {
       return;
     }
 
+    Keyboard.dismiss();
     void sendPredictionRequest({ selectedItem: manualSelectionLabel });
   };
+
+  const isManualCorrectionVisible = visibleSheetState === 'uncertain';
+  const activeSheetBottomOffset = isManualCorrectionVisible
+    ? resultSheetBottomOffset + manualKeyboardOffset
+    : resultSheetBottomOffset;
+  const normalSheetMaxHeight = Math.min(
+    windowHeight * 0.78,
+    windowHeight - insets.top - resultSheetBottomOffset - 72,
+  );
+  const manualSheetMaxHeight = Math.max(
+    MANUAL_SHEET_MIN_HEIGHT,
+    Math.min(
+      windowHeight * 0.86,
+      windowHeight - insets.top - activeSheetBottomOffset - 24,
+    ),
+  );
+  const activeSheetMaxHeight = isManualCorrectionVisible
+    ? manualSheetMaxHeight
+    : normalSheetMaxHeight;
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
@@ -882,9 +1205,13 @@ export default function ScannerScreen() {
             cameraPreviewKey={cameraPreviewKey}
             bottomInset={insets.bottom}
             capturedImageUri={capturedImageUri}
+            isCameraActive={isScreenFocused && !capturedImageUri}
+            isCameraReady={isCameraReady}
+            showCameraLoadingOverlay={showCameraLoadingOverlay}
             isLoading={requestState === 'loading'}
             isTorchOn={isTorchOn}
             topInset={insets.top}
+            onCameraReady={handleCameraReady}
             onClose={visibleSheetState !== 'idle' ? resetScanner : undefined}
             onToggleTorch={() => setIsTorchOn((current) => !current)}
             onPickImage={handlePickImage}
@@ -904,11 +1231,8 @@ export default function ScannerScreen() {
               style={[
                 styles.sheetWrap,
                 {
-                  bottom: resultSheetBottomOffset,
-                  maxHeight: Math.min(
-                    windowHeight * 0.78,
-                    windowHeight - insets.top - resultSheetBottomOffset - 72,
-                  ),
+                  bottom: activeSheetBottomOffset,
+                  maxHeight: activeSheetMaxHeight,
                   transform: [{ translateY: sheetAnimation }],
                 },
               ]}>
@@ -917,6 +1241,7 @@ export default function ScannerScreen() {
                   buttonIconName="location-outline"
                   buttonLabel={result.showNearbyButton ? 'Find Nearby Locations' : undefined}
                   condenseGuidance
+                  displayMode="expandable"
                   guidanceMetadata={result.guidanceMetadata}
                   guidanceSource={result.guidanceSource}
                   label={result.label}
@@ -945,168 +1270,108 @@ export default function ScannerScreen() {
                   buttonIconName="camera-outline"
                   buttonLabel="Retake Photo"
                   label="REVIEW NEEDED"
-                  materialTag="Multiple Plausible Matches"
+                  materialTag="Correct Item"
                   onButtonPress={resetScanner}
                   steps={[]}
-                  summary={
-                    isShowingManualEntry
-                      ? 'Search for the supported item label that best matches this object, then continue to load the right disposal guidance.'
-                      : candidates.length > 0
-                        ? "Pick the best match below, or choose Other to search the full supported item list."
-                        : "We couldn't load alternate matches for this scan, but you can still search the supported item list or retake the photo."
-                  }
-                  title="Which item is this?">
-                  {isShowingManualEntry ? (
-                    <View style={styles.manualEntrySection}>
-                        <Text style={styles.manualEntryPrompt}>What item is this?</Text>
-                        <TextInput
-                          autoCapitalize="words"
-                          autoCorrect={false}
-                          editable={requestState !== 'loading'}
-                          onChangeText={handleManualEntryChange}
-                          placeholder="Search supported items"
-                          placeholderTextColor="#9A948C"
-                          style={styles.manualEntryInput}
-                          value={manualEntryText}
-                        />
+                  summary="Choose the item that best matches your scan."
+                  title="Search for the correct item"
+                  keyboardShouldPersistTaps="handled">
+                  <View style={styles.manualEntrySection}>
+                    <Text style={styles.manualEntryPrompt}>Supported item label</Text>
+                    <TextInput
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      editable={requestState !== 'loading'}
+                      onChangeText={handleManualEntryChange}
+                      placeholder="Search supported items"
+                      placeholderTextColor="#9A948C"
+                      style={styles.manualEntryInput}
+                      value={manualEntryText}
+                    />
 
-                        {isLoadingMaterialLabels ? (
-                          <View style={styles.manualStateRow}>
-                            <ActivityIndicator color="#050505" size="small" />
-                            <Text style={styles.manualStateText}>Loading supported items...</Text>
-                          </View>
-                        ) : null}
-
-                        {materialLabelsError ? (
-                          <View style={styles.manualStateBlock}>
-                            <Text style={styles.manualErrorText}>{materialLabelsError}</Text>
-                            <Pressable
-                              disabled={isLoadingMaterialLabels}
-                              onPress={handleRetryMaterialLabels}
-                              style={({ pressed }) => [
-                                styles.manualRetryButton,
-                                pressed && styles.buttonPressed,
-                                isLoadingMaterialLabels && styles.buttonDisabled,
-                              ]}>
-                              <Text style={styles.manualRetryButtonText}>Try Again</Text>
-                            </Pressable>
-                          </View>
-                        ) : null}
-
-                        {!isLoadingMaterialLabels && !materialLabelsError && !normalizedManualEntry ? (
-                          <Text style={styles.manualHintText}>
-                            Start typing to search supported item labels.
-                          </Text>
-                        ) : null}
-
-                        {!isLoadingMaterialLabels &&
-                        !materialLabelsError &&
-                        !!normalizedManualEntry &&
-                        !manualSuggestions.length &&
-                        !exactSupportedLabel ? (
-                          <Text style={styles.manualHintText}>
-                            No supported items match that search yet.
-                          </Text>
-                        ) : null}
-
-                        {!materialLabelsError && manualSuggestions.length ? (
-                          <View style={styles.manualSuggestionsGroup}>
-                            {manualSuggestions.map((label) => {
-                              const isSelected =
-                                normalizeLabelKey(label) ===
-                                normalizeLabelKey(manualSelectionLabel ?? '');
-
-                              return (
-                                <Pressable
-                                  key={label}
-                                  onPress={() => handleManualSuggestionPress(label)}
-                                  style={({ pressed }) => [
-                                    styles.manualSuggestionButton,
-                                    isSelected && styles.manualSuggestionButtonSelected,
-                                    pressed && styles.buttonPressed,
-                                  ]}>
-                                  <Text
-                                    style={[
-                                      styles.manualSuggestionText,
-                                      isSelected && styles.manualSuggestionTextSelected,
-                                    ]}>
-                                    {label}
-                                  </Text>
-                                </Pressable>
-                              );
-                            })}
-                          </View>
-                        ) : null}
-
-                        <View style={styles.manualActionRow}>
-                          <Pressable
-                            onPress={handleManualEntryBack}
-                            style={({ pressed }) => [
-                              styles.manualBackButton,
-                              pressed && styles.buttonPressed,
-                            ]}>
-                            <Text style={styles.manualBackButtonText}>Back</Text>
-                          </Pressable>
-                          <Pressable
-                            disabled={!canSubmitManualEntry}
-                            onPress={handleManualSubmit}
-                            style={({ pressed }) => [
-                              styles.manualContinueButton,
-                              pressed && canSubmitManualEntry && styles.buttonPressed,
-                              !canSubmitManualEntry && styles.buttonDisabled,
-                            ]}>
-                            <Text style={styles.manualContinueButtonText}>Continue</Text>
-                          </Pressable>
-                        </View>
+                    {isLoadingMaterialLabels ? (
+                      <View style={styles.manualStateRow}>
+                        <ActivityIndicator color="#050505" size="small" />
+                        <Text style={styles.manualStateText}>Loading supported items...</Text>
                       </View>
-                    ) : (
-                      <View style={styles.choiceButtonGroup}>
-                        {canShowCandidateChoices ? (
-                          filteredCandidates.map((candidate) => (
+                    ) : null}
+
+                    {materialLabelsError ? (
+                      <View style={styles.manualStateBlock}>
+                        <Text style={styles.manualErrorText}>{materialLabelsError}</Text>
+                        <Pressable
+                          disabled={isLoadingMaterialLabels}
+                          onPress={handleRetryMaterialLabels}
+                          style={({ pressed }) => [
+                            styles.manualRetryButton,
+                            pressed && styles.buttonPressed,
+                            isLoadingMaterialLabels && styles.buttonDisabled,
+                          ]}>
+                          <Text style={styles.manualRetryButtonText}>Try Again</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+
+                    {!isLoadingMaterialLabels && !materialLabelsError && !normalizedManualEntry ? (
+                      <Text style={styles.manualHintText}>
+                        Start typing to search supported item labels.
+                      </Text>
+                    ) : null}
+
+                    {!isLoadingMaterialLabels &&
+                    !materialLabelsError &&
+                    !!normalizedManualEntry &&
+                    !manualSuggestions.length &&
+                    !exactSupportedLabel ? (
+                      <Text style={styles.manualHintText}>
+                        No supported items match that search yet.
+                      </Text>
+                    ) : null}
+
+                    {!materialLabelsError && manualSuggestions.length ? (
+                      <View style={styles.manualSuggestionsGroup}>
+                        {manualSuggestions.map((label) => {
+                          const isSelected =
+                            normalizeLabelKey(label) ===
+                            normalizeLabelKey(manualSelectionLabel ?? '');
+
+                          return (
                             <Pressable
                               disabled={requestState === 'loading'}
-                              key={candidate.label}
-                              onPress={() => sendPredictionRequest({ selectedItem: candidate.label })}
+                              key={label}
+                              onPress={() => handleManualSuggestionPress(label)}
                               style={({ pressed }) => [
-                                styles.choiceButton,
-                                pressed && styles.choiceButtonPressed,
+                                styles.manualSuggestionButton,
+                                isSelected && styles.manualSuggestionButtonSelected,
+                                pressed && requestState !== 'loading' && styles.buttonPressed,
                                 requestState === 'loading' && styles.buttonDisabled,
                               ]}>
-                              <Text numberOfLines={2} style={styles.choiceButtonLabel}>
-                                {candidate.label}
+                              <Text
+                                style={[
+                                  styles.manualSuggestionText,
+                                  isSelected && styles.manualSuggestionTextSelected,
+                                ]}>
+                                {label}
                               </Text>
-                              <View style={styles.choiceButtonMeta}>
-                                <Ionicons color="#5B6470" name="sparkles-outline" size={13} />
-                                <Text style={styles.choiceButtonMetaText}>
-                                  {formatCandidateScore(candidate.score)}
-                                </Text>
-                              </View>
                             </Pressable>
-                          ))
-                        ) : (
-                          <View style={styles.choiceFallback}>
-                            <Ionicons color="#5B6470" name="information-circle-outline" size={18} />
-                            <Text style={styles.choiceFallbackText}>
-                              No alternate candidate buttons are available, but you can search the
-                              supported item list below.
-                            </Text>
-                          </View>
-                        )}
-                        <Pressable
-                          disabled={requestState === 'loading'}
-                          onPress={handleOpenManualEntry}
-                          style={({ pressed }) => [
-                            styles.choiceButton,
-                            styles.otherChoiceButton,
-                            pressed && styles.choiceButtonPressed,
-                            requestState === 'loading' && styles.buttonDisabled,
-                          ]}>
-                          <Text numberOfLines={1} style={styles.choiceButtonLabel}>
-                            Other
-                          </Text>
-                        </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+
+                    <View style={styles.manualActionRow}>
+                      <Pressable
+                        disabled={!canSubmitManualEntry}
+                        onPress={handleManualSubmit}
+                        style={({ pressed }) => [
+                          styles.manualContinueButton,
+                          pressed && canSubmitManualEntry && styles.buttonPressed,
+                          !canSubmitManualEntry && styles.buttonDisabled,
+                        ]}>
+                        <Text style={styles.manualContinueButtonText}>Continue</Text>
+                      </Pressable>
                     </View>
-                  )}
+                  </View>
                 </ResultSheet>
               ) : null}
 
@@ -1149,6 +1414,26 @@ const styles = StyleSheet.create({
   cameraOverlay: {
     ...StyleSheet.absoluteFillObject,
     paddingHorizontal: 18,
+  },
+  cameraWarmupOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    backgroundColor: '#0B1218',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+  },
+  cameraWarmupFrame: {
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 28,
+    paddingVertical: 20,
+  },
+  cameraWarmupTitle: {
+    color: '#F3F6F9',
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: -0.1,
+    textAlign: 'center',
   },
   backdropTopBar: {
     alignItems: 'center',
@@ -1278,63 +1563,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     zIndex: 20,
-  },
-  choiceButtonGroup: {
-    gap: 10,
-    marginTop: -2,
-  },
-  choiceButton: {
-    alignItems: 'center',
-    backgroundColor: '#F7F4EF',
-    borderColor: '#E8E2DA',
-    borderRadius: 22,
-    borderWidth: 1,
-    gap: 6,
-    minHeight: 58,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  choiceButtonPressed: {
-    opacity: 0.88,
-  },
-  otherChoiceButton: {
-    borderStyle: 'dashed',
-  },
-  choiceButtonLabel: {
-    color: '#050505',
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.4,
-    lineHeight: 24,
-    textAlign: 'center',
-  },
-  choiceButtonMeta: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  choiceButtonMetaText: {
-    color: '#5B6470',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  choiceFallback: {
-    alignItems: 'center',
-    backgroundColor: '#F7F4EF',
-    borderColor: '#E8E2DA',
-    borderRadius: 22,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  choiceFallbackText: {
-    color: '#66605B',
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '600',
-    lineHeight: 20,
   },
   manualEntrySection: {
     gap: 12,

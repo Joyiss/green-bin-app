@@ -5,10 +5,12 @@ import re
 from typing import Any
 
 try:
+    from ..materials import resolve_material_label
     from ..rules import get_rules
     from . import guidance_llm_service, guidance_retrieval_service
     from .guidance_key_service import normalize_guidance_phrase
 except ImportError:
+    from materials import resolve_material_label
     from rules import get_rules
     from services import guidance_llm_service, guidance_retrieval_service
     from services.guidance_key_service import normalize_guidance_phrase
@@ -654,14 +656,167 @@ def _format_item_name(item: str) -> str:
     return " ".join(words)
 
 
-def _serialize_candidates(candidates: list[tuple[str, float]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "label": label.title(),
-            "score": round(float(score), 4),
-        }
-        for label, score in candidates
+RESPONSE_CANDIDATE_LIMIT = 5
+
+
+def _candidate_label(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, dict):
+        for key in ("label", "name", "item_label", "raw_item_label"):
+            label = value.get(key)
+            if isinstance(label, str):
+                return label
+        return None
+
+    if isinstance(value, (list, tuple)) and value:
+        return _candidate_label(value[0])
+
+    return None
+
+
+def _candidate_score(value: Any) -> float | None:
+    score: Any = None
+
+    if isinstance(value, dict):
+        for key in ("score", "confidence", "similarity"):
+            if value.get(key) is not None:
+                score = value.get(key)
+                break
+    elif isinstance(value, (list, tuple)) and len(value) > 1:
+        score = value[1]
+
+    if score is None:
+        return None
+
+    try:
+        return round(float(score), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_usable_candidate_label(label: str) -> bool:
+    normalized_label = label.strip().casefold()
+    return normalized_label not in {
+        "",
+        "unknown",
+        "other",
+        "unidentified",
+        "unidentified item",
+        "unknown item",
+    }
+
+
+def _supported_candidate_label(value: Any) -> str | None:
+    label = _candidate_label(value)
+    if not isinstance(label, str) or not _is_usable_candidate_label(label):
+        return None
+
+    return resolve_material_label(label)
+
+
+def _append_response_candidate(
+    candidates: list[dict[str, Any]],
+    seen_labels: set[str],
+    value: Any,
+) -> None:
+    canonical_label = _supported_candidate_label(value)
+    if canonical_label is None:
+        return
+
+    formatted_label = _format_item_name(canonical_label)
+    dedupe_key = canonical_label.casefold()
+    score = _candidate_score(value)
+
+    for candidate in candidates:
+        if str(candidate.get("selected_item") or candidate["label"]).casefold() == dedupe_key:
+            if score is not None and "score" not in candidate:
+                candidate["score"] = score
+            return
+
+    if dedupe_key in seen_labels:
+        return
+
+    seen_labels.add(dedupe_key)
+    candidate: dict[str, Any] = {
+        "label": formatted_label,
+        "selected_item": canonical_label,
+        "guidance_supported": True,
+    }
+    if score is not None:
+        candidate["score"] = score
+    candidates.append(candidate)
+
+
+def _open_recognition_details(classification: dict[str, Any]) -> dict[str, Any]:
+    recognition_details = classification.get("recognition_details")
+    if not isinstance(recognition_details, dict):
+        return {}
+
+    return recognition_details
+
+
+def _normalized_open_candidate_sources(
+    classification: dict[str, Any],
+) -> list[Any]:
+    recognition_details = _open_recognition_details(classification)
+    normalized_details = recognition_details.get("normalized")
+    if isinstance(normalized_details, dict):
+        return [normalized_details.get("item_label")]
+
+    return []
+
+
+def _raw_open_candidate_sources(classification: dict[str, Any]) -> list[Any]:
+    recognition_details = _open_recognition_details(classification)
+    sources: list[Any] = []
+
+    recognition_candidates = recognition_details.get("candidates")
+    if isinstance(recognition_candidates, list):
+        sources.extend(recognition_candidates)
+
+    sources.append(recognition_details.get("raw_item_label"))
+    return sources
+
+
+def _matched_supported_label(classification: dict[str, Any]) -> Any:
+    recognition_details = _open_recognition_details(classification)
+    normalized_details = recognition_details.get("normalized")
+    if not isinstance(normalized_details, dict):
+        return None
+
+    return normalized_details.get("matched_supported_label")
+
+
+def _classification_candidate_sources(classification: dict[str, Any]) -> list[Any]:
+    raw_classification_candidates = classification.get("candidates")
+    if isinstance(raw_classification_candidates, list):
+        return raw_classification_candidates
+
+    return []
+
+
+def _build_response_candidates(classification: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+
+    source_groups = [
+        [classification.get("trusted_guidance_label")],
+        [_matched_supported_label(classification)],
+        _normalized_open_candidate_sources(classification),
+        _classification_candidate_sources(classification),
+        _raw_open_candidate_sources(classification),
+        [classification.get("item")],
     ]
+
+    for sources in source_groups:
+        for source in sources:
+            _append_response_candidate(candidates, seen_labels, source)
+            if len(candidates) == RESPONSE_CANDIDATE_LIMIT:
+                return candidates
+
+    return candidates
 
 
 def _build_default_summary(
@@ -1387,7 +1542,7 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         "item": _format_item_name(str(classification.get("item") or "")),
         "category": classification.get("category", UNKNOWN_CATEGORY),
         "status": classification.get("status", "unknown"),
-        "candidates": _serialize_candidates(classification.get("candidates", [])),
+        "candidates": _build_response_candidates(classification),
         "disposal_action": guidance["disposal_action"],
         "material_code": guidance["material_code"],
         "impact_level": guidance["impact_level"],

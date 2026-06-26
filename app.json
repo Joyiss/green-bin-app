@@ -20,6 +20,7 @@
       "package": "com.rakshan1234.greenbinapp",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
 
       "permissions": [
         "android.permission.CAMERA",
