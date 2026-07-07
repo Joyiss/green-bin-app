@@ -10,6 +10,8 @@ from services.guidance_source_loader import load_trusted_guidance_chunks
 def _chunk(
     *,
     chunk_id: str,
+    title: str | None = None,
+    section: str | None = None,
     source_name: str = "EPA",
     source_url: str = "https://example.com",
     source_type: str = "federal_government",
@@ -24,7 +26,8 @@ def _chunk(
 ):
     return {
         "id": chunk_id,
-        "title": chunk_id,
+        "title": title or chunk_id,
+        "section": section,
         "source_name": source_name,
         "source_url": source_url,
         "source_type": source_type,
@@ -276,7 +279,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         self.assertEqual(results[0]["chunk_id"], "paintcare")
         self.assertTrue(results[0]["requires_location_check"])
 
-    def test_battery_retrieval_includes_call2recycle_chunk(self):
+    def test_battery_retrieval_includes_primary_battery_chunk(self):
         results = retrieve_guidance_chunks(
             item_label="battery",
             material="battery",
@@ -290,23 +293,98 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertIn("call2recycle_national_batteries", chunk_ids)
+        self.assertIn("batteries_01", chunk_ids)
 
-    def test_battery_retrieval_may_include_earth911_chunk(self):
+    def test_wired_mouse_excludes_battery_chunks_without_battery_signals(self):
+        chunks = [
+            _chunk(
+                chunk_id="electronics_01",
+                title="Electronics drop-off",
+                section="electronics",
+                item_labels=["computer mouse", "electronics"],
+                categories=["electronics/e-waste"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+            _chunk(
+                chunk_id="batteries_01",
+                title="Battery recycling",
+                section="batteries",
+                item_labels=["battery", "rechargeable batteries"],
+                materials=["battery"],
+                categories=["electronics/e-waste"],
+                condition_flags=["battery"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+        ]
+
         results = retrieve_guidance_chunks(
-            item_label="battery",
-            material="battery",
-            category="batteries",
-            item_candidates=["battery", "rechargeable batteries"],
-            material_candidates=["battery"],
-            category_candidates=["battery", "electronics"],
-            condition_flags=["requires_dropoff", "hazardous"],
+            item_label="Computer Mouse",
+            material="Electronics",
+            category="Electronics",
+            item_candidates=["Computer Mouse", "Mouse"],
+            material_candidates=["Electronics"],
+            category_candidates=["Electronics"],
+            condition_flags=["electronics", "requires_dropoff"],
+            visual_evidence="Curved shape, cord, glossy rigid body.",
+            chunks=chunks,
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("electronics_01", chunk_ids)
+        self.assertNotIn("batteries_01", chunk_ids)
+
+    def test_wireless_mouse_can_include_battery_chunks(self):
+        chunks = [
+            _chunk(
+                chunk_id="electronics_01",
+                title="Electronics drop-off",
+                section="electronics",
+                item_labels=["computer mouse", "electronics"],
+                categories=["electronics/e-waste"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+            _chunk(
+                chunk_id="batteries_01",
+                title="Battery recycling",
+                section="batteries",
+                item_labels=["battery", "rechargeable batteries"],
+                materials=["battery"],
+                categories=["electronics/e-waste"],
+                condition_flags=["battery"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+        ]
+
+        results = retrieve_guidance_chunks(
+            item_label="Wireless Mouse",
+            material="Electronics",
+            category="Electronics",
+            item_candidates=["Wireless Mouse", "Computer Mouse"],
+            material_candidates=["Electronics"],
+            category_candidates=["Electronics"],
+            condition_flags=["electronics", "requires_dropoff"],
+            visual_evidence="Wireless mouse with battery compartment visible.",
+            chunks=chunks,
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("batteries_01", chunk_ids)
+
+    def test_textile_retrieval_includes_earth911_chunk(self):
+        results = retrieve_guidance_chunks(
+            item_label="clothing",
+            material="fabric",
+            category="textiles",
+            item_candidates=["clothing", "shirt", "old clothes"],
+            material_candidates=["fabric", "textile"],
+            category_candidates=["textiles", "reuse/donation"],
+            condition_flags=["clean_and_dry"],
             location=None,
             chunks=load_trusted_guidance_chunks(),
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertIn("earth911_directory_guidance", chunk_ids)
+        self.assertIn("textiles_donation_01", chunk_ids)
 
     def test_pencil_mixed_material_does_not_retrieve_earth911_by_generic_material(self):
         results = retrieve_guidance_chunks(
@@ -322,7 +400,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertNotIn("earth911_directory_guidance", chunk_ids)
+        self.assertNotIn("textiles_donation_01", chunk_ids)
 
     def test_curtain_generic_household_terms_do_not_retrieve_earth911(self):
         results = retrieve_guidance_chunks(
@@ -338,7 +416,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertNotIn("earth911_directory_guidance", chunk_ids)
+        self.assertNotIn("textiles_donation_01", chunk_ids)
 
     def test_battery_retrieval_does_not_include_paintcare_chunk(self):
         results = retrieve_guidance_chunks(
@@ -354,7 +432,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertNotIn("paintcare_program_states_paint", chunk_ids)
+        self.assertNotIn("hhw_02", chunk_ids)
 
     def test_condition_flag_overlap_alone_is_not_enough_to_pass_threshold(self):
         chunks = [
@@ -403,7 +481,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         self.assertEqual(results[0]["chunk_id"], "electronics-dropoff")
         self.assertIn("category", results[0]["matched_fields"])
 
-    def test_earth911_still_retrieves_for_e_waste_when_appropriate(self):
+    def test_electronics_retrieval_includes_electronics_chunk(self):
         results = retrieve_guidance_chunks(
             item_label="old laptop",
             material="electronics",
@@ -417,7 +495,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertIn("earth911_directory_guidance", chunk_ids)
+        self.assertIn("electronics_01", chunk_ids)
 
     def test_battery_alias_match_allows_condition_flag_boost_without_paintcare_false_positive(self):
         chunks = [
@@ -454,7 +532,7 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         self.assertIn("battery-dropoff", chunk_ids)
         self.assertNotIn("paintcare-like", chunk_ids)
 
-    def test_earth911_can_be_supplemental_to_stronger_battery_match(self):
+    def test_battery_retrieval_can_include_preparation_guidance_chunk(self):
         results = retrieve_guidance_chunks(
             item_label="battery",
             material="battery",
@@ -468,8 +546,8 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         )
 
         chunk_ids = [result["chunk_id"] for result in results]
-        self.assertIn("call2recycle_national_batteries", chunk_ids)
-        self.assertIn("earth911_directory_guidance", chunk_ids)
+        self.assertIn("batteries_01", chunk_ids)
+        self.assertIn("batteries_02", chunk_ids)
 
 
 if __name__ == "__main__":

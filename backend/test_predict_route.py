@@ -1,4 +1,5 @@
 import io
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from main import app
+from routes.predict import predict as predict_route
 
 
 def _make_image_bytes() -> bytes:
@@ -16,6 +18,34 @@ def _make_image_bytes() -> bytes:
 
 
 class PredictRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.clip_ready_patch = patch(
+            "services.recognition_router.clip_service.is_clip_initialized",
+            return_value=True,
+        )
+        self.clip_ready_patch.start()
+        self.addCleanup(self.clip_ready_patch.stop)
+
+    def test_predict_logs_guidance_and_total_timing(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [("Calculator", 0.98)],
+        }
+        response = {"item": "Calculator"}
+        with (
+            patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
+            patch("routes.predict.build_prediction_response", return_value=response),
+            self.assertLogs("routes.predict", level="INFO") as logs,
+        ):
+            result = asyncio.run(predict_route(file=None, selected_item="Calculator"))
+
+        self.assertEqual(result, response)
+        combined = "\n".join(logs.output)
+        self.assertIn("stage=guidance", combined)
+        self.assertIn("stage=total", combined)
+
     def test_predict_preserves_existing_shape_and_includes_cache_metadata(self):
         client = TestClient(app)
         classification = {
@@ -64,6 +94,7 @@ class PredictRouteTests(unittest.TestCase):
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
                 "guidance_source": "legacy_rules_fallback",
+                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },
@@ -75,7 +106,7 @@ class PredictRouteTests(unittest.TestCase):
         with (
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                "services.recognition_router.cache_repository.find_exact_phash_match",
                 return_value=None,
             ),
             patch(
@@ -187,6 +218,7 @@ class PredictRouteTests(unittest.TestCase):
                     "Use local guidance or scan a supported item for trusted disposal instructions.",
                 ],
                 "guidance_source": "safe_fallback",
+                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -437,6 +469,7 @@ class PredictRouteTests(unittest.TestCase):
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
                 "guidance_source": "legacy_rules_fallback",
+                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -528,16 +561,17 @@ class PredictRouteTests(unittest.TestCase):
                 "summary": None,
                 "steps": [],
                 "guidance_source": "safe_fallback",
+                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
         )
 
-    def test_predict_near_phash_cache_hit_matches_exact_cache_response_shape(self):
+    def test_predict_exact_phash_cache_hit_preserves_response_shape(self):
         client = TestClient(app)
         cached_record = {
             "item_label": "Calculator",
-            "phash_distance": 4,
+            "phash_distance": 0,
             "metadata": (
                 "{\"classification\": {\"item\": \"Calculator\", \"category\": \"Electronics\", "
                 "\"status\": \"confident\", \"candidates\": [[\"Calculator\", 0.98]]}}"
@@ -547,7 +581,7 @@ class PredictRouteTests(unittest.TestCase):
         with (
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch(
-                "services.recognition_router.cache_repository.find_nearest_phash_match",
+                "services.recognition_router.cache_repository.find_exact_phash_match",
                 return_value=cached_record,
             ),
             patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
@@ -587,6 +621,7 @@ class PredictRouteTests(unittest.TestCase):
                     "Take the item to an e-waste center or retailer drop-off.",
                 ],
                 "guidance_source": "legacy_rules_fallback",
+                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },
@@ -697,7 +732,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["guidance_source"], "json_rag_direct_generated")
         self.assertEqual(response.json()["disposal_action"], "drop-off")
         self.assertIn(
-            "call2recycle_national_batteries",
+            "batteries_01",
             response.json()["guidance_metadata"]["retrieved_chunk_ids"],
         )
 

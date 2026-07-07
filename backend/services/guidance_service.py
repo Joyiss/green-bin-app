@@ -188,8 +188,8 @@ _LOW_RISK_DROP_OFF_ONLY_TERMS = {
 _LLM_SKIP_REASONS = {
     "llm_disabled",
     "ENABLE_LLM_GUIDANCE_false",
-    "provider_not_gemini",
-    "missing_GEMINI_API_KEY",
+    "provider_not_groq",
+    "missing_GROQ_API_KEY",
     "no_chunks",
 }
 _COMMON_LOW_RISK_WARNING = (
@@ -632,6 +632,13 @@ def _deterministic_low_risk_guidance(
             "low_risk_reason": low_risk_evaluation.get("reason"),
             "matched_terms": list(low_risk_evaluation.get("matched_terms") or []),
             "fallback_group": group,
+            "claims_used": [],
+            "source_excerpts": [],
+            "source_names": [],
+            "source_urls": [],
+            "limitations": [],
+            "why_this_action": "This is a compact low-confidence fallback because no trusted chunks were retrieved.",
+            "retrieved_chunk_ids": [],
         },
     }
     return guidance
@@ -876,68 +883,89 @@ def _sentences_from_text(value: str) -> list[str]:
     ]
 
 
-def _build_json_summary(primary_chunk: dict[str, Any]) -> str:
-    content = _first_non_empty_string(primary_chunk.get("content"))
-    if content:
-        summary_sentences = _sentences_from_text(content)[:2]
-        summary = " ".join(summary_sentences).strip()
+def _json_item_phrase(recognized_item: str | None) -> str:
+    item = _first_non_empty_string(recognized_item)
+    return item.casefold() if item else "item"
+
+
+def _build_json_summary(primary_chunk: dict[str, Any], disposal_action: str | None, recognized_item: str | None) -> str:
+    item_phrase = _json_item_phrase(recognized_item)
+    if disposal_action == "recycle":
+        summary = f"Recycle the {item_phrase} if the retrieved source supports it."
+    elif disposal_action == "drop-off":
+        summary = f"Use drop-off guidance for the {item_phrase}."
+    elif disposal_action == "compost":
+        summary = f"Compost the {item_phrase} only if accepted locally."
+    elif disposal_action == "trash":
+        summary = f"Trash the {item_phrase} only if the source allows it."
+    elif disposal_action == "donate/reuse":
+        summary = f"Reuse or donate the {item_phrase} if still usable."
     else:
-        summary = (
-            _first_non_empty_string(primary_chunk.get("title"))
-            or "Trusted source guidance was retrieved for this item."
-        )
+        summary = f"Follow retrieved guidance for the {item_phrase}."
 
-    source_name = _first_non_empty_string(primary_chunk.get("source_name"))
-    if source_name and source_name.casefold() == "paintcare":
-        summary = (
-            f"{summary} Check whether a PaintCare program or participating drop-off site "
-            f"is available in your area."
-        )
-    elif source_name and "earth911" in source_name.casefold():
-        summary = f"{summary} Verify local facility acceptance before relying on this option."
-    elif primary_chunk.get("requires_location_check") is True:
-        summary = (
-            f"{summary} Check local rules or program availability before relying on this guidance."
-        )
-
+    if primary_chunk.get("requires_location_check") is True:
+        return f"{summary.rstrip('.')} Check local acceptance first."
     return summary
 
 
-def _build_json_steps(primary_chunk: dict[str, Any], disposal_action: str | None) -> list[str]:
+def _build_json_steps(
+    primary_chunk: dict[str, Any],
+    disposal_action: str | None,
+    recognized_item: str | None,
+) -> list[str]:
+    item_phrase = _json_item_phrase(recognized_item)
+    chunk_text = " ".join(
+        filter(
+            None,
+            [
+                _first_non_empty_string(primary_chunk.get("content")),
+                _first_non_empty_string(primary_chunk.get("source_claim")),
+                _first_non_empty_string(primary_chunk.get("source_excerpt")),
+                " ".join(str(value).strip() for value in (primary_chunk.get("warnings") or []) if str(value).strip()),
+                " ".join(str(value).strip() for value in (primary_chunk.get("limitations") or []) if str(value).strip()),
+            ],
+        )
+    ).casefold()
+
     steps: list[str] = []
+    if "food scraps" in chunk_text or "greasy" in chunk_text or "residue" in chunk_text:
+        steps.append("Remove food scraps before recycling.")
+    elif "tape" in chunk_text and "terminal" in chunk_text:
+        steps.append("Tape exposed terminals before transport.")
+    elif "remove hardcover" in chunk_text or "hardcover cover" in chunk_text:
+        steps.append("Remove hardcover covers before recycling.")
+    elif "flatten" in chunk_text:
+        steps.append(f"Flatten the {item_phrase} before recycling.")
+    elif "clean and dry" in chunk_text:
+        steps.append(f"Keep the {item_phrase} clean and dry.")
+    elif disposal_action == "drop-off":
+        steps.append(f"Keep the {item_phrase} together for drop-off.")
+
+    if primary_chunk.get("requires_location_check") is True:
+        steps.append("Check local program acceptance before relying on it.")
 
     if disposal_action == "recycle":
-        steps.append("Recycling may be appropriate based on the retrieved source guidance.")
-    elif disposal_action == "compost":
-        steps.append(
-            "Composting may be appropriate where a local organics program accepts this item."
-        )
+        steps.append("Recycle it only through the supported route.")
     elif disposal_action == "drop-off":
-        steps.append("Use a designated drop-off or take-back program when one is available.")
+        steps.append(f"Use drop-off for the {item_phrase}.")
+    elif disposal_action == "compost":
+        steps.append("Compost it only if accepted locally.")
     elif disposal_action == "trash":
-        steps.append(
-            "Use regular trash only when the retrieved source guidance explicitly supports that option."
-        )
+        steps.append("Use trash only if the retrieved guidance allows it.")
     elif disposal_action == "donate/reuse":
-        steps.append("Reuse or donation may be appropriate when the item is still usable.")
+        steps.append(f"Donate the {item_phrase} if still usable.")
     else:
-        steps.append(
-            "Multiple disposal paths may apply depending on the item condition and local program rules."
-        )
-
-    source_name = _first_non_empty_string(primary_chunk.get("source_name"))
-    if source_name and source_name.casefold() == "paintcare":
-        steps.append("Check whether a PaintCare program or participating site is available in your area.")
-    elif source_name and "earth911" in source_name.casefold():
-        steps.append("Verify the local facility accepts this material before visiting.")
-    elif primary_chunk.get("requires_location_check") is True:
-        steps.append("Check local or program-specific availability before relying on this guidance.")
+        steps.append("Follow the limits shown in More Details.")
 
     limitations = primary_chunk.get("limitations") or []
     if isinstance(limitations, list) and limitations:
-        steps.append(str(limitations[0]))
+        first_limitation = str(limitations[0]).strip()
+        if first_limitation and len(steps) < 3:
+            steps.append(first_limitation.rstrip(".") + ".")
 
-    return steps
+    if len(steps) < 2:
+        steps.append("Review the retrieved limits in More Details.")
+    return steps[:3]
 
 
 def _build_json_guidance_metadata(
@@ -946,9 +974,11 @@ def _build_json_guidance_metadata(
     retrieved_chunk_ids: list[str] = []
     source_names: list[str] = []
     source_urls: list[str] = []
+    source_excerpts: list[str] = []
+    claims_used: list[str] = []
     matched_fields: dict[str, list[str]] = {}
     retrieval_scores: dict[str, float] = {}
-    limitations: dict[str, list[str]] = {}
+    limitations: list[str] = []
     requires_location_check = False
 
     for result in retrieval_results[:3]:
@@ -964,11 +994,19 @@ def _build_json_guidance_metadata(
             source_names.append(source_name)
         if source_url and source_url not in source_urls:
             source_urls.append(source_url)
+        source_excerpt = _first_non_empty_string(chunk.get("source_excerpt"))
+        if source_excerpt and source_excerpt not in source_excerpts:
+            source_excerpts.append(source_excerpt)
+        source_claim = _first_non_empty_string(chunk.get("source_claim"))
+        if source_claim and source_claim not in claims_used:
+            claims_used.append(source_claim)
 
         matched_fields[chunk_id] = list(result.get("matched_fields") or [])
         retrieval_scores[chunk_id] = float(result.get("score") or 0.0)
-        if chunk.get("limitations"):
-            limitations[chunk_id] = list(chunk.get("limitations") or [])
+        for limitation in list(chunk.get("limitations") or []):
+            normalized_limitation = str(limitation).strip()
+            if normalized_limitation and normalized_limitation not in limitations:
+                limitations.append(normalized_limitation)
         if result.get("requires_location_check") is True:
             requires_location_check = True
 
@@ -976,12 +1014,18 @@ def _build_json_guidance_metadata(
         "retrieved_chunk_ids": retrieved_chunk_ids,
         "source_names": source_names,
         "source_urls": source_urls,
+        "source_excerpts": source_excerpts,
+        "claims_used": claims_used,
         "matched_fields": matched_fields,
         "retrieval_scores": retrieval_scores,
         "requires_location_check": requires_location_check,
+        "limitations": limitations,
+        "why_this_action": (
+            "The selected action matches the strongest retrieved source evidence."
+            if retrieved_chunk_ids
+            else "No source evidence was retrieved."
+        ),
     }
-    if limitations:
-        metadata["limitations"] = limitations
 
     return metadata
 
@@ -990,6 +1034,13 @@ def _guidance_from_json_retrieval(
     retrieval_results: list[dict[str, Any]],
     *,
     extra_metadata: dict[str, Any] | None = None,
+    recognized_item: str | None = None,
+    material: str | None = None,
+    broad_category: str | None = None,
+    condition_flags: list[str] | None = None,
+    special_flags: list[str] | None = None,
+    visual_evidence: str | None = None,
+    candidates: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if not retrieval_results:
         return None
@@ -1008,7 +1059,8 @@ def _guidance_from_json_retrieval(
             if normalized_warning and normalized_warning not in warnings:
                 warnings.append(normalized_warning)
 
-    guidance = {
+    steps = _build_json_steps(primary_chunk, disposal_action, recognized_item)
+    candidate_payload = {
         "disposal_action": disposal_action,
         "material_code": None,
         "impact_level": (
@@ -1016,16 +1068,65 @@ def _guidance_from_json_retrieval(
             if primary_chunk.get("requires_location_check") is True
             else "Source-Grounded Guidance"
         ),
-        "summary": _build_json_summary(primary_chunk),
-        "steps": _build_json_steps(primary_chunk, disposal_action),
+        "summary": _build_json_summary(primary_chunk, disposal_action, recognized_item),
+        "steps": steps,
+        "warnings": warnings,
+        "confidence": "high",
+        "sources_used": [
+            result.get("chunk_id")
+            for result in retrieval_results[:3]
+            if isinstance(result.get("chunk_id"), str) and result.get("chunk_id")
+        ],
+    }
+    validated_payload, validation_errors = guidance_llm_service.validate_mobile_guidance_output(
+        candidate_payload,
+        mode="source_grounded",
+        recognized_item=recognized_item,
+        normalized_item_label=recognized_item,
+        material=material,
+        broad_category=broad_category,
+        condition_flags=list(condition_flags or []),
+        special_flags=list(special_flags or []),
+        visual_evidence=visual_evidence,
+        candidates=list(candidates or []),
+        allowed_actions={
+            action
+            for result in retrieval_results[:3]
+            for action in (
+                str(value).strip().lower().replace("drop off", "drop-off")
+                for value in (result.get("chunk", {}).get("disposal_actions_supported", []) or [])
+                if str(value).strip()
+            )
+        },
+        chunks=[result.get("chunk", {}) for result in retrieval_results[:3] if isinstance(result.get("chunk"), dict)],
+    )
+    if validated_payload is None:
+        logger.info(
+            "Direct JSON guidance contract fallback used. item=%s validation_errors=%s",
+            recognized_item,
+            validation_errors,
+        )
+        validated_payload = {
+            **candidate_payload,
+            "steps": steps,
+        }
+
+    guidance = {
+        "disposal_action": validated_payload["disposal_action"],
+        "material_code": validated_payload["material_code"],
+        "impact_level": validated_payload["impact_level"],
+        "summary": validated_payload["summary"],
+        "steps": validated_payload["steps"],
         "guidance_source": "json_rag_direct_generated",
         "guidance_metadata": _merge_guidance_metadata(
             _build_json_guidance_metadata(retrieval_results),
+            guidance_llm_service._contract_metadata_values(),
+            {"final_generation_path": "direct_rag_fallback"},
             extra_metadata,
         ),
     }
-    if warnings:
-        guidance["warnings"] = warnings
+    if validated_payload["warnings"]:
+        guidance["warnings"] = validated_payload["warnings"]
 
     return guidance
 
@@ -1053,6 +1154,7 @@ def _guidance_from_legacy_rules(
         ),
         "steps": legacy_guidance.get("steps") or [],
         "guidance_source": "legacy_rules_fallback",
+        "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
     }
 
 
@@ -1093,6 +1195,10 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             _normalized_open_details(classification).get("special_handling_flags", []),
             _normalized_open_details(classification).get("special_flags", []),
         )
+        special_flags = _candidate_values(
+            _normalized_open_details(classification).get("special_handling_flags", []),
+            _normalized_open_details(classification).get("special_flags", []),
+        )
         condition_flags.extend(_derived_guidance_context_flags(classification))
         condition_flags = _candidate_values(condition_flags)
 
@@ -1104,6 +1210,10 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             "material_candidates": material_candidates,
             "category_candidates": category_candidates,
             "condition_flags": condition_flags,
+            "special_flags": special_flags,
+            "visual_evidence": _first_non_empty_string(
+                recognition_details.get("visual_evidence") if isinstance(recognition_details, dict) else None
+            ),
             "location": classification.get("location"),
         }
 
@@ -1118,6 +1228,8 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
         "material_candidates": material_candidates,
         "category_candidates": category_candidates,
         "condition_flags": [],
+        "special_flags": [],
+        "visual_evidence": None,
         "location": classification.get("location"),
     }
 
@@ -1137,6 +1249,19 @@ def _lookup_json_guidance(classification: dict[str, Any]) -> list[dict[str, Any]
 
 
 def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
+    recognition_details = classification.get("recognition_details")
+    candidate_labels: list[str] = []
+    if isinstance(recognition_details, dict):
+        candidate_labels = [
+            label
+            for label in (
+                candidate.get("label")
+                for candidate in recognition_details.get("candidates", [])
+                if isinstance(candidate, dict)
+            )
+            if isinstance(label, str) and label.strip()
+        ]
+
     normalized_details = _normalized_open_details(classification)
     return {
         "recognized_item": _first_non_empty_string(classification.get("item")),
@@ -1156,7 +1281,19 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
             classification.get("recognized_broad_category"),
             classification.get("category"),
         ),
-        "condition_flags": _normalized_string_list(normalized_details.get("condition_flags")),
+        "condition_flags": _open_condition_flags(classification),
+        "special_flags": _candidate_values(
+            _normalized_string_list(normalized_details.get("special_handling_flags")),
+            _normalized_string_list(normalized_details.get("special_flags")),
+        ),
+        "visual_evidence": _first_non_empty_string(
+            recognition_details.get("visual_evidence") if isinstance(recognition_details, dict) else None
+        ),
+        "candidates": _candidate_values(
+            candidate_labels,
+            classification.get("trusted_guidance_label"),
+            normalized_details.get("matched_supported_label"),
+        ),
         "location": classification.get("location"),
     }
 
@@ -1412,10 +1549,10 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 
         llm_fallback_reason = _first_non_empty_string(llm_result.get("failure_reason"))
         if llm_fallback_reason in _LLM_SKIP_REASONS:
-            logger.info("Gemini guidance skipped. reason=%s", llm_fallback_reason)
+            logger.info("LLM guidance skipped. reason=%s", llm_fallback_reason)
         elif llm_fallback_reason:
             logger.info(
-                "Gemini guidance validation failed. reason=%s fallback=%s",
+                "LLM guidance validation failed. reason=%s fallback=%s",
                 llm_fallback_reason,
                 "json_rag_direct_generated",
             )
@@ -1426,6 +1563,13 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
                 if llm_fallback_reason and llm_fallback_reason not in _LLM_SKIP_REASONS
                 else None
             ),
+            recognized_item=llm_context["recognized_item"],
+            material=llm_context["material"],
+            broad_category=llm_context["broad_category"],
+            condition_flags=llm_context["condition_flags"],
+            special_flags=llm_context["special_flags"],
+            visual_evidence=llm_context["visual_evidence"],
+            candidates=llm_context["candidates"],
         ) or _default_safe_guidance()
         _log_guidance_selected(
             guidance,
@@ -1436,7 +1580,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
         )
         return guidance
 
-    logger.info("Gemini guidance skipped. reason=%s", "no_retrieved_chunks")
+    logger.info("LLM guidance skipped. reason=%s", "no_retrieved_chunks")
 
     low_risk_evaluation = _evaluate_low_risk_open_item(classification)
     low_risk_eligible = bool(low_risk_evaluation["eligible"])
@@ -1447,6 +1591,9 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             material=llm_context["material"],
             broad_category=llm_context["broad_category"],
             condition_flags=llm_context["condition_flags"],
+            special_flags=llm_context["special_flags"],
+            visual_evidence=llm_context["visual_evidence"],
+            candidates=llm_context["candidates"],
             low_risk_reason=_first_non_empty_string(low_risk_evaluation.get("reason")),
             matched_terms=list(low_risk_evaluation.get("matched_terms") or []),
         )
@@ -1461,10 +1608,10 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 
         failure_reason = _first_non_empty_string(llm_result.get("failure_reason"))
         if failure_reason in _LLM_SKIP_REASONS:
-            logger.info("Gemini guidance skipped. reason=%s", failure_reason)
+            logger.info("LLM guidance skipped. reason=%s", failure_reason)
         elif failure_reason:
             logger.info(
-                "Gemini guidance validation failed. reason=%s fallback=%s",
+                "LLM guidance validation failed. reason=%s fallback=%s",
                 failure_reason,
                 "llm_general_fallback",
             )
@@ -1537,6 +1684,22 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
     guidance = _resolve_guidance(classification)
 
+    guidance_metadata = guidance.get("guidance_metadata")
+    if not isinstance(guidance_metadata, dict):
+        guidance_metadata = {}
+    if "final_generation_path" not in guidance_metadata:
+        source = guidance.get("guidance_source")
+        if source == "json_rag_direct_generated":
+            final_path = "direct_rag_fallback"
+        elif guidance_metadata.get("deterministic_fallback_used") is True:
+            final_path = "deterministic_fallback"
+        elif source in {"safe_fallback", "legacy_rules_fallback"}:
+            final_path = "legacy_safe_fallback"
+        else:
+            final_path = "original_llm"
+        guidance_metadata["final_generation_path"] = final_path
+    guidance["guidance_metadata"] = guidance_metadata
+
     response = {
         "item": _format_item_name(str(classification.get("item") or "")),
         "category": classification.get("category", UNKNOWN_CATEGORY),
@@ -1554,7 +1717,6 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
     if isinstance(warnings, list) and warnings:
         response["warnings"] = warnings
 
-    guidance_metadata = guidance.get("guidance_metadata")
     if isinstance(guidance_metadata, dict) and guidance_metadata:
         response["guidance_metadata"] = guidance_metadata
 

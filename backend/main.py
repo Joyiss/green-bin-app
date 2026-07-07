@@ -11,10 +11,14 @@ from fastapi.responses import JSONResponse
 
 try:
     from .materials import MATERIAL_LABELS
+    from .repositories import cache_repository
     from .routes.predict import router as predict_router
+    from .services import clip_service, phash_service
 except ImportError:
     from materials import MATERIAL_LABELS
+    from repositories import cache_repository
     from routes.predict import router as predict_router
+    from services import clip_service, phash_service
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -41,6 +45,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized_value = raw_value.strip().casefold()
+    if normalized_value in _TRUE_ENV_VALUES:
+        return True
+    if normalized_value in _FALSE_ENV_VALUES:
+        return False
+    return default
+
+
+@app.on_event("startup")
+def warmup_phash_and_cache() -> None:
+    phash_service.warmup_phash()
+    cache_repository.warmup_exact_phash_lookup()
+
+
+@app.on_event("startup")
+def start_clip_warmup() -> None:
+    if not _env_flag("ENABLE_CLIP_WARMUP", default=True):
+        logging.getLogger(__name__).info("CLIP background warmup disabled by configuration.")
+        return
+
+    clip_service.start_background_warmup()
 
 
 def _require_earth911_api_key() -> str:

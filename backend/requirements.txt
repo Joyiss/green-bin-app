@@ -5,7 +5,7 @@ imagehash
 open-clip-torch
 python-multipart
 python-dotenv
-pytesseract
 requests
 supabase
 zxing-cpp
+groq

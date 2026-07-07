@@ -66,6 +66,69 @@ class GuidanceSourceLoaderTests(unittest.TestCase):
         self.assertEqual(chunks[0]["id"], "chunk-2")
         self.assertEqual(chunks[0]["applies_to"]["materials"], ["electronics"])
 
+    def test_loads_object_with_entries_list_and_maps_new_schema(self):
+        file_path = self._write_temp_json(
+            {
+                "entries": [
+                    {
+                        "id": "battery-entry",
+                        "section": "batteries",
+                        "scope": "national_dropoff",
+                        "source": {
+                            "name": "Used Lithium-Ion Batteries",
+                            "organization": "EPA",
+                            "url": "https://example.com/battery",
+                            "source_type": "federal_government",
+                        },
+                        "source_excerpt": "Do not place lithium batteries in household recycling.",
+                        "source_claim": "Lithium-ion batteries require a dedicated drop-off program.",
+                        "applies_to": {
+                            "materials": ["rechargeable_batteries"],
+                            "item_examples": ["laptop_batteries"],
+                            "conditions": ["pre_dropoff_preparation"],
+                        },
+                        "decision_signals": {
+                            "supports_recycling": True,
+                            "supports_composting": False,
+                            "supports_trash": False,
+                            "supports_donation_or_reuse": False,
+                            "requires_dropoff": True,
+                            "requires_household_hazardous_waste": False,
+                            "avoid_curbside_recycling": True,
+                            "avoid_trash": True,
+                        },
+                        "limitations": ["Check participating sites before visiting."],
+                        "confidence": "high",
+                    }
+                ]
+            }
+        )
+
+        chunks = load_trusted_guidance_chunks(file_path=file_path, force_reload=True)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["id"], "battery-entry")
+        self.assertEqual(chunks[0]["source_name"], "EPA")
+        self.assertEqual(chunks[0]["source_url"], "https://example.com/battery")
+        self.assertEqual(chunks[0]["location_scope"], "national")
+        self.assertTrue(chunks[0]["generalizable"])
+        self.assertTrue(chunks[0]["requires_location_check"])
+        self.assertIn("laptop_batteries", chunks[0]["applies_to"]["item_labels"])
+        self.assertIn("batteries", chunks[0]["applies_to"]["categories"])
+        self.assertIn("requires_dropoff", chunks[0]["applies_to"]["condition_flags"])
+        self.assertEqual(
+            chunks[0]["disposal_actions_supported"],
+            ["Drop-off", "Check local guidance"],
+        )
+        self.assertIn(
+            "Do not place this item in curbside recycling",
+            chunks[0]["warnings"][0],
+        )
+        self.assertIn(
+            "Lithium-ion batteries require a dedicated drop-off program.",
+            chunks[0]["content"],
+        )
+
     def test_missing_file_fails_safely(self):
         missing_path = (
             Path(__file__).resolve().parent / "definitely-missing-guidance.json"

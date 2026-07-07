@@ -44,9 +44,18 @@ From the **repository root** (`green-bin-app/`):
    CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
    CLOUDFLARE_API_TOKEN=your-workers-ai-api-token
    CLOUDFLARE_AI_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+   ENABLE_LLM_GUIDANCE=true
+   GUIDANCE_LLM_PROVIDER=groq
+   GUIDANCE_LLM_MODEL=llama-3.1-8b-instant
+   GROQ_API_KEY=your-groq-api-key
+   ENABLE_CLIP_WARMUP=true
+   ENABLE_NEAREST_PHASH_LOOKUP=false
    ```
 
    `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
+   `GUIDANCE_LLM_MODEL` defaults to `llama-3.1-8b-instant` if you omit it.
+   `ENABLE_CLIP_WARMUP` defaults to `true`; set it to `false` to disable background CLIP initialization.
+   `ENABLE_NEAREST_PHASH_LOOKUP` defaults to `false`; enable it only when approximate pHash matching is worth the full-cache scan cost.
 
 The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
 

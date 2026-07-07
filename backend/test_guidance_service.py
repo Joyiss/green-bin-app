@@ -80,7 +80,7 @@ def _open_classification(
 
 
 class GuidanceServiceTests(unittest.TestCase):
-    def test_gemini_grounded_response_wins_before_direct_json(self):
+    def test_groq_grounded_response_wins_before_direct_json(self):
         classification = {
             "item": "Battery",
             "category": "Battery",
@@ -99,8 +99,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "json_rag_llm_generated",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "source_grounded",
                 "confidence": "high",
                 "sources_used": ["chunk-1"],
@@ -122,14 +122,14 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
-        self.assertEqual(response["guidance_metadata"]["llm_provider"], "gemini")
+        self.assertEqual(response["guidance_metadata"]["llm_provider"], "groq")
         self.assertEqual(
             response["guidance_metadata"]["retrieved_chunk_ids"],
             ["chunk-1"],
         )
         mock_rules.assert_not_called()
 
-    def test_direct_json_remains_fallback_when_gemini_output_is_invalid(self):
+    def test_direct_json_remains_fallback_when_groq_output_is_invalid(self):
         classification = {
             "item": "Battery",
             "category": "Battery",
@@ -156,6 +156,13 @@ class GuidanceServiceTests(unittest.TestCase):
             response["guidance_metadata"]["llm_fallback_reason"],
             "invalid_json",
         )
+        self.assertIn("claims_used", response["guidance_metadata"])
+        self.assertIn("source_excerpts", response["guidance_metadata"])
+        self.assertIn("source_names", response["guidance_metadata"])
+        self.assertIn("source_urls", response["guidance_metadata"])
+        self.assertIn("limitations", response["guidance_metadata"])
+        self.assertIn("why_this_action", response["guidance_metadata"])
+        self.assertIn("retrieved_chunk_ids", response["guidance_metadata"])
 
     def test_open_normalized_item_material_and_category_can_retrieve_chunks(self):
         classification = {
@@ -273,11 +280,11 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
         self.assertEqual(response["disposal_action"], "drop-off")
         self.assertIn(
-            "call2recycle_national_batteries",
+            "batteries_01",
             response["guidance_metadata"]["retrieved_chunk_ids"],
         )
         self.assertNotIn(
-            "paintcare_program_states_paint",
+            "hhw_02",
             response["guidance_metadata"]["retrieved_chunk_ids"],
         )
 
@@ -313,8 +320,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -369,8 +376,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -433,6 +440,12 @@ class GuidanceServiceTests(unittest.TestCase):
             "missing_summary",
         )
         self.assertTrue(response["guidance_metadata"]["deterministic_fallback_used"])
+        self.assertEqual(response["guidance_metadata"]["claims_used"], [])
+        self.assertEqual(response["guidance_metadata"]["source_excerpts"], [])
+        self.assertEqual(response["guidance_metadata"]["source_names"], [])
+        self.assertEqual(response["guidance_metadata"]["source_urls"], [])
+        self.assertEqual(response["guidance_metadata"]["retrieved_chunk_ids"], [])
+        self.assertIn("why_this_action", response["guidance_metadata"])
 
     def test_sheet_music_is_low_risk_eligible_for_general_safe_fallback(self):
         classification = _open_classification(
@@ -455,8 +468,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -499,7 +512,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("clean and dry", response["summary"].lower())
         self.assertIn("paper recycling", " ".join(response["steps"]).lower())
 
-    def test_sheet_music_with_gemini_disabled_falls_back_safely(self):
+    def test_sheet_music_with_llm_disabled_falls_back_safely(self):
         classification = _open_classification(
             item="Sheet Music",
             category="Paper",
@@ -539,8 +552,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -651,7 +664,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "safe_fallback")
         mock_general.assert_not_called()
 
-    def test_electronics_item_does_not_call_general_safe_gemini(self):
+    def test_electronics_item_does_not_call_general_safe_llm(self):
         classification = _open_classification(
             item="Laptop",
             category="Electronics",
@@ -750,8 +763,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "llm_general_fallback",
             "guidance_metadata": {
-                "llm_provider": "gemini",
-                "llm_model": "gemini-2.5-flash",
+                "llm_provider": "groq",
+                "llm_model": "llama-3.1-8b-instant",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],

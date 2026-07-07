@@ -50,6 +50,22 @@ class CacheRepositoryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SUPABASE_KEY is not set"):
                 cache_repository._get_supabase_client()
 
+    def test_exact_lookup_warmup_uses_optimized_lookup_path(self):
+        with patch(
+            "repositories.cache_repository.find_exact_phash_match",
+            return_value=None,
+        ) as mock_lookup:
+            self.assertTrue(cache_repository.warmup_exact_phash_lookup())
+
+        mock_lookup.assert_called_once_with("__green_bin_phash_warmup__")
+
+    def test_exact_lookup_warmup_failure_is_safe(self):
+        with patch(
+            "repositories.cache_repository.find_exact_phash_match",
+            side_effect=RuntimeError("network down"),
+        ):
+            self.assertFalse(cache_repository.warmup_exact_phash_lookup())
+
     def test_save_recognition_record_returns_inserted_row(self):
         expected_row = {
             "id": "record-123",
@@ -283,7 +299,7 @@ class CacheRepositoryTests(unittest.TestCase):
                 side_effect=lambda left, right: {"aaaa1111": 5, "bbbb2222": 3}[right],
             ),
         ):
-            match = cache_repository.find_nearest_phash_match("queryhash")
+            match = cache_repository.find_nearest_phash_match("queryhash", check_exact=False)
 
         self.assertEqual(
             match,
@@ -312,7 +328,11 @@ class CacheRepositoryTests(unittest.TestCase):
             patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
             patch("repositories.cache_repository.phash_distance", return_value=7),
         ):
-            match = cache_repository.find_nearest_phash_match("queryhash", max_distance=6)
+            match = cache_repository.find_nearest_phash_match(
+                "queryhash",
+                max_distance=6,
+                check_exact=False,
+            )
 
         self.assertIsNone(match)
 
@@ -334,7 +354,7 @@ class CacheRepositoryTests(unittest.TestCase):
             patch("repositories.cache_repository.find_recognition_records_by_phash", return_value=[]),
             patch("repositories.cache_repository.phash_distance", return_value=4),
         ):
-            match = cache_repository.find_nearest_phash_match("queryhash")
+            match = cache_repository.find_nearest_phash_match("queryhash", check_exact=False)
 
         self.assertEqual(match["id"], "record-3")
         self.assertEqual(match["phash_distance"], 4)
@@ -355,7 +375,7 @@ class CacheRepositoryTests(unittest.TestCase):
                 RuntimeError,
                 "Failed to find nearest recognition cache record by phash: query failed",
             ):
-                cache_repository.find_nearest_phash_match("queryhash")
+                cache_repository.find_nearest_phash_match("queryhash", check_exact=False)
 
     def test_find_nearest_phash_match_raises_on_unexpected_row_shape(self):
         execute_builder = Mock()
@@ -373,39 +393,63 @@ class CacheRepositoryTests(unittest.TestCase):
                 RuntimeError,
                 "Failed to find nearest recognition cache record by phash: Supabase returned an unexpected row shape.",
             ):
-                cache_repository.find_nearest_phash_match("queryhash")
+                cache_repository.find_nearest_phash_match("queryhash", check_exact=False)
 
-    def test_find_nearest_phash_match_prefers_exact_match_before_nearest_scan(self):
-        exact_matches = [
-            {"id": "record-1", "phash": "abcd1234", "verified": False, "confidence": 0.7},
-            {"id": "record-2", "phash": "abcd1234", "verified": True, "confidence": 0.6},
-        ]
+    def test_find_exact_phash_match_selects_only_required_fields_and_limits_one(self):
+        exact_row = {
+            "item_label": "Calculator",
+            "metadata": {"classification": {"item": "Calculator"}},
+        }
+        limit_builder = Mock()
+        limit_builder.execute.return_value = SimpleNamespace(data=[exact_row])
+        confidence_order_builder = Mock()
+        confidence_order_builder.limit.return_value = limit_builder
+        verified_order_builder = Mock()
+        verified_order_builder.order.return_value = confidence_order_builder
+        eq_builder = Mock()
+        eq_builder.order.return_value = verified_order_builder
         select_builder = Mock()
+        select_builder.eq.return_value = eq_builder
         table_builder = Mock()
         table_builder.select.return_value = select_builder
         mock_client = Mock()
         mock_client.table.return_value = table_builder
 
-        with (
-            patch("repositories.cache_repository.create_client", return_value=mock_client),
-            patch(
-                "repositories.cache_repository.find_recognition_records_by_phash",
-                return_value=exact_matches,
-            ),
-        ):
-            match = cache_repository.find_nearest_phash_match("abcd1234")
+        with patch("repositories.cache_repository.create_client", return_value=mock_client):
+            match = cache_repository.find_exact_phash_match("abcd1234")
 
         self.assertEqual(
             match,
             {
-                "id": "record-2",
-                "phash": "abcd1234",
-                "verified": True,
-                "confidence": 0.6,
+                "item_label": "Calculator",
+                "metadata": {"classification": {"item": "Calculator"}},
                 "phash_distance": 0,
             },
         )
-        table_builder.select.assert_not_called()
+        table_builder.select.assert_called_once_with("item_label,metadata")
+        select_builder.eq.assert_called_once_with("phash", "abcd1234")
+        eq_builder.order.assert_called_once_with("verified", desc=True)
+        verified_order_builder.order.assert_called_once_with(
+            "confidence",
+            desc=True,
+            nullsfirst=False,
+        )
+        confidence_order_builder.limit.assert_called_once_with(1)
+
+    def test_find_nearest_phash_match_prefers_exact_match_before_nearest_scan(self):
+        exact_match = {
+            "id": "record-2",
+            "item_label": "Calculator",
+            "metadata": {},
+            "phash_distance": 0,
+        }
+        with patch(
+            "repositories.cache_repository.find_exact_phash_match",
+            return_value=exact_match,
+        ):
+            match = cache_repository.find_nearest_phash_match("abcd1234")
+
+        self.assertEqual(match, exact_match)
 
     def test_find_similar_embeddings_returns_plain_dicts(self):
         expected_rows = [

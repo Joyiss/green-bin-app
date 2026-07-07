@@ -1240,7 +1240,6 @@ export default function ScannerScreen() {
                 <ResultSheet
                   buttonIconName="location-outline"
                   buttonLabel={result.showNearbyButton ? 'Find Nearby Locations' : undefined}
-                  condenseGuidance
                   displayMode="expandable"
                   guidanceMetadata={result.guidanceMetadata}
                   guidanceSource={result.guidanceSource}

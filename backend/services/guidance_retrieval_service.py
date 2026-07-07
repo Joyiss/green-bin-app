@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 try:
@@ -16,6 +17,8 @@ except ImportError:
         normalize_guidance_phrase,
     )
     from services.guidance_source_loader import load_trusted_guidance_chunks
+
+logger = logging.getLogger(__name__)
 
 MIN_RETRIEVAL_SCORE = 3.0
 _GENERIC_MATERIALS = {"metal", "plastic", "paper", "glass", "cardboard"}
@@ -71,6 +74,36 @@ _EARTH911_SPECIAL_FLAGS = {
     "electronics",
     "battery",
 }
+_BATTERY_POSITIVE_TERMS = {
+    "battery",
+    "batteries",
+    "battery compartment",
+    "battery cover",
+    "calculator",
+    "cell phone",
+    "charging port",
+    "cordless",
+    "earbud",
+    "earbuds",
+    "headphones",
+    "laptop",
+    "phone",
+    "power bank",
+    "rechargeable",
+    "rechargeable batteries",
+    "remote",
+    "speaker",
+    "tablet",
+    "wireless",
+}
+_BATTERY_WIRED_NEGATIVE_TERMS = {
+    "cable",
+    "corded",
+    "cord",
+    "power cord",
+    "usb cable",
+    "wired",
+}
 
 
 def _normalize_string_list(values: Any) -> list[str]:
@@ -97,6 +130,10 @@ def _normalize_condition_flags(values: Any) -> list[str]:
             normalized_values.append(normalized_value.replace(" ", "_"))
 
     return normalized_values
+
+
+def _normalize_text(value: Any) -> str:
+    return normalize_guidance_phrase(value) or ""
 
 
 def _candidate_values(primary_value: Any, candidate_values: Any) -> list[str]:
@@ -236,6 +273,67 @@ def _is_calrecycle_chunk(chunk: dict[str, Any]) -> bool:
         )
     ).lower()
     return "calrecycle" in haystack or "state: california" in haystack
+
+
+def chunk_is_battery_related(chunk: dict[str, Any]) -> bool:
+    applies_to = chunk.get("applies_to") or {}
+    if _normalize_text(chunk.get("section")) == "batteries":
+        return True
+
+    texts = [
+        chunk.get("id"),
+        chunk.get("title"),
+        chunk.get("source_name"),
+        chunk.get("content"),
+        chunk.get("source_claim"),
+        chunk.get("source_excerpt"),
+    ]
+    for values in (
+        applies_to.get("item_labels"),
+        applies_to.get("materials"),
+        applies_to.get("categories"),
+        applies_to.get("condition_flags"),
+    ):
+        if isinstance(values, list):
+            texts.extend(values)
+
+    normalized_text = " ".join(filter(None, (_normalize_text(value) for value in texts)))
+    return "battery" in normalized_text or "rechargeable" in normalized_text
+
+
+def battery_chunk_relevant_for_context(
+    *,
+    item_label: str | None,
+    material: str | None,
+    category: str | None,
+    item_candidates: list[str] | None = None,
+    condition_flags: list[str] | None = None,
+    special_flags: list[str] | None = None,
+    visual_evidence: str | None = None,
+) -> bool:
+    normalized_condition_flags = _normalize_condition_flags(condition_flags or [])
+    normalized_special_flags = _normalize_condition_flags(special_flags or [])
+    if any(
+        flag in {"battery", "battery_possible", "contains_battery"}
+        for flag in (*normalized_condition_flags, *normalized_special_flags)
+    ):
+        return True
+
+    text_values = [
+        item_label,
+        material,
+        category,
+        visual_evidence,
+        *(item_candidates or []),
+    ]
+    normalized_text = " ".join(filter(None, (_normalize_text(value) for value in text_values)))
+    if any(term in normalized_text for term in _BATTERY_POSITIVE_TERMS):
+        return True
+
+    if any(term in normalized_text for term in _BATTERY_WIRED_NEGATIVE_TERMS):
+        return False
+
+    return False
 
 
 def _chunk_is_location_allowed(
@@ -433,6 +531,8 @@ def retrieve_guidance_chunks(
     material_candidates: list[str] | None = None,
     category_candidates: list[str] | None = None,
     condition_flags: list[str] | None = None,
+    special_flags: list[str] | None = None,
+    visual_evidence: str | None = None,
     location: dict[str, Any] | None = None,
     chunks: list[dict[str, Any]] | None = None,
     min_score: float = MIN_RETRIEVAL_SCORE,
@@ -444,10 +544,27 @@ def retrieve_guidance_chunks(
     effective_material_candidates = _candidate_values(material, material_candidates)
     effective_category_candidates = _candidate_values(category, category_candidates)
     normalized_condition_flags = _normalize_condition_flags(condition_flags or [])
+    battery_relevant = battery_chunk_relevant_for_context(
+        item_label=item_label,
+        material=material,
+        category=category,
+        item_candidates=effective_item_candidates,
+        condition_flags=normalized_condition_flags,
+        special_flags=special_flags or [],
+        visual_evidence=visual_evidence,
+    )
 
     matches: list[dict[str, Any]] = []
     for chunk in candidate_chunks:
         if not _chunk_is_location_allowed(chunk, location):
+            continue
+        if chunk_is_battery_related(chunk) and not battery_relevant:
+            logger.info(
+                "Guidance retrieval skipped battery chunk. chunk_id=%s item_label=%s visual_evidence=%s",
+                chunk.get("id"),
+                item_label,
+                visual_evidence,
+            )
             continue
 
         score, matched_fields = _score_chunk(

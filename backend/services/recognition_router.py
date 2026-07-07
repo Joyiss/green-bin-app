@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+from contextlib import contextmanager
+from time import perf_counter
 from typing import Any
 
 from fastapi import File, Form, HTTPException, UploadFile
@@ -12,9 +15,7 @@ try:
     from ..classifier import build_selected_item_prediction, classify
     from ..repositories import cache_repository
     from . import barcode_service
-    from . import ocr_service
     from .open_label_normalizer import (
-        labels_are_consistent_for_matching,
         normalize_open_recognition,
     )
     from . import phash_service
@@ -23,14 +24,12 @@ try:
         map_product_to_item_label,
     )
     from . import vlm_service
-    from .confidence_router import MIN_TOP_SIMILARITY, TOP_K, evaluate_clip_candidates
+    from .confidence_router import TOP_K, evaluate_clip_candidates
 except ImportError:
     from classifier import build_selected_item_prediction, classify
     from repositories import cache_repository
     from services import barcode_service
-    from services import ocr_service
     from services.open_label_normalizer import (
-        labels_are_consistent_for_matching,
         normalize_open_recognition,
     )
     from services import phash_service
@@ -39,13 +38,21 @@ except ImportError:
         map_product_to_item_label,
     )
     from services import vlm_service
-    from services.confidence_router import MIN_TOP_SIMILARITY, TOP_K, evaluate_clip_candidates
+    from services.confidence_router import TOP_K, evaluate_clip_candidates
 
 
 logger = logging.getLogger(__name__)
 
 
 class _ClipServiceProxy:
+    def is_clip_initialized(self) -> bool:
+        try:
+            from ..services import clip_service as clip_service_module
+        except ImportError:
+            from services import clip_service as clip_service_module
+
+        return clip_service_module.is_clip_initialized()
+
     def create_clip_embedding(self, image_bytes: bytes) -> list[float]:
         try:
             from ..services import clip_service as clip_service_module
@@ -56,6 +63,25 @@ class _ClipServiceProxy:
 
 
 clip_service = _ClipServiceProxy()
+
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def _nearest_phash_lookup_enabled() -> bool:
+    return os.getenv("ENABLE_NEAREST_PHASH_LOOKUP", "false").strip().casefold() in _TRUE_ENV_VALUES
+
+
+@contextmanager
+def _timed_stage(stage: str):
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        logger.info(
+            "predict_timing stage=%s duration_ms=%.1f",
+            stage,
+            (perf_counter() - started) * 1000,
+        )
 
 
 def _parse_json_value(value: Any) -> Any:
@@ -411,41 +437,14 @@ def _build_vlm_classification(prediction_result: dict[str, Any]) -> dict[str, An
     return classify(prediction_result)
 
 
-def _open_recognition_conflicts_with_ocr(
-    classification: dict[str, Any],
-    ocr_signal: dict[str, Any],
-) -> bool:
-    ocr_matched_label = ocr_signal.get("matched_label") if isinstance(ocr_signal, dict) else None
-    if not isinstance(ocr_matched_label, str) or not ocr_matched_label.strip():
-        return False
-
-    if classification.get("trusted_guidance_available") is True:
-        trusted_guidance_label = classification.get("trusted_guidance_label")
-        if isinstance(trusted_guidance_label, str) and labels_are_consistent_for_matching(
-            trusted_guidance_label,
-            ocr_matched_label,
-        ):
-            return False
-
-    recognized_item = classification.get("item")
-    if isinstance(recognized_item, str) and labels_are_consistent_for_matching(
-        recognized_item,
-        ocr_matched_label,
-    ):
-        return False
-
-    return True
-
-
 def _should_cache_open_vlm_classification(
     classification: dict[str, Any],
-    ocr_signal: dict[str, Any],
 ) -> bool:
     if classification.get("status") != "confident":
         return False
     if not _is_real_item_label(classification.get("item")):
         return False
-    return not _open_recognition_conflicts_with_ocr(classification, ocr_signal)
+    return True
 
 
 def _log_final_classification(classification: dict[str, Any]) -> None:
@@ -619,27 +618,6 @@ def _build_product_lookup_signal(product: dict[str, Any] | None) -> dict[str, An
     }
 
 
-def _empty_ocr_signal() -> dict[str, Any]:
-    return {
-        "text": "",
-        "keywords": [],
-        "matched_label": None,
-    }
-
-
-def _is_text_heavy_ocr_signal(ocr_signal: dict[str, Any]) -> bool:
-    text = ocr_signal.get("text", "")
-    keywords = ocr_signal.get("keywords", [])
-
-    return (
-        isinstance(text, str)
-        and len(text) >= 20
-    ) or (
-        isinstance(keywords, list)
-        and len(keywords) >= 2
-    )
-
-
 def _build_cache_policy(
     *,
     save_record: bool,
@@ -657,14 +635,11 @@ def _finalize_vlm_cache_policy(
     *,
     classification: dict[str, Any],
     barcode_signal: dict[str, Any],
-    ocr_signal: dict[str, Any],
     clip_embedding: list[float] | None,
 ) -> dict[str, Any]:
     final_label = classification.get("item")
     final_status = classification.get("status")
     barcode_detected = barcode_signal.get("value") is not None
-    normalized_ocr_label = _normalize_label_for_matching(ocr_signal.get("matched_label"))
-    normalized_final_label = _normalize_label_for_matching(final_label)
 
     if barcode_detected:
         return _build_cache_policy(
@@ -687,41 +662,11 @@ def _finalize_vlm_cache_policy(
             reason="unknown_or_uncertain_result",
         )
 
-    if (
-        normalized_ocr_label is not None
-        and normalized_final_label is not None
-        and normalized_ocr_label != normalized_final_label
-    ):
-        return _build_cache_policy(
-            save_record=True,
-            save_clip_embedding=False,
-            reason="ocr_final_label_conflict",
-        )
-
     return _build_cache_policy(
         save_record=True,
         save_clip_embedding=True,
         reason="normal_product_photo",
     )
-
-
-def _normalize_ocr_signal(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return _empty_ocr_signal()
-
-    text = value.get("text")
-    keywords = value.get("keywords")
-    matched_label = value.get("matched_label")
-
-    normalized_keywords: list[str] = []
-    if isinstance(keywords, list):
-        normalized_keywords = [keyword for keyword in keywords if isinstance(keyword, str)]
-
-    return {
-        "text": text if isinstance(text, str) else "",
-        "keywords": normalized_keywords,
-        "matched_label": matched_label if isinstance(matched_label, str) else None,
-    }
 
 
 def _build_signal_classification(label: Any, confidence: float | None = None) -> dict[str, Any] | None:
@@ -744,7 +689,6 @@ def _build_signals_metadata(
     phash_hit: bool,
     phash_distance: Any,
     barcode_signal: dict[str, Any],
-    ocr_signal: dict[str, Any],
     clip_candidates: list[dict[str, Any]],
     router_reason: str,
     cache_policy: dict[str, Any],
@@ -756,7 +700,6 @@ def _build_signals_metadata(
             "distance": phash_distance,
         },
         "barcode": dict(barcode_signal),
-        "ocr": dict(ocr_signal),
         "clip_candidates": _lightweight_clip_candidates(clip_candidates),
         "router_reason": router_reason,
         "cache_policy": dict(cache_policy),
@@ -776,17 +719,11 @@ def _save_recognition_record_if_possible(
 ) -> None:
     item_label = classification.get("item", "")
     trusted_guidance_available = classification.get("trusted_guidance_available")
-    signals_ocr = signals.get("ocr") if isinstance(signals, dict) else None
     signals_barcode = signals.get("barcode") if isinstance(signals, dict) else None
     signals_cache_policy = signals.get("cache_policy") if isinstance(signals, dict) else None
     barcode_detected = (
         isinstance(signals_barcode, dict)
         and signals_barcode.get("value") is not None
-    )
-    ocr_matched_label = (
-        signals_ocr.get("matched_label")
-        if isinstance(signals_ocr, dict)
-        else None
     )
     cache_policy_reason = (
         signals_cache_policy.get("reason")
@@ -795,11 +732,10 @@ def _save_recognition_record_if_possible(
     )
 
     logger.info(
-        "Recognition cache policy. save_clip_embedding=%s reason=%s barcode_detected=%s ocr_matched_label=%s final_label=%s final_status=%s",
+        "Recognition cache policy. save_clip_embedding=%s reason=%s barcode_detected=%s final_label=%s final_status=%s",
         bool(save_clip_embedding and clip_embedding is not None),
         cache_policy_reason,
         barcode_detected,
-        ocr_matched_label,
         classification.get("item"),
         classification.get("status"),
     )
@@ -868,23 +804,30 @@ async def recognize_item(
         router_decision: dict[str, Any] | None = None
         router_reason = "vlm_fallback"
         barcode_signal = _empty_barcode_signal()
-        ocr_signal = _empty_ocr_signal()
         cache_policy = _build_cache_policy(
             save_record=True,
             save_clip_embedding=True,
             reason="normal_product_photo",
         )
-        text_heavy_weak_visual_detected = False
-        ocr_clip_conflict_detected = False
-        ocr_affected_router_decision = False
-
+        phash_total_started = perf_counter()
         try:
-            phash = phash_service.create_phash(image_bytes)
+            with _timed_stage("phash_compute"):
+                phash = phash_service.create_phash(image_bytes)
             logger.info("Generated pHash for upload: %s", phash)
-            cached_record = cache_repository.find_nearest_phash_match(
-                phash,
-                phash_service.PHASH_THRESHOLD,
-            )
+            with _timed_stage("phash_exact_lookup"):
+                cached_record = cache_repository.find_exact_phash_match(phash)
+            if cached_record is None:
+                if _nearest_phash_lookup_enabled():
+                    with _timed_stage("phash_nearest_lookup"):
+                        cached_record = cache_repository.find_nearest_phash_match(
+                            phash,
+                            phash_service.PHASH_THRESHOLD,
+                            check_exact=False,
+                        )
+                else:
+                    logger.info(
+                        "pHash nearest lookup skipped. reason=disabled_by_default"
+                    )
             if cached_record is not None:
                 phash_distance = cached_record.get("phash_distance")
                 parsed_metadata = _parse_json_value(cached_record.get("metadata"))
@@ -913,6 +856,10 @@ async def recognize_item(
                             phash,
                             phash_distance,
                         )
+                        logger.info(
+                            "predict_timing stage=phash_total duration_ms=%.1f",
+                            (perf_counter() - phash_total_started) * 1000,
+                        )
                         return _with_recognition_metadata(
                             cached_classification,
                             cache_hit=True,
@@ -931,12 +878,18 @@ async def recognize_item(
                     )
             else:
                 logger.info(
-                    "No usable pHash cache hit found. phash=%s continuing to barcode, OCR, CLIP, and VLM.",
+                    "No usable pHash cache hit found. phash=%s continuing to barcode, CLIP, and VLM.",
                     phash,
                 )
         except Exception as exc:
             logger.warning("pHash cache lookup failed: %s", exc)
 
+        logger.info(
+            "predict_timing stage=phash_total duration_ms=%.1f",
+            (perf_counter() - phash_total_started) * 1000,
+        )
+
+        barcode_started = perf_counter()
         try:
             with Image.open(io.BytesIO(image_bytes)) as barcode_debug_image:
                 normalized_barcode_debug_image = ImageOps.exif_transpose(barcode_debug_image)
@@ -985,7 +938,6 @@ async def recognize_item(
                         phash_hit=phash_hit,
                         phash_distance=phash_distance,
                         barcode_signal=barcode_signal,
-                        ocr_signal=ocr_signal,
                         clip_candidates=clip_candidates,
                         router_reason=router_reason,
                         cache_policy=cache_policy,
@@ -1004,6 +956,10 @@ async def recognize_item(
                     except Exception as exc:
                         logger.warning("Recognition cache save failed: %s", exc)
 
+                    logger.info(
+                        "predict_timing stage=barcode duration_ms=%.1f",
+                        (perf_counter() - barcode_started) * 1000,
+                    )
                     return _with_recognition_metadata(
                         classification,
                         cache_hit=False,
@@ -1052,7 +1008,6 @@ async def recognize_item(
                                 phash_hit=phash_hit,
                                 phash_distance=phash_distance,
                                 barcode_signal=barcode_signal,
-                                ocr_signal=ocr_signal,
                                 clip_candidates=clip_candidates,
                                 router_reason=router_reason,
                                 cache_policy=cache_policy,
@@ -1072,7 +1027,11 @@ async def recognize_item(
                                 logger.warning("Recognition cache save failed: %s", exc)
 
                             logger.info(
-                                "Skipping OCR/CLIP/VLM due to Open Food Facts barcode lookup."
+                                "Skipping CLIP/VLM due to Open Food Facts barcode lookup."
+                            )
+                            logger.info(
+                                "predict_timing stage=barcode duration_ms=%.1f",
+                                (perf_counter() - barcode_started) * 1000,
                             )
                             return _with_recognition_metadata(
                                 classification,
@@ -1108,6 +1067,11 @@ async def recognize_item(
             barcode_signal["matched"],
         )
 
+        logger.info(
+            "predict_timing stage=barcode duration_ms=%.1f",
+            (perf_counter() - barcode_started) * 1000,
+        )
+
         if barcode_signal["value"] is not None and not barcode_signal["matched"]:
             cache_policy = _build_cache_policy(
                 save_record=True,
@@ -1127,13 +1091,14 @@ async def recognize_item(
                     "category": barcode_signal["product_lookup"].get("category"),
                     "packaging": barcode_signal["product_lookup"].get("packaging"),
                 }
-            predictions = _normalize_open_prediction_result(
-                vlm_service.get_top_predictions(
-                    image,
-                    barcode_aware=True,
-                    barcode_context=barcode_context,
+            with _timed_stage("vlm"):
+                predictions = _normalize_open_prediction_result(
+                    vlm_service.get_top_predictions(
+                        image,
+                        barcode_aware=True,
+                        barcode_context=barcode_context,
+                    )
                 )
-            )
             recognition_source = _open_vlm_recognition_source(predictions)
             classification = _with_recognition_metadata(
                 _attach_recognition_details(_build_vlm_classification(predictions), predictions),
@@ -1144,7 +1109,6 @@ async def recognize_item(
 
             should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
                 classification,
-                ocr_signal,
             )
             if phash is not None and not (
                 _is_cacheable_item_label(classification.get("item", ""))
@@ -1169,7 +1133,6 @@ async def recognize_item(
                             phash_hit=phash_hit,
                             phash_distance=phash_distance,
                             barcode_signal=barcode_signal,
-                            ocr_signal=ocr_signal,
                             clip_candidates=clip_candidates,
                             router_reason=router_reason,
                             cache_policy=cache_policy,
@@ -1182,216 +1145,76 @@ async def recognize_item(
 
             return classification
 
-        try:
-            ocr_signal = _normalize_ocr_signal(ocr_service.extract_ocr_text(image_bytes))
-        except Exception as exc:
-            logger.warning("OCR extraction failed: %s", exc)
-            ocr_signal = _empty_ocr_signal()
-
-        logger.info(
-            "OCR signal. text_length=%s keywords=%s matched_label=%s preview=%s",
-            len(ocr_signal["text"]),
-            ocr_signal["keywords"],
-            ocr_signal["matched_label"],
-            ocr_signal["text"][:80],
-        )
-
-        try:
-            clip_embedding = clip_service.create_clip_embedding(image_bytes)
-            logger.info(
-                "Generated CLIP embedding for cache search. dimensions=%s",
-                len(clip_embedding),
-            )
-        except Exception as exc:
-            logger.warning("CLIP embedding generation failed: %s", exc)
-
-        if clip_embedding is not None:
-            try:
-                similar_records = cache_repository.find_similar_embeddings(
-                    clip_embedding,
-                    limit=TOP_K,
-                )
-                clip_candidates = _shape_clip_router_candidates(similar_records)
-                logger.info(
-                    "CLIP cache search executed. candidate_count=%s",
-                    len(similar_records),
-                )
-                if clip_candidates:
-                    logger.info(
-                        "Top CLIP cache candidates: %s",
-                        _format_clip_candidates(clip_candidates),
-                    )
-            except Exception as exc:
-                logger.warning("CLIP vector search failed: %s", exc)
-            else:
+        if clip_service.is_clip_initialized():
+            with _timed_stage("clip"):
                 try:
-                    router_decision = evaluate_clip_candidates(clip_candidates)
+                    clip_embedding = clip_service.create_clip_embedding(image_bytes)
+                    logger.info(
+                        "Generated CLIP embedding for cache search. dimensions=%s",
+                        len(clip_embedding),
+                    )
                 except Exception as exc:
-                    logger.warning("CLIP confidence router failed: %s", exc)
-                else:
-                    clip_top_label = router_decision.get("top_label")
-                    clip_top_score = _coerce_optional_float(router_decision.get("top_score"))
-                    normalized_ocr_label = _normalize_label_for_matching(
-                        ocr_signal.get("matched_label")
-                    )
-                    normalized_clip_label = _normalize_label_for_matching(clip_top_label)
-                    ocr_matches_clip = (
-                        normalized_ocr_label is not None
-                        and normalized_ocr_label == normalized_clip_label
-                    )
-                    text_heavy_signal = _is_text_heavy_ocr_signal(ocr_signal)
+                    logger.warning("CLIP embedding generation failed: %s", exc)
 
-                    if normalized_ocr_label is not None:
-                        if ocr_matches_clip and clip_top_score is not None and clip_top_score >= MIN_TOP_SIMILARITY:
-                            cached_classification, matched_candidate_count = (
-                                _find_clip_cache_classification(clip_candidates, clip_top_label)
+                if clip_embedding is not None:
+                    try:
+                        similar_records = cache_repository.find_similar_embeddings(
+                            clip_embedding,
+                            limit=TOP_K,
+                        )
+                        clip_candidates = _shape_clip_router_candidates(similar_records)
+                        logger.info(
+                            "CLIP cache search executed. candidate_count=%s",
+                            len(similar_records),
+                        )
+                        if clip_candidates:
+                            logger.info(
+                                "Top CLIP cache candidates: %s",
+                                _format_clip_candidates(clip_candidates),
                             )
-                            classification = cached_classification
-                            recognition_source = "clip_cache"
-                            cache_hit = True
-
-                            if classification is None:
-                                classification = _build_signal_classification(
-                                    clip_top_label,
-                                    clip_top_score,
+                    except Exception as exc:
+                        logger.warning("CLIP vector search failed: %s", exc)
+                    else:
+                        try:
+                            router_decision = evaluate_clip_candidates(clip_candidates)
+                        except Exception as exc:
+                            logger.warning("CLIP confidence router failed: %s", exc)
+                        else:
+                            if router_decision.get("use_cache"):
+                                target_label = (
+                                    router_decision.get("item_label")
+                                    or router_decision.get("top_label")
                                 )
-                                recognition_source = "ocr_clip"
-                                cache_hit = False
-
-                            if classification is not None:
-                                router_reason = "ocr_clip_agreement"
-                                ocr_affected_router_decision = True
-                                _log_router_decision("ocr_clip_agreement", router_decision)
-                                signals = _build_signals_metadata(
-                                    phash_value=phash,
-                                    phash_hit=phash_hit,
-                                    phash_distance=phash_distance,
-                                    barcode_signal=barcode_signal,
-                                    ocr_signal=ocr_signal,
-                                    clip_candidates=clip_candidates,
-                                    router_reason=router_reason,
-                                    cache_policy=cache_policy,
+                                cached_classification, matched_candidate_count = (
+                                    _find_clip_cache_classification(clip_candidates, target_label)
                                 )
-                                try:
-                                    _save_recognition_record_if_possible(
-                                        phash=phash,
-                                        clip_embedding=clip_embedding,
-                                        classification=classification,
-                                        recognition_source=recognition_source,
-                                        route=router_reason,
-                                        signals=signals,
-                                        save_record=cache_policy["save_record"],
-                                        save_clip_embedding=cache_policy["save_clip_embedding"],
+                                if cached_classification is not None:
+                                    _log_router_decision("clip_cache", router_decision)
+                                    logger.info(
+                                        "Skipping VLM due to strong CLIP cache agreement. target_label=%s matched_candidates=%s",
+                                        target_label,
+                                        matched_candidate_count,
                                     )
-                                except Exception as exc:
-                                    logger.warning("Recognition cache save failed: %s", exc)
+                                    return _with_recognition_metadata(
+                                        cached_classification,
+                                        cache_hit=True,
+                                        recognition_source="clip_cache",
+                                    )
 
                                 logger.info(
-                                    "Skipping VLM due to OCR and CLIP agreement. target_label=%s matched_candidates=%s",
-                                    clip_top_label,
+                                    "CLIP cache candidate could not be reconstructed into a usable classification. target_label=%s matched_candidates=%s",
+                                    target_label,
                                     matched_candidate_count,
                                 )
-                                logger.info(
-                                    "OCR router impact. affected=%s router_reason=%s",
-                                    ocr_affected_router_decision,
-                                    router_reason,
-                                )
-                                return _with_recognition_metadata(
-                                    classification,
-                                    cache_hit=cache_hit,
-                                    recognition_source=recognition_source,
-                                )
-
-                        elif normalized_clip_label is not None and not ocr_matches_clip:
-                            router_reason = "ocr_clip_conflict"
-                            ocr_clip_conflict_detected = True
-                            ocr_affected_router_decision = True
-                            cache_policy = _build_cache_policy(
-                                save_record=True,
-                                save_clip_embedding=False,
-                                reason="ocr_clip_conflict",
-                            )
-                            _log_router_decision(router_reason, router_decision)
-                        elif text_heavy_signal:
-                            router_reason = "text_heavy_weak_visual"
-                            text_heavy_weak_visual_detected = True
-                            ocr_affected_router_decision = True
-                            cache_policy = _build_cache_policy(
-                                save_record=True,
-                                save_clip_embedding=False,
-                                reason="text_heavy_weak_visual",
-                            )
-                            _log_router_decision(router_reason, router_decision)
-                        else:
                             _log_router_decision("vlm_fallback", router_decision)
-                    elif text_heavy_signal:
-                        router_reason = "text_heavy_weak_visual"
-                        text_heavy_weak_visual_detected = True
-                        ocr_affected_router_decision = True
-                        cache_policy = _build_cache_policy(
-                            save_record=True,
-                            save_clip_embedding=False,
-                            reason="text_heavy_weak_visual",
-                        )
-                        _log_router_decision(router_reason, router_decision)
-                    elif router_decision.get("use_cache"):
-                        target_label = (
-                            router_decision.get("item_label")
-                            or router_decision.get("top_label")
-                        )
-                        cached_classification, matched_candidate_count = (
-                            _find_clip_cache_classification(clip_candidates, target_label)
-                        )
-                        if cached_classification is not None:
-                            _log_router_decision("clip_cache", router_decision)
-                            logger.info(
-                                "Skipping VLM due to strong CLIP cache agreement. target_label=%s matched_candidates=%s",
-                                target_label,
-                                matched_candidate_count,
-                            )
-                            logger.info(
-                                "OCR router impact. affected=%s router_reason=%s",
-                                ocr_affected_router_decision,
-                                "clip_cache",
-                            )
-                            return _with_recognition_metadata(
-                                cached_classification,
-                                cache_hit=True,
-                                recognition_source="clip_cache",
-                            )
+        else:
+            logger.info("predict_stage stage=clip skipped=true reason=model_not_ready")
 
-                        logger.info(
-                            "CLIP cache candidate could not be reconstructed into a usable classification. target_label=%s matched_candidates=%s",
-                            target_label,
-                            matched_candidate_count,
-                        )
-                        _log_router_decision("vlm_fallback", router_decision)
-                    else:
-                        _log_router_decision("vlm_fallback", router_decision)
-
-        if _is_text_heavy_ocr_signal(ocr_signal) and router_reason == "vlm_fallback":
-            router_reason = "text_heavy_weak_visual"
-            text_heavy_weak_visual_detected = True
-            ocr_affected_router_decision = True
-            cache_policy = _build_cache_policy(
-                save_record=True,
-                save_clip_embedding=False,
-                reason="text_heavy_weak_visual",
+        logger.info("Proceeding to VLM inference after pHash, barcode, and CLIP checks.")
+        with _timed_stage("vlm"):
+            predictions = _normalize_open_prediction_result(
+                vlm_service.get_top_predictions(image)
             )
-        elif text_heavy_weak_visual_detected:
-            router_reason = "text_heavy_weak_visual"
-        elif ocr_clip_conflict_detected:
-            router_reason = "ocr_clip_conflict"
-
-        logger.info(
-            "OCR router impact. affected=%s router_reason=%s",
-            ocr_affected_router_decision,
-            router_reason,
-        )
-        logger.info("Proceeding to VLM inference after pHash, barcode, OCR, and CLIP checks.")
-        predictions = _normalize_open_prediction_result(
-            vlm_service.get_top_predictions(image)
-        )
         recognition_source = _open_vlm_recognition_source(predictions)
         classification = _with_recognition_metadata(
             _attach_recognition_details(_build_vlm_classification(predictions), predictions),
@@ -1402,13 +1225,11 @@ async def recognize_item(
         cache_policy = _finalize_vlm_cache_policy(
             classification=classification,
             barcode_signal=barcode_signal,
-            ocr_signal=ocr_signal,
             clip_embedding=clip_embedding,
         )
 
         should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
             classification,
-            ocr_signal,
         )
         if phash is not None and not (
             _is_cacheable_item_label(classification.get("item", ""))
@@ -1433,7 +1254,6 @@ async def recognize_item(
                         phash_hit=phash_hit,
                         phash_distance=phash_distance,
                         barcode_signal=barcode_signal,
-                        ocr_signal=ocr_signal,
                         clip_candidates=clip_candidates,
                         router_reason=router_reason,
                         cache_policy=cache_policy,

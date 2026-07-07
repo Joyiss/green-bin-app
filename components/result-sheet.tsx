@@ -53,7 +53,6 @@ type ResultSheetProps = {
   warnings?: string[];
   guidanceMetadata?: Record<string, unknown> | null;
   guidanceSource?: string;
-  condenseGuidance?: boolean;
   displayMode?: ResultSheetDisplayMode;
   keyboardShouldPersistTaps?: ScrollViewProps['keyboardShouldPersistTaps'];
 
@@ -67,103 +66,6 @@ type ResultSheetProps = {
 
   children?: ReactNode;
 };
-
-function sentenceAwareCompactText(text: string, maxLength: number) {
-  const normalized = text.trim().replace(/\s+/g, ' ');
-
-  if (!normalized || normalized.length <= maxLength) {
-    return { text: normalized, truncated: false };
-  }
-
-  const sentences = normalized.match(/[^.!?]+[.!?]?/g)?.map((sentence) => sentence.trim()) ?? [];
-  let combined = '';
-
-  for (const sentence of sentences) {
-    const nextValue = combined ? `${combined} ${sentence}` : sentence;
-    if (nextValue.length > maxLength) {
-      break;
-    }
-    combined = nextValue;
-  }
-
-  if (combined.length >= Math.floor(maxLength * 0.6)) {
-    return {
-      text: combined.endsWith('.') || combined.endsWith('!') || combined.endsWith('?')
-        ? combined
-        : `${combined}...`,
-      truncated: true,
-    };
-  }
-
-  const shortened = normalized.slice(0, Math.max(maxLength - 1, 1));
-  const lastSpaceIndex = shortened.lastIndexOf(' ');
-  const compacted = (lastSpaceIndex > Math.floor(maxLength * 0.55)
-    ? shortened.slice(0, lastSpaceIndex)
-    : shortened
-  ).trim();
-
-  return {
-    text: `${compacted}...`,
-    truncated: true,
-  };
-}
-
-function compactSummary(summary: string, maxLength = 160) {
-  return sentenceAwareCompactText(summary, maxLength);
-}
-
-function compactStep(step: string, maxLength = 128) {
-  return sentenceAwareCompactText(step, maxLength);
-}
-
-function getVisibleSteps(steps: string[], maxSteps = 3) {
-  return steps.slice(0, maxSteps).map((step) => compactStep(step));
-}
-
-function getMetadataStringArray(
-  metadata: Record<string, unknown> | null | undefined,
-  ...keys: string[]
-) {
-  if (!metadata) {
-    return [];
-  }
-
-  for (const key of keys) {
-    const value = metadata[key];
-    if (!Array.isArray(value)) {
-      continue;
-    }
-
-    const normalizedValues = value
-      .map((item) => (typeof item === 'string' ? item.trim() : ''))
-      .filter(Boolean);
-
-    if (normalizedValues.length) {
-      return normalizedValues;
-    }
-  }
-
-  return [];
-}
-
-function hasHiddenGuidanceDetails(
-  summaryState: { truncated: boolean },
-  steps: string[],
-  visibleSteps: { truncated: boolean }[],
-  warnings: string[],
-  sourceNames: string[],
-) {
-  const hiddenSteps = steps.slice(visibleSteps.length);
-  const truncatedVisibleSteps = visibleSteps.filter((step) => step.truncated);
-
-  return (
-    summaryState.truncated ||
-    hiddenSteps.length > 0 ||
-    truncatedVisibleSteps.length > 0 ||
-    warnings.length > 0 ||
-    sourceNames.length > 0
-  );
-}
 
 function logAndroidSheetGestureDecision(
   translationY: number,
@@ -194,9 +96,6 @@ export function ResultSheet({
   summary,
   steps,
   warnings = [],
-  guidanceMetadata,
-  guidanceSource,
-  condenseGuidance = false,
   displayMode = 'static',
   keyboardShouldPersistTaps,
   buttonLabel,
@@ -207,7 +106,6 @@ export function ResultSheet({
   onSecondaryButtonPress,
   children,
 }: ResultSheetProps) {
-  const [isGuidanceExpanded, setIsGuidanceExpanded] = useState(false);
   // Collapse is local presentation state; full close/reset still belongs to the outer close button.
   const [sheetDisplayState, setSheetDisplayState] = useState<ResultSheetViewState>('expanded');
   const showSecondaryButton = secondaryButtonLabel && onSecondaryButtonPress;
@@ -221,25 +119,6 @@ export function ResultSheet({
   const expandedHeightValue = useSharedValue(0);
   const collapsedHeightValue = useSharedValue(0);
   const sheetStateValue = useSharedValue(SHEET_STATE_EXPANDED);
-  const summaryState = useMemo(() => compactSummary(summary), [summary]);
-  const visibleSteps = useMemo(() => getVisibleSteps(steps), [steps]);
-  const sourceNames = useMemo(
-    () => getMetadataStringArray(guidanceMetadata, 'sourceNames', 'source_names'),
-    [guidanceMetadata],
-  );
-  const hiddenSteps = useMemo(() => steps.slice(visibleSteps.length), [steps, visibleSteps]);
-  const truncatedVisibleSteps = useMemo(
-    () =>
-      visibleSteps
-        .map((step, index) => ({ ...step, index }))
-        .filter((step) => step.truncated),
-    [visibleSteps],
-  );
-  const showExpandedDetails = condenseGuidance
-    && hasHiddenGuidanceDetails(summaryState, steps, visibleSteps, warnings, sourceNames);
-  const footerToggleLabel = isGuidanceExpanded ? 'Show less' : 'More details';
-  const resolvedSummary = condenseGuidance ? summaryState.text : summary;
-  const resolvedSteps = condenseGuidance ? visibleSteps : steps.map((step) => ({ text: step, truncated: false }));
   const hasMeasuredExpandableLayout = expandedSheetHeight > 0 && headerHeight > 0 && footerHeight > 0;
 
   useEffect(() => {
@@ -456,98 +335,33 @@ export function ResultSheet({
         bounces={false}
         contentContainerStyle={styles.bodyContent}
         keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+        nestedScrollEnabled
         showsVerticalScrollIndicator={false}
         style={styles.body}>
-        <Text style={styles.summary}>{resolvedSummary}</Text>
+        <Text selectable style={styles.summary}>{summary}</Text>
 
-        {resolvedSteps.length ? (
+        {steps.length ? (
           <View style={styles.steps}>
-            {resolvedSteps.map((step, index) => (
-              <View key={`${step.text}-${index}`} style={styles.stepRow}>
+            {steps.map((step, index) => (
+              <View key={`${step}-${index}`} style={styles.stepRow}>
                 <View style={styles.stepIndex}>
                   <Text style={styles.stepIndexText}>{index + 1}</Text>
                 </View>
-                <Text style={styles.stepText}>{step.text}</Text>
+                <Text selectable style={styles.stepText}>{step}</Text>
               </View>
             ))}
           </View>
         ) : null}
 
-        {isGuidanceExpanded && condenseGuidance ? (
-          <View style={styles.expandedDetails}>
-            {summaryState.truncated ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>Full summary</Text>
-                <Text style={styles.detailText}>{summary}</Text>
+        {warnings.length ? (
+          <View style={styles.warnings}>
+            {warnings.map((warning, index) => (
+              <View key={`${warning}-${index}`} style={styles.warningRow}>
+                <Ionicons color="#8A6434" name="warning-outline" size={17} />
+                <Text selectable style={styles.warningText}>{warning}</Text>
               </View>
-            ) : null}
-
-            {hiddenSteps.length > 0 ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>More steps</Text>
-                <View style={styles.detailList}>
-                  {hiddenSteps.map((step, index) => (
-                    <Text key={`${step}-full-${index}`} style={styles.detailText}>
-                      {visibleSteps.length + index + 1}. {step}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {truncatedVisibleSteps.length > 0 ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>Full step details</Text>
-                <View style={styles.detailList}>
-                  {truncatedVisibleSteps.map((step) => (
-                    <Text
-                      key={`${steps[step.index]}-detail-${step.index}`}
-                      style={styles.detailText}>
-                      {step.index + 1}. {steps[step.index]}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {warnings.length ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>Warnings</Text>
-                <View style={styles.detailList}>
-                  {warnings.map((warning, index) => (
-                    <Text key={`${warning}-${index}`} style={styles.detailText}>
-                      {warning}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {sourceNames.length ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>Sources</Text>
-                <View style={styles.detailList}>
-                  {sourceNames.map((sourceName, index) => (
-                    <Text key={`${sourceName}-${index}`} style={styles.detailText}>
-                      {sourceName}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
+            ))}
           </View>
-        ) : null}
-
-        {showExpandedDetails ? (
-          <Pressable
-            onPress={() => setIsGuidanceExpanded((current) => !current)}
-            style={({ pressed }) => [
-              styles.detailsToggle,
-              pressed && styles.buttonPressed,
-            ]}>
-            <Text style={styles.detailsToggleText}>{footerToggleLabel}</Text>
-          </Pressable>
         ) : null}
 
         {children}
@@ -784,29 +598,22 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
   },
-  expandedDetails: {
-    backgroundColor: '#F8F5F0',
-    borderColor: '#ECE5DB',
+  warnings: {
+    backgroundColor: '#FBF4E8',
+    borderColor: '#EEDFC7',
     borderRadius: 18,
     borderWidth: 1,
-    gap: 10,
-    padding: 14,
+    gap: 8,
+    padding: 12,
   },
-  detailSection: {
-    gap: 6,
+  warningRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 8,
   },
-  detailSectionLabel: {
-    color: '#605951',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
-  },
-  detailList: {
-    gap: 6,
-  },
-  detailText: {
-    color: '#6D655E',
+  warningText: {
+    color: '#76552D',
+    flex: 1,
     fontSize: 14,
     lineHeight: 20,
   },
@@ -824,17 +631,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     zIndex: 5,
-  },
-  detailsToggle: {
-    alignItems: 'center',
-    paddingTop: 2,
-    paddingBottom: 1,
-  },
-  detailsToggleText: {
-    color: '#6A625B',
-    fontSize: 13,
-    fontWeight: '800',
-    textDecorationLine: 'underline',
   },
   secondaryButton: {
     alignItems: 'center',

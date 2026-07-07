@@ -6,888 +6,271 @@ from unittest.mock import Mock, patch
 import requests
 
 from services.guidance_llm_service import (
+    DEFAULT_GUIDANCE_LLM_MODEL,
+    _build_source_grounded_prompt,
+    _groq_request,
     try_generate_general_safe_guidance,
     try_generate_source_grounded_guidance,
+    validate_guidance_basic,
 )
 
 
-def _chunk(
-    chunk_id: str,
-    *,
-    source_name: str = "Call2Recycle",
-    source_url: str = "https://example.com",
-    location_scope: str = "national",
-    generalizable: bool = True,
-    requires_location_check: bool = False,
-    content: str = "Guidance content.",
-    warnings=None,
-    limitations=None,
-    disposal_actions_supported=None,
-    extra_fields=None,
-):
-    chunk = {
-        "id": chunk_id,
-        "title": chunk_id,
-        "source_name": source_name,
-        "source_url": source_url,
-        "source_type": "ignored_by_llm_prompt",
-        "location_scope": location_scope,
-        "generalizable": generalizable,
-        "requires_location_check": requires_location_check,
-        "content": content,
-        "warnings": warnings or [],
-        "limitations": limitations or [],
-        "disposal_actions_supported": disposal_actions_supported or ["Drop-off"],
-    }
-    if extra_fields:
-        chunk.update(extra_fields)
-    return chunk
-
-
-def _retrieval_result(chunk: dict, score: float = 8.2):
+def _chunk(chunk_id="electronics_01", *, action="Drop-off", signals=None, claim=None):
     return {
-        "chunk": chunk,
-        "chunk_id": chunk["id"],
-        "score": score,
-        "matched_fields": ["item_label_exact"],
-        "requires_location_check": bool(chunk.get("requires_location_check")),
+        "id": chunk_id,
+        "title": "Electronics guidance",
+        "source_name": "EPA",
+        "source_url": "https://example.com",
+        "location_scope": "national",
+        "generalizable": True,
+        "requires_location_check": False,
+        "content": claim or "Use electronics collection or recycling.",
+        "source_excerpt": claim or "Use electronics collection or recycling.",
+        "source_claim": claim or "Electronics collection is supported.",
+        "decision_signals": signals or {"supports_recycling": True, "requires_dropoff": True},
+        "warnings": [],
+        "limitations": [],
+        "disposal_actions_supported": [action],
     }
 
 
-def _gemini_http_response(text: str) -> Mock:
-    response = Mock()
-    response.status_code = 200
-    response.raise_for_status.return_value = None
-    response.json.return_value = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [{"text": text}],
-                }
-            }
+def _result(chunk):
+    return {"chunk": chunk, "chunk_id": chunk["id"], "score": 8.0, "matched_fields": []}
+
+
+def _payload(**overrides):
+    payload = {
+        "disposal_action": "drop-off",
+        "summary": "Take this laptop to electronics drop-off.",
+        "steps": ["Back up personal files.", "Take the laptop to drop-off."],
+        "warnings": [],
+        "confidence": "high",
+        "sources_used": ["electronics_01"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+class BasicValidatorTests(unittest.TestCase):
+    def context(self, chunks=None, actions=None):
+        return {
+            "allowed_disposal_actions": actions or {"drop-off"},
+            "retrieved_chunks": chunks or [_chunk()],
+        }
+
+    def test_valid_short_output_is_accepted(self):
+        validated, errors = validate_guidance_basic(
+            _payload(summary="Drop off this laptop.", steps=["Erase your data.", "Use electronics drop-off."]),
+            self.context(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(validated["steps"], ["Erase your data.", "Use electronics drop-off."])
+
+    def test_style_imperfections_are_not_rejected(self):
+        validated, errors = validate_guidance_basic(
+            _payload(summary="Drop-off.", steps=["Data backup first", "Maybe keep its charger together"]),
+            self.context(),
+        )
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+
+    def test_summary_hard_max_only(self):
+        self.assertIsNotNone(validate_guidance_basic(_payload(summary="x" * 240), self.context())[0])
+        self.assertIn("summary_too_long", validate_guidance_basic(_payload(summary="x" * 241), self.context())[1])
+
+    def test_exact_normalized_duplicate_is_rejected(self):
+        _, errors = validate_guidance_basic(
+            _payload(steps=["Use electronics drop-off!", " use   electronics dropoff ", "Use electronics drop-off."]),
+            self.context(),
+        )
+        # Punctuation removal does not erase a meaningful hyphen, so only the first and third match.
+        self.assertIn("duplicate_steps", errors)
+
+    def test_near_duplicates_are_allowed(self):
+        validated, errors = validate_guidance_basic(
+            _payload(steps=["Take it to electronics drop-off.", "Find a nearby electronics drop-off."]),
+            self.context(),
+        )
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+
+    def test_affirmative_dangerous_instructions_are_rejected(self):
+        cases = [
+            "Disassemble the laptop before recycling.",
+            "Pry open the case.",
+            "Force open the case.",
+            "Remove the built-in battery.",
+            "Puncture the battery.",
+            "Burn the laptop.",
+            "Pour it down the drain.",
         ]
-    }
-    return response
+        for instruction in cases:
+            with self.subTest(instruction=instruction):
+                _, errors = validate_guidance_basic(
+                    _payload(steps=[instruction, "Use electronics drop-off."]), self.context()
+                )
+                self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+
+    def test_negated_safety_warnings_are_allowed(self):
+        warnings = [
+            "Do not disassemble the laptop.",
+            "Do not pry open the case.",
+            "Do not remove built-in batteries.",
+            "Avoid puncturing the battery.",
+            "Never burn the laptop.",
+        ]
+        validated, errors = validate_guidance_basic(_payload(warnings=warnings), self.context())
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+
+    def test_negation_does_not_mask_later_unsafe_clause(self):
+        _, errors = validate_guidance_basic(
+            _payload(warnings=["Do not wait; disassemble the laptop."]), self.context()
+        )
+        self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+
+    def test_source_names_are_rejected_only_in_main_guidance(self):
+        _, errors = validate_guidance_basic(
+            _payload(steps=["Follow EPA guidance.", "Use electronics drop-off."]), self.context()
+        )
+        self.assertTrue(any(error.startswith("source_name_in_main_guidance:") for error in errors))
+        validated, errors = validate_guidance_basic(_payload(), self.context())
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+
+    def test_unsupported_action_and_absolute_claims_are_rejected(self):
+        _, errors = validate_guidance_basic(
+            _payload(disposal_action="trash", summary="This is recyclable everywhere."), self.context()
+        )
+        self.assertIn("unsupported_disposal_action", errors)
+        self.assertTrue(any(error.startswith("unsupported_strong_claim:") for error in errors))
+
+    def test_curbside_and_hazardous_claims_require_source_support(self):
+        curbside = _payload(summary="Recycle this container curbside.")
+        self.assertIn("unsupported_curbside_claim", validate_guidance_basic(curbside, self.context())[1])
+        supported_chunk = _chunk(
+            action="Recycle",
+            claim="This container is accepted in curbside recycling.",
+            signals={"supports_recycling": True, "avoid_curbside_recycling": False},
+        )
+        curbside["disposal_action"] = "recycle"
+        validated, errors = validate_guidance_basic(curbside, self.context([supported_chunk], {"recycle"}))
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
 
 
-class GuidanceLlmServiceTests(unittest.TestCase):
+class GenerationFlowTests(unittest.TestCase):
     def setUp(self):
-        self.env = {
+        self.env = patch.dict(os.environ, {
             "ENABLE_LLM_GUIDANCE": "true",
-            "GUIDANCE_LLM_PROVIDER": "gemini",
-            "GUIDABCE_LLM_MODEL": "gemini-2.5-flash",
-            "GUIDANCE_LLM_TIMEOUT": "",
-            "GEMINI_API_KEY": "test-key",
-        }
+            "GUIDANCE_LLM_PROVIDER": "groq",
+            "GUIDANCE_LLM_MODEL": DEFAULT_GUIDANCE_LLM_MODEL,
+            "GROQ_API_KEY": "test-key",
+        }, clear=False)
+        self.env.start()
 
-    def test_valid_grounded_json_is_accepted(self):
-        retrieval_results = [
-            _retrieval_result(
-                _chunk(
-                    "chunk-1",
-                    requires_location_check=True,
-                    content="Use a battery drop-off program.",
-                    warnings=["Do not place batteries in curbside recycling."],
-                    limitations=["Program availability varies by location."],
-                )
-            )
+    def tearDown(self):
+        self.env.stop()
+
+    def source_call(self):
+        return try_generate_source_grounded_guidance(
+            recognized_item="Laptop", normalized_item_label="Laptop", material="Electronics",
+            broad_category="Electronics", condition_flags=[], special_flags=["electronics"],
+            visual_evidence=None, candidates=[], location=None, retrieval_results=[_result(_chunk())],
+        )
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_original_safe_output_has_original_path(self, request):
+        request.return_value = json.dumps(_payload())
+        guidance = self.source_call()["guidance"]
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
+        request.assert_called_once()
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_duplicate_triggers_one_repair(self, request):
+        request.side_effect = [
+            json.dumps(_payload(steps=["Use drop-off.", "Use drop-off."])),
+            json.dumps(_payload(steps=["Keep the laptop intact.", "Use electronics drop-off."])),
         ]
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "material_code": None,
-                "impact_level": "Check Local Guidance",
-                "summary": "Use a battery drop-off program and check local availability.",
-                "steps": [
-                    "Take the battery to a drop-off program.",
-                    "Verify local availability before relying on this option.",
-                ],
-                "warnings": ["Do not place batteries in curbside recycling."],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
+        guidance = self.source_call()["guidance"]
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "repaired_llm")
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_style_imperfection_does_not_repair_or_fallback(self, request):
+        request.return_value = json.dumps(_payload(summary="Drop-off.", steps=["Backup maybe", "Keep charger nearby"]))
+        guidance = self.source_call()["guidance"]
+        request.assert_called_once()
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_failed_repair_uses_observable_deterministic_fallback(self, request):
+        request.return_value = json.dumps(_payload(steps=["Disassemble the laptop.", "Use drop-off."]))
+        with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
+            guidance = self.source_call()["guidance"]
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "deterministic_fallback")
+        combined = " ".join(logs.output)
+        self.assertIn("original_llm_output=", combined)
+        self.assertIn("validation_reason=", combined)
+        self.assertIn("repair_attempted=True", combined)
+        self.assertIn("deterministic_fallback_used=true", combined)
+
+    @patch("services.guidance_llm_service._groq_request", side_effect=requests.Timeout())
+    def test_request_failure_uses_fallback_without_repair(self, request):
+        with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
+            guidance = self.source_call()["guidance"]
+        request.assert_called_once()
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "deterministic_fallback")
+        self.assertIn("repair_attempted=False", " ".join(logs.output))
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_invalid_json_gets_one_repair(self, request):
+        request.side_effect = ["not json", json.dumps(_payload())]
+        guidance = self.source_call()["guidance"]
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "repaired_llm")
+
+    def test_prompt_marks_examples_as_non_templates(self):
+        prompt = _build_source_grounded_prompt(
+            recognized_item="Laptop", normalized_item_label="Laptop", material="Electronics",
+            broad_category="Electronics", condition_flags=[], special_flags=[], visual_evidence=None,
+            candidates=[], location=None, chunks=[_chunk()], allowed_disposal_actions=["drop-off"],
         )
+        self.assertIn("Do not copy them blindly", prompt)
+        self.assertIn('"steps":[]', prompt)
+        self.assertNotIn('"intent"', prompt)
 
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=["requires_dropoff"],
-                location=None,
-                retrieval_results=retrieval_results,
-            )
+    @patch("services.guidance_llm_service.requests.post")
+    def test_groq_request_uses_configured_model_and_json_mode(self, post):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"choices": [{"message": {"content": '{"ok":true}'}}]}
+        post.return_value = response
+        settings = {"api_key": "secret", "model": DEFAULT_GUIDANCE_LLM_MODEL, "timeout_seconds": 7, "provider": "groq"}
+        self.assertEqual(_groq_request("prompt", settings=settings, mode="test"), '{"ok":true}')
+        sent = post.call_args.kwargs
+        self.assertEqual(sent["json"]["model"], "llama-3.3-70b-versatile")
+        self.assertEqual(sent["json"]["response_format"], {"type": "json_object"})
 
-        self.assertIsNone(result["failure_reason"])
-        self.assertEqual(result["guidance"]["guidance_source"], "json_rag_llm_generated")
-        self.assertEqual(result["guidance"]["disposal_action"], "drop-off")
-
-    def test_gemini_request_uses_header_auth_without_key_query_param(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "material_code": None,
-                "impact_level": "Check Local Guidance",
-                "summary": "Use a battery drop-off program and check local availability.",
-                "steps": [
-                    "Take the battery to a drop-off program.",
-                    "Verify local availability before relying on this option.",
-                ],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
+    @patch("services.guidance_llm_service._groq_request")
+    def test_general_safe_output_keeps_public_shape(self, request):
+        request.return_value = json.dumps({
+            "disposal_action": "donate/reuse", "summary": "Donate this drum if it still plays.",
+            "steps": ["Wipe dust from the shell.", "Donate it if playable."], "warnings": [],
+            "confidence": "low", "sources_used": [],
+        })
+        result = try_generate_general_safe_guidance(
+            recognized_item="Drum", normalized_item_label="Drum", material="Wood",
+            broad_category="Instrument", condition_flags=[], special_flags=[], visual_evidence=None,
+            candidates=[], low_risk_reason="allowed_reusable_household", matched_terms=["drum"],
         )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ) as mock_post:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNotNone(result["guidance"])
-        request_url = mock_post.call_args.args[0]
-        request_headers = mock_post.call_args.kwargs["headers"]
-        self.assertIn(
-            "/models/gemini-2.5-flash:generateContent",
-            request_url,
-        )
-        self.assertNotIn("?key=", request_url)
+        guidance = result["guidance"]
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
         self.assertEqual(
-            request_headers["x-goog-api-key"],
-            self.env["GEMINI_API_KEY"],
+            {"disposal_action", "material_code", "impact_level", "summary", "steps", "guidance_source", "guidance_metadata"},
+            set(guidance),
         )
-        self.assertEqual(request_headers["Content-Type"], "application/json")
-
-    def test_old_model_env_name_is_ignored_for_safe_default(self):
-        env = {
-            "ENABLE_LLM_GUIDANCE": "true",
-            "GUIDANCE_LLM_PROVIDER": "gemini",
-            "GUIDANCE_LLM_MODEL": "gemini-3-flash-preview",
-            "GUIDANCE_LLM_TIMEOUT": "",
-            "GEMINI_API_KEY": "test-key",
-        }
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use a battery drop-off program and check local availability.",
-                "steps": [
-                    "Take the battery to a drop-off program.",
-                    "Verify local availability before relying on this option.",
-                ],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, env, clear=True), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ) as mock_post:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNotNone(result["guidance"])
-        request_url = mock_post.call_args.args[0]
-        self.assertIn("/models/gemini-2.5-flash:generateContent", request_url)
-        self.assertNotIn("gemini-3-flash-preview", request_url)
-
-    def test_gemini_request_uses_configured_timeout(self):
-        env = dict(self.env)
-        env["GUIDANCE_LLM_TIMEOUT"] = "20"
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use a battery drop-off program and check local availability.",
-                "steps": [
-                    "Take the battery to a drop-off program.",
-                    "Verify local availability before relying on this option.",
-                ],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ) as mock_post, self.assertLogs(
-            "services.guidance_llm_service", level="INFO"
-        ) as captured_logs:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNotNone(result["guidance"])
-        self.assertEqual(mock_post.call_args.kwargs["timeout"], 20.0)
-        combined_logs = "\n".join(captured_logs.output)
-        self.assertIn("provider=gemini", combined_logs)
-        self.assertIn("model=gemini-2.5-flash", combined_logs)
-        self.assertIn("mode=source_grounded", combined_logs)
-        self.assertIn("chunk_ids=['chunk-1']", combined_logs)
-        self.assertIn("timeout_seconds=20.0", combined_logs)
-
-    def test_invalid_timeout_falls_back_safely(self):
-        env = dict(self.env)
-        env["GUIDANCE_LLM_TIMEOUT"] = "not-a-number"
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use a battery drop-off program and check local availability.",
-                "steps": [
-                    "Take the battery to a drop-off program.",
-                    "Verify local availability before relying on this option.",
-                ],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ) as mock_post, self.assertLogs(
-            "services.guidance_llm_service", level="WARNING"
-        ) as captured_logs:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNotNone(result["guidance"])
-        self.assertEqual(mock_post.call_args.kwargs["timeout"], 10.0)
-        combined_logs = "\n".join(captured_logs.output)
-        self.assertIn("Invalid GUIDANCE_LLM_TIMEOUT value", combined_logs)
-        self.assertIn("default_timeout_seconds=10.0", combined_logs)
-
-    def test_invalid_json_falls_back(self):
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response("not json"),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNone(result["guidance"])
-        self.assertEqual(result["failure_reason"], "invalid_json")
-
-    def test_missing_summary_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "steps": ["Use a drop-off option.", "Verify local availability."],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertEqual(result["failure_reason"], "missing_summary")
-
-    def test_unsupported_disposal_action_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "recycle",
-                "summary": "Recycle this item.",
-                "steps": ["Place it in recycling.", "Check local guidance."],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1", disposal_actions_supported=["Drop-off"]))],
-            )
-
-        self.assertEqual(result["failure_reason"], "unsupported_disposal_action")
-
-    def test_unrecognized_sources_used_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use a drop-off program and check local availability.",
-                "steps": ["Use a drop-off option.", "Verify local availability."],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["not-retrieved"],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertEqual(result["failure_reason"], "invalid_sources_used")
-
-    def test_paintcare_location_check_caveat_is_required(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use PaintCare where available in your local program area.",
-                "steps": [
-                    "Bring the paint to a participating PaintCare site.",
-                    "Check local program availability before visiting.",
-                ],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["paintcare"],
-            }
-        )
-        retrieval_results = [
-            _retrieval_result(
-                _chunk(
-                    "paintcare",
-                    source_name="PaintCare",
-                    generalizable=False,
-                    requires_location_check=True,
-                    content="Architectural paint may be accepted through PaintCare.",
-                )
-            )
-        ]
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Paint",
-                normalized_item_label="Paint",
-                material="Paint",
-                broad_category="Paint",
-                condition_flags=[],
-                location=None,
-                retrieval_results=retrieval_results,
-            )
-
-        self.assertIsNotNone(result["guidance"])
-
-    def test_dsny_is_not_treated_as_national(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "recycle",
-                "summary": "This is nationally recyclable.",
-                "steps": ["Place it in recycling nationally.", "Use this guidance everywhere."],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["dsny"],
-            }
-        )
-        retrieval_results = [
-            _retrieval_result(
-                _chunk(
-                    "dsny",
-                    source_name="NYC DSNY Recycling & Disposal",
-                    location_scope="city: New York City",
-                    generalizable=False,
-                    content="NYC residents can recycle this item curbside.",
-                    disposal_actions_supported=["Recycle"],
-                )
-            )
-        ]
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Paper",
-                normalized_item_label="Paper",
-                material="Paper",
-                broad_category="Paper",
-                condition_flags=[],
-                location={"city": "New York City", "state": "NY"},
-                retrieval_results=retrieval_results,
-            )
-
-        self.assertEqual(result["failure_reason"], "dsny_treated_as_national")
-
-    def test_timeout_falls_through_safely(self):
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            side_effect=requests.Timeout(),
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertEqual(result["failure_reason"], "timeout")
-
-    def test_request_error_logs_sanitized_status_and_body_preview(self):
-        error_response = Mock()
-        error_response.status_code = 401
-        error_response.text = (
-            "Model gemini-2.5-flash not found. "
-            + ("details " * 80)
-            + "key=test-key"
-        )
-        http_error = requests.HTTPError("401 Client Error")
-        http_error.response = error_response
-
-        failed_response = Mock()
-        failed_response.status_code = 401
-        failed_response.raise_for_status.side_effect = http_error
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=failed_response,
-        ), self.assertLogs("services.guidance_llm_service", level="INFO") as captured_logs:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertEqual(result["failure_reason"], "request_error")
-        combined_logs = "\n".join(captured_logs.output)
-        self.assertIn("HTTPError", combined_logs)
-        self.assertIn("status_code=401", combined_logs)
-        self.assertIn("model=gemini-2.5-flash", combined_logs)
-        self.assertIn(
-            "endpoint=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            combined_logs,
-        )
-        self.assertNotIn("test-key", combined_logs)
-        self.assertNotIn("?key=", combined_logs)
-        self.assertIn("body_preview=", combined_logs)
-        self.assertIn("Model gemini-2.5-flash not found.", combined_logs)
-        self.assertIn("...", combined_logs)
-
-    def test_missing_api_key_skips_gemini_safely(self):
-        env = dict(self.env)
-        env["GEMINI_API_KEY"] = ""
-
-        with patch.dict(os.environ, env, clear=False), patch(
-            "services.guidance_llm_service.requests.post"
-        ) as mock_post:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertEqual(result["failure_reason"], "missing_GEMINI_API_KEY")
-        mock_post.assert_not_called()
-
-    def test_wrong_model_id_returns_safe_fallback_not_crash(self):
-        error_response = Mock()
-        error_response.status_code = 404
-        error_response.text = '{"error":{"message":"Model not found"}}'
-        http_error = requests.HTTPError("404 Client Error")
-        http_error.response = error_response
-
-        failed_response = Mock()
-        failed_response.status_code = 404
-        failed_response.raise_for_status.side_effect = http_error
-
-        env = dict(self.env)
-        env["GUIDABCE_LLM_MODEL"] = "gemini-2.5-flash-typo"
-
-        with patch.dict(os.environ, env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=failed_response,
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNone(result["guidance"])
-        self.assertEqual(result["failure_reason"], "request_error")
-
-    def test_unauthenticated_401_returns_safe_fallback_not_crash(self):
-        error_response = Mock()
-        error_response.status_code = 401
-        error_response.text = '{"error":{"message":"UNAUTHENTICATED"}}'
-        http_error = requests.HTTPError("401 Client Error")
-        http_error.response = error_response
-
-        failed_response = Mock()
-        failed_response.status_code = 401
-        failed_response.raise_for_status.side_effect = http_error
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=failed_response,
-        ):
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=[_retrieval_result(_chunk("chunk-1"))],
-            )
-
-        self.assertIsNone(result["guidance"])
-        self.assertEqual(result["failure_reason"], "request_error")
-
-    def test_only_top_stripped_chunks_are_sent_to_gemini(self):
-        retrieval_results = [
-            _retrieval_result(_chunk(f"chunk-{index}", extra_fields={"applies_to": {"item_labels": ["battery"]}}), score=10 - index)
-            for index in range(1, 5)
-        ]
-        response_text = json.dumps(
-            {
-                "disposal_action": "drop-off",
-                "summary": "Use a drop-off option and check local availability.",
-                "steps": ["Use a drop-off option.", "Check local availability before relying on it."],
-                "warnings": [],
-                "confidence": "high",
-                "sources_used": ["chunk-1"],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ) as mock_post:
-            result = try_generate_source_grounded_guidance(
-                recognized_item="Battery",
-                normalized_item_label="Battery",
-                material="Battery",
-                broad_category="Batteries",
-                condition_flags=[],
-                location=None,
-                retrieval_results=retrieval_results,
-            )
-
-        self.assertIsNotNone(result["guidance"])
-        prompt_text = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
-        self.assertIn('"id": "chunk-1"', prompt_text)
-        self.assertIn('"id": "chunk-3"', prompt_text)
-        self.assertNotIn('"id": "chunk-4"', prompt_text)
-        self.assertNotIn("source_type", prompt_text)
-        self.assertNotIn("applies_to", prompt_text)
-
-    def test_general_safe_fallback_accepts_conservative_json(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "donate/reuse",
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "summary": "If the bottle is reusable, keep using it or donate it.",
-                "steps": [
-                    "Keep using the bottle or donate it if it is still usable.",
-                    "Check local reuse or drop-off options if it is damaged.",
-                    "If no better option is available, follow local trash guidance.",
-                ],
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Thermoflask",
-                normalized_item_label="Thermoflask",
-                material="Metal",
-                broad_category="Drinkware",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["guidance"]["guidance_source"], "llm_general_fallback")
-        self.assertEqual(result["guidance"]["guidance_metadata"]["confidence"], "low")
-        self.assertEqual(result["guidance"]["disposal_action"], "donate/reuse")
-
-    def test_general_safe_fallback_accepts_check_local_guidance_action(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "check local guidance",
-                "material_code": "paper",
-                "impact_level": "Low Confidence Guidance",
-                "summary": "If the sheet music is clean and dry, check whether local paper recycling accepts it.",
-                "steps": [
-                    "Reuse or donate the sheet music if someone can still use it.",
-                    "Check local paper recycling rules before placing it in recycling.",
-                    "If it is damaged or not accepted, follow local trash guidance.",
-                ],
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Sheet Music",
-                normalized_item_label="Sheet Music",
-                material="Paper",
-                broad_category="Paper",
-                condition_flags=[],
-            )
-
-        self.assertIsNone(result["failure_reason"])
-        self.assertEqual(result["guidance"]["disposal_action"], "check local guidance")
-
-    def test_general_safe_output_missing_summary_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": None,
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "steps": [
-                    "Reuse or donate the item if it is still usable.",
-                    "Check local recycling or drop-off options before using them.",
-                    "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
-                ],
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Pencil",
-                normalized_item_label="Pencil",
-                material="Mixed Material",
-                broad_category="Household item",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["failure_reason"], "missing_summary")
-
-    def test_general_safe_output_missing_steps_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": None,
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "summary": "Reuse the item if it is still usable.",
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Pencil",
-                normalized_item_label="Pencil",
-                material="Mixed Material",
-                broad_category="Household item",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["failure_reason"], "missing_steps")
-
-    def test_general_safe_output_with_unsupported_disposal_action_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "trash",
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "summary": "Reuse the item if it is still usable.",
-                "steps": [
-                    "Reuse or donate the item if it is still usable.",
-                    "Check local recycling or drop-off options before using them.",
-                    "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
-                ],
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Pencil",
-                normalized_item_label="Pencil",
-                material="Mixed Material",
-                broad_category="Household item",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["failure_reason"], "general_fallback_unsupported_action")
-
-    def test_general_safe_output_claiming_guaranteed_curbside_recycling_is_rejected(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": "check local guidance",
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "summary": "This item is definitely accepted in curbside recycling everywhere.",
-                "steps": [
-                    "Reuse or donate the item if it is still usable.",
-                    "Place it in your curbside recycling bin.",
-                ],
-                "warnings": [],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ):
-            result = try_generate_general_safe_guidance(
-                recognized_item="Plastic Toy",
-                normalized_item_label="Plastic Toy",
-                material="Plastic",
-                broad_category="Toy",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["failure_reason"], "overconfident_general_fallback")
-
-    def test_general_safe_validation_failure_logs_parsed_keys_without_api_key(self):
-        response_text = json.dumps(
-            {
-                "disposal_action": None,
-                "material_code": None,
-                "impact_level": "Low Confidence Guidance",
-                "steps": [
-                    "Reuse or donate the item if it is still usable.",
-                    "Check local recycling or drop-off options before using them.",
-                    "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
-                ],
-                "warnings": [
-                    "Do not place this item in curbside recycling unless your local program accepts it."
-                ],
-                "confidence": "low",
-                "sources_used": [],
-            }
-        )
-
-        with patch.dict(os.environ, self.env, clear=False), patch(
-            "services.guidance_llm_service.requests.post",
-            return_value=_gemini_http_response(response_text),
-        ), self.assertLogs("services.guidance_llm_service", level="INFO") as captured_logs:
-            result = try_generate_general_safe_guidance(
-                recognized_item="Pencil",
-                normalized_item_label="Pencil",
-                material="Mixed Material",
-                broad_category="Household item",
-                condition_flags=[],
-            )
-
-        self.assertEqual(result["failure_reason"], "missing_summary")
-        combined_logs = "\n".join(captured_logs.output)
-        self.assertIn("parsed_keys=", combined_logs)
-        self.assertIn("response_preview=", combined_logs)
-        self.assertNotIn("test-key", combined_logs)
 
 
 if __name__ == "__main__":

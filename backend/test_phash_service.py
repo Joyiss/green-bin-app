@@ -1,9 +1,11 @@
 import unittest
 import io
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
+from services import phash_service
 from services.phash_service import PHASH_THRESHOLD, create_phash, phash_distance
 
 
@@ -41,6 +43,19 @@ def _make_rotated_exif_duplicate_bytes() -> tuple[bytes, bytes]:
 
 
 class PHashServiceTests(unittest.TestCase):
+    def test_warmup_runs_the_production_hash_path(self):
+        with patch("services.phash_service.create_phash", return_value="0000000000000000") as mock_hash:
+            self.assertTrue(phash_service.warmup_phash())
+
+        image_bytes = mock_hash.call_args.args[0]
+        self.assertIsInstance(image_bytes, bytes)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            self.assertEqual(image.size, (8, 8))
+
+    def test_warmup_failure_is_safe(self):
+        with patch("services.phash_service.create_phash", side_effect=RuntimeError("boom")):
+            self.assertFalse(phash_service.warmup_phash())
+
     def test_create_phash_returns_stable_hex_string(self):
         image_bytes = _fixture_bytes("org_calculator.jpg")
 

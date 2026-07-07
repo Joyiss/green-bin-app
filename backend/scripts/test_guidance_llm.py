@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from services.guidance_llm_service import (  # noqa: E402
     _current_llm_settings,
     _extract_json_object,
-    _gemini_request,
+    _groq_request,
 )
 
 
@@ -25,11 +25,11 @@ def main() -> int:
     print(f"timeout_seconds={float(settings.get('timeout_seconds')):.1f}")
     print(f"api_key_present={bool(settings.get('api_key'))}")
 
-    if settings.get("provider") != "gemini":
-        print("failure=GUIDANCE_LLM_PROVIDER must be gemini")
+    if settings.get("provider") != "groq":
+        print("failure=GUIDANCE_LLM_PROVIDER must be groq")
         return 1
     if not settings.get("api_key"):
-        print("failure=GEMINI_API_KEY is missing")
+        print("failure=GROQ_API_KEY is missing")
         return 1
 
     prompt = (
@@ -38,7 +38,7 @@ def main() -> int:
     )
     started_at = time.monotonic()
     try:
-        raw_text = _gemini_request(prompt, settings=settings, mode="smoke_test")
+        raw_text = _groq_request(prompt, settings=settings, mode="smoke_test")
         payload = _extract_json_object(raw_text)
     except requests.RequestException as exc:
         elapsed_seconds = time.monotonic() - started_at

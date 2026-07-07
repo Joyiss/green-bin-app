@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 _SUPABASE_CLIENT: Client | None = None
 _TABLE_NAME = "recognition_cache"
 logger = logging.getLogger(__name__)
+_WARMUP_PHASH = "__green_bin_phash_warmup__"
 
 
 def _get_supabase_client() -> Client:
@@ -216,33 +217,71 @@ def _match_sort_key(row: dict[str, Any], distance: int, index: int) -> tuple[flo
     )
 
 
+def find_exact_phash_match(phash: str) -> dict[str, Any] | None:
+    try:
+        response = (
+            _get_supabase_client()
+            .table(_TABLE_NAME)
+            .select("item_label,metadata")
+            .eq("phash", phash)
+            .order("verified", desc=True)
+            .order("confidence", desc=True, nullsfirst=False)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to find exact recognition cache record by phash: {exc}") from exc
+
+    rows = _response_data(response)
+    if rows is None:
+        return None
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            "Failed to find exact recognition cache record by phash: "
+            "Supabase returned an unexpected row shape."
+        )
+    if not rows:
+        return None
+
+    best_exact_match = {
+        **_normalize_cache_row(
+            rows[0],
+            "Failed to find exact recognition cache record by phash",
+        ),
+        "phash_distance": 0,
+    }
+
+    logger.info(
+        "pHash exact match hit. query_phash=%s",
+        phash,
+    )
+    return best_exact_match
+
+
+def warmup_exact_phash_lookup() -> bool:
+    """Warm the cached Supabase client and its underlying HTTP connection."""
+    try:
+        find_exact_phash_match(_WARMUP_PHASH)
+        logger.info("Recognition cache exact-lookup startup warmup completed.")
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Recognition cache exact-lookup startup warmup failed safely: %s",
+            exc,
+        )
+        return False
+
+
 def find_nearest_phash_match(
     phash: str,
     max_distance: int = PHASH_THRESHOLD,
+    *,
+    check_exact: bool = True,
 ) -> dict[str, Any] | None:
-    exact_matches = find_recognition_records_by_phash(phash)
-    if exact_matches:
-        best_exact_match: dict[str, Any] | None = None
-        best_exact_sort_key: tuple[float, int, float, int] | None = None
-
-        for index, row in enumerate(exact_matches):
-            sort_key = _match_sort_key(row, 0, index)
-            if best_exact_sort_key is None or sort_key < best_exact_sort_key:
-                best_exact_sort_key = sort_key
-                best_exact_match = {
-                    **row,
-                    "phash_distance": 0,
-                }
-
-        logger.info(
-            "pHash exact match hit. query_phash=%s checked_rows=%s best_distance=%s within_threshold=%s threshold=%s",
-            phash,
-            len(exact_matches),
-            0,
-            True,
-            max_distance,
-        )
-        return best_exact_match
+    if check_exact:
+        exact_match = find_exact_phash_match(phash)
+        if exact_match is not None:
+            return exact_match
 
     try:
         response = (
