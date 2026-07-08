@@ -4,6 +4,115 @@ from services.open_label_normalizer import normalize_open_recognition
 
 
 class OpenLabelNormalizerTests(unittest.TestCase):
+    def test_curtain_preserves_textile_disposal_and_material_signals(self):
+        result = normalize_open_recognition(
+            {
+                "status": "confident",
+                "raw_item_label": "curtain",
+                "likely_material": "fabric",
+                "broad_category": "textiles",
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["raw_item_label"], "curtain")
+        self.assertEqual(result["likely_material"], "fabric")
+        self.assertEqual(result["broad_category"], "textiles")
+        self.assertEqual(result["normalized"]["normalized_item"], "Curtain")
+        self.assertEqual(result["normalized"]["disposal_category"], "Textiles")
+        self.assertEqual(result["normalized"]["material_category"], "Fabric/Textile")
+        self.assertEqual(
+            result["normalized"]["original_vlm_broad_category"], "textiles"
+        )
+        self.assertEqual(
+            result["normalized"]["original_vlm_likely_material"], "fabric"
+        )
+
+    def test_calculator_keeps_electronics_separate_from_plastic_material(self):
+        result = normalize_open_recognition(
+            {
+                "status": "confident",
+                "raw_item_label": "calculator",
+                "likely_material": "plastic",
+                "broad_category": "electronics",
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["normalized_item"], "Calculator")
+        self.assertEqual(result["normalized"]["disposal_category"], "Electronics")
+        self.assertEqual(result["normalized"]["material_category"], "Plastic")
+
+    def test_electronic_item_keeps_specific_material_hint(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "phone charger",
+                "likely_material": "plastic",
+                "broad_category": "electronics",
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["disposal_category"], "Electronics")
+        self.assertEqual(result["normalized"]["material_category"], "Plastic")
+
+    def test_approved_disposal_category_aliases(self):
+        cases = {
+            "fabric": "Textiles",
+            "clothing": "Textiles",
+            "e-waste": "Electronics",
+            "electronic device": "Electronics",
+            "batteries": "Battery",
+            "appliances": "Appliances",
+            "cardboard": "Cardboard",
+            "paper": "Paper",
+            "glass": "Glass",
+            "scrap metal": "Metal",
+            "plastic": "Plastic",
+            "compost": "Organic",
+            "hazardous": "Hazardous",
+        }
+
+        for broad_category, expected in cases.items():
+            with self.subTest(broad_category=broad_category):
+                result = normalize_open_recognition(
+                    {
+                        "raw_item_label": "sample object",
+                        "likely_material": "",
+                        "broad_category": broad_category,
+                        "candidates": [],
+                    }
+                )
+                self.assertEqual(result["normalized"]["disposal_category"], expected)
+
+    def test_unmapped_broad_category_is_diagnostic_only(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "decorative object",
+                "likely_material": "rubber",
+                "broad_category": "home decor",
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["broad_category"], "Home Decor")
+        self.assertEqual(result["normalized"]["disposal_category"], "Household item")
+        self.assertEqual(result["normalized"]["material_category"], "Rubber")
+
+    def test_vague_broad_category_uses_safe_household_fallback(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "decorative object",
+                "likely_material": "unknown",
+                "broad_category": "unknown",
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["disposal_category"], "Household item")
+        self.assertEqual(result["normalized"]["material_category"], "Unknown")
+        self.assertEqual(result["normalized"]["original_vlm_broad_category"], "unknown")
+
     def test_alias_normalizes_ceramic_mug(self):
         result = normalize_open_recognition(
             {

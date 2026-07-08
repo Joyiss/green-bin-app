@@ -1176,13 +1176,13 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             recognition_candidates,
         )
         material_candidates = _candidate_values(
-            classification.get("recognized_material_category"),
-            classification.get("category"),
-            _normalized_open_value(classification, "material"),
             _normalized_open_value(classification, "material_category"),
+            classification.get("recognized_material_category"),
+            _normalized_open_value(classification, "material"),
             recognition_details.get("likely_material") if isinstance(recognition_details, dict) else None,
         )
         category_candidates = _candidate_values(
+            _normalized_open_value(classification, "disposal_category"),
             classification.get("category"),
             _normalized_open_value(classification, "broad_category"),
             classification.get("recognized_broad_category"),
@@ -1277,9 +1277,10 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
             classification.get("category"),
         ),
         "broad_category": _first_non_empty_string(
+            normalized_details.get("disposal_category"),
+            classification.get("category"),
             normalized_details.get("broad_category"),
             classification.get("recognized_broad_category"),
-            classification.get("category"),
         ),
         "condition_flags": _open_condition_flags(classification),
         "special_flags": _candidate_values(
@@ -1305,6 +1306,7 @@ def _normalize_open_text_fields(classification: dict[str, Any]) -> list[str]:
         normalized_details.get("item_label"),
         normalized_details.get("material"),
         normalized_details.get("material_category"),
+        normalized_details.get("disposal_category"),
         normalized_details.get("broad_category"),
         classification.get("recognized_material_category"),
         classification.get("recognized_broad_category"),

@@ -221,8 +221,48 @@ class PredictRouteTests(unittest.TestCase):
                 "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
+                "recognition_details": {
+                    "normalized": classification["recognition_details"]["normalized"],
+                },
             },
         )
+
+    def test_predict_exposes_normalized_nearby_search_context(self):
+        client = TestClient(app)
+        normalized = {
+            "normalized_item": "Curtain",
+            "disposal_category": "Textiles",
+            "material_category": "Fabric/Textile",
+        }
+        classification = {
+            "item": "Curtain",
+            "category": "Textiles",
+            "status": "confident",
+            "candidates": [],
+            "trusted_guidance_available": False,
+            "recognition_details": {
+                "status": "confident",
+                "normalized": normalized,
+            },
+        }
+
+        with patch(
+            "routes.predict.recognize_item",
+            AsyncMock(return_value=classification),
+        ), patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("photo.jpg", _make_image_bytes(), "image/jpeg")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["recognition_details"]["normalized"], normalized)
 
     def test_predict_cleans_open_candidate_labels(self):
         client = TestClient(app)

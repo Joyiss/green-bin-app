@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from services.guidance_service import build_prediction_response
+from services.guidance_service import _build_retrieval_inputs, build_prediction_response
 
 
 def _json_chunk(**overrides):
@@ -80,6 +80,36 @@ def _open_classification(
 
 
 class GuidanceServiceTests(unittest.TestCase):
+    def test_guidance_lookup_prefers_disposal_category_and_keeps_material_separate(self):
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [],
+            "trusted_guidance_available": False,
+            "recognized_material_category": "Plastic",
+            "recognized_broad_category": "Electronics",
+            "recognition_details": {
+                "raw_item_label": "calculator",
+                "likely_material": "plastic",
+                "broad_category": "electronics",
+                "normalized": {
+                    "normalized_item": "Calculator",
+                    "item_label": "Calculator",
+                    "disposal_category": "Electronics",
+                    "material_category": "Plastic",
+                    "broad_category": "Electronics",
+                },
+            },
+        }
+
+        retrieval_inputs = _build_retrieval_inputs(classification)
+
+        self.assertEqual(retrieval_inputs["category"], "Electronics")
+        self.assertEqual(retrieval_inputs["category_candidates"][0], "Electronics")
+        self.assertEqual(retrieval_inputs["material"], "Plastic")
+        self.assertEqual(retrieval_inputs["material_candidates"][0], "Plastic")
+
     def test_groq_grounded_response_wins_before_direct_json(self):
         classification = {
             "item": "Battery",

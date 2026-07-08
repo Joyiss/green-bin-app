@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,7 +18,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
 import { API_BASE_URL } from '@/constants/api';
-import { getLastScannedItem } from '@/constants/scan-session';
+import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
+import { getLastNearbyScanContext, getLastScannedItem } from '@/constants/scan-session';
 
 type NearbyLocation = LocationCardProps & {
   id: string;
@@ -30,7 +32,24 @@ type NearbyLocationsResponse = {
   locations: NearbyLocation[];
 };
 
-function getRouteItem(value: string | string[] | undefined) {
+type Coordinates = {
+  latitude: number;
+  longitude: number;
+};
+
+type EmptySearchScope = 'exact' | 'broader';
+
+type NearbyRouteParams = {
+  item?: string | string[];
+  normalizedItem?: string | string[];
+  disposalCategory?: string | string[];
+  materialCategory?: string | string[];
+  disposalAction?: string | string[];
+  requiresLocationCheck?: string | string[];
+  supportsDonationReuse?: string | string[];
+};
+
+function getRouteValue(value: string | string[] | undefined) {
   if (typeof value === 'string') {
     return value;
   }
@@ -58,14 +77,75 @@ function getLocationSearchText(location: NearbyLocation) {
     .toLowerCase();
 }
 
+async function fetchNearbyLocations(item: string, coordinates: Coordinates) {
+  const query = new URLSearchParams({
+    item,
+    lat: String(coordinates.latitude),
+    lon: String(coordinates.longitude),
+  });
+  const response = await fetch(`${API_BASE_URL}/nearby_locations?${query.toString()}`);
+
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as NearbyLocationsResponse;
+}
+
+function routeBoolean(value: string | null, fallback: boolean) {
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return fallback;
+}
+
 export default function NearbyScreen() {
   const insets = useSafeAreaInsets();
-  const { item } = useLocalSearchParams<{ item?: string | string[] }>();
-  const selectedItem = getRouteItem(item) ?? getLastScannedItem();
+  const router = useRouter();
+  const routeParams = useLocalSearchParams<NearbyRouteParams>();
+  const sessionContext = getLastNearbyScanContext();
+  const routeItem = getRouteValue(routeParams.item);
+  const selectedItem = routeItem ?? sessionContext?.item ?? getLastScannedItem();
+  const sessionMatchesItem =
+    !!selectedItem &&
+    !!sessionContext?.item &&
+    normalizeSearchText(selectedItem) === normalizeSearchText(sessionContext.item);
+  const normalizedItem =
+    getRouteValue(routeParams.normalizedItem) ??
+    (sessionMatchesItem ? sessionContext?.normalizedItem : null);
+  const displayItem = normalizedItem ?? selectedItem;
+  const disposalCategory =
+    getRouteValue(routeParams.disposalCategory) ??
+    (sessionMatchesItem ? sessionContext?.disposalCategory : null);
+  const disposalAction =
+    getRouteValue(routeParams.disposalAction) ??
+    (sessionMatchesItem ? sessionContext?.disposalAction : null);
+  const requiresLocationCheck = routeBoolean(
+    getRouteValue(routeParams.requiresLocationCheck),
+    sessionMatchesItem ? (sessionContext?.requiresLocationCheck ?? false) : false,
+  );
+  const supportsDonationReuse = routeBoolean(
+    getRouteValue(routeParams.supportsDonationReuse),
+    sessionMatchesItem
+      ? (sessionContext?.supportsDonationReuse ?? false)
+      : supportsNearbyDonationReuse({
+          item: displayItem ?? '',
+          disposalCategory,
+          disposalAction,
+        }),
+  );
+  const broaderFallback = getNearbyFallback(disposalCategory);
+
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
+  const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [emptySearchScope, setEmptySearchScope] = useState<EmptySearchScope | null>(null);
+  const [broaderSearchTerm, setBroaderSearchTerm] = useState<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -73,12 +153,15 @@ export default function NearbyScreen() {
     async function loadLocations() {
       if (!selectedItem) {
         setLocations([]);
+        setEmptySearchScope(null);
         setErrorMessage('Scan an item to load real drop-off locations.');
         return;
       }
 
       setIsLoading(true);
       setErrorMessage(null);
+      setEmptySearchScope(null);
+      setBroaderSearchTerm(null);
 
       try {
         const permission = await Location.requestForegroundPermissionsAsync();
@@ -96,34 +179,26 @@ export default function NearbyScreen() {
           throw new Error('Location unavailable');
         }
 
-        const query = new URLSearchParams({
-          item: selectedItem,
-          lat: String(position.coords.latitude),
-          lon: String(position.coords.longitude),
-        });
-        const response = await fetch(`${API_BASE_URL}/nearby_locations?${query.toString()}`);
-
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-
-        const data = (await response.json()) as NearbyLocationsResponse;
+        const nextCoordinates = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+        const data = await fetchNearbyLocations(selectedItem, nextCoordinates);
         if (!isActive) {
           return;
         }
 
-        setLocations(data.locations ?? []);
-        setErrorMessage(
-          data.locations?.length
-            ? null
-            : `No Earth911 locations were found for ${selectedItem.toLowerCase()}.`
-        );
+        const nextLocations = data.locations ?? [];
+        setCoordinates(nextCoordinates);
+        setLocations(nextLocations);
+        setEmptySearchScope(nextLocations.length ? null : 'exact');
       } catch (error) {
         if (!isActive) {
           return;
         }
 
         setLocations([]);
+        setEmptySearchScope(null);
         if (error instanceof Error && error.message === 'Location permission denied') {
           setErrorMessage('Location access is required to load nearby recycling sites.');
         } else if (error instanceof Error && error.message === 'Location unavailable') {
@@ -145,8 +220,34 @@ export default function NearbyScreen() {
     };
   }, [selectedItem]);
 
-  const subtitle = selectedItem
-    ? `Find approved drop-off and recycling sites near you for ${selectedItem.toLowerCase()}.`
+  async function tryBroaderSearch() {
+    if (!broaderFallback || !coordinates) {
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMessage(null);
+    setEmptySearchScope(null);
+    setSearchQuery('');
+    setBroaderSearchTerm(broaderFallback.searchTerm);
+
+    try {
+      const data = await fetchNearbyLocations(broaderFallback.searchTerm, coordinates);
+      const nextLocations = data.locations ?? [];
+      setLocations(nextLocations);
+      setBroaderSearchTerm(broaderFallback.searchTerm);
+      setEmptySearchScope(nextLocations.length ? null : 'broader');
+    } catch {
+      setLocations([]);
+      setBroaderSearchTerm(null);
+      setErrorMessage('Could not load broader nearby results right now.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const subtitle = displayItem
+    ? `Find approved drop-off and recycling sites near you for ${displayItem.toLowerCase()}.`
     : 'Find approved drop-off and recycling sites near you.';
   const normalizedSearchQuery = normalizeSearchText(searchQuery);
   const filteredLocations = normalizedSearchQuery
@@ -156,6 +257,16 @@ export default function NearbyScreen() {
     : locations;
   const showEmptySearchState =
     !isLoading && !errorMessage && !!normalizedSearchQuery && filteredLocations.length === 0;
+  const showBroaderNotice =
+    !isLoading && !errorMessage && !!broaderSearchTerm && locations.length > 0;
+  const canTryBroaderSearch = emptySearchScope === 'exact' && !!broaderFallback;
+  const noResultsExplanation =
+    emptySearchScope === 'broader' && broaderFallback
+      ? `We couldn’t find nearby listings using ${broaderFallback.searchTerm}, either.`
+      : `We couldn’t find a nearby listing specifically for ${displayItem ?? 'this item'}.`;
+  const guidanceOnlyText = requiresLocationCheck
+    ? 'This item still needs a local acceptance check. Follow its disposal guidance or scan another item.'
+    : 'No approved broader search is available for this item. Follow its disposal guidance or scan another item.';
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
@@ -194,13 +305,79 @@ export default function NearbyScreen() {
         {isLoading ? (
           <View style={styles.stateCard}>
             <ActivityIndicator color="#050505" size="small" />
-            <Text style={styles.stateText}>Loading Earth911 locations...</Text>
+            <Text style={styles.stateText}>
+              {broaderSearchTerm ? 'Loading broader Earth911 locations...' : 'Loading Earth911 locations...'}
+            </Text>
           </View>
         ) : null}
 
         {!isLoading && errorMessage ? (
           <View style={styles.stateCard}>
-            <Text style={styles.stateText}>{errorMessage}</Text>
+            <Text selectable style={styles.stateText}>{errorMessage}</Text>
+          </View>
+        ) : null}
+
+        {!isLoading && !errorMessage && emptySearchScope ? (
+          <View style={styles.stateCard}>
+            <View style={styles.stateIcon}>
+              <Ionicons color="#5F5A54" name="location-outline" size={22} />
+            </View>
+            <Text selectable style={styles.stateTitle}>No verified local match found</Text>
+            <Text selectable style={styles.stateText}>{noResultsExplanation}</Text>
+
+            {supportsDonationReuse ? (
+              <Text selectable style={styles.guidanceText}>
+                If it’s clean and usable, donation or reuse may be a better option than disposal.
+              </Text>
+            ) : null}
+
+            {canTryBroaderSearch ? (
+              <>
+                <View style={styles.warningBox}>
+                  <Ionicons color="#8A6419" name="alert-circle-outline" size={18} />
+                  <Text selectable style={styles.warningText}>
+                    Broader results may not accept this exact item. Check accepted items before going.
+                  </Text>
+                </View>
+                <Text selectable style={styles.fallbackHint}>
+                  Search term: {broaderFallback.searchTerm}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={tryBroaderSearch}
+                  style={styles.primaryButton}>
+                  <Text style={styles.primaryButtonText}>Try {broaderFallback.label}</Text>
+                  <Ionicons color="#FFFFFF" name="search-outline" size={16} />
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text selectable style={styles.guidanceText}>{guidanceOnlyText}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => router.navigate('/(tabs)')}
+                  style={styles.primaryButton}>
+                  <Text style={styles.primaryButtonText}>Scan another item</Text>
+                  <Ionicons color="#FFFFFF" name="camera-outline" size={16} />
+                </Pressable>
+              </>
+            )}
+          </View>
+        ) : null}
+
+        {showBroaderNotice ? (
+          <View style={styles.broaderNotice}>
+            <View style={styles.noticeTitleRow}>
+              <Ionicons color="#5F5A54" name="information-circle-outline" size={18} />
+              <Text selectable style={styles.noticeTitle}>Broader match</Text>
+            </View>
+            <Text selectable style={styles.noticeText}>
+              Found using: {broaderSearchTerm}{'\n'}
+              Not verified specifically for: {displayItem ?? selectedItem}
+            </Text>
+            <Text selectable style={styles.noticeWarning}>
+              Check accepted items before going.
+            </Text>
           </View>
         ) : null}
 
@@ -220,7 +397,7 @@ export default function NearbyScreen() {
 
         {showEmptySearchState ? (
           <View style={styles.stateCard}>
-            <Text style={styles.stateText}>No locations match your search.</Text>
+            <Text selectable style={styles.stateText}>No locations match your search.</Text>
           </View>
         ) : null}
       </ScrollView>
@@ -277,11 +454,11 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   searchInput: {
-    flex: 1,
-    padding: 0,
     color: '#B4AEA8',
+    flex: 1,
     fontSize: 14,
     fontWeight: '600',
+    padding: 0,
   },
   cards: {
     flex: 1,
@@ -300,11 +477,102 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 28,
   },
+  stateIcon: {
+    alignItems: 'center',
+    backgroundColor: '#F3F1EE',
+    borderRadius: 999,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  stateTitle: {
+    color: '#171717',
+    fontSize: 19,
+    fontWeight: '800',
+    lineHeight: 24,
+    textAlign: 'center',
+  },
   stateText: {
     color: '#78726C',
     fontSize: 14,
     fontWeight: '600',
     lineHeight: 20,
     textAlign: 'center',
+  },
+  guidanceText: {
+    color: '#5F6858',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
+    textAlign: 'center',
+  },
+  warningBox: {
+    alignItems: 'flex-start',
+    alignSelf: 'stretch',
+    backgroundColor: '#FFF8E8',
+    borderColor: '#F0DEB5',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 9,
+    padding: 13,
+  },
+  warningText: {
+    color: '#78591D',
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  fallbackHint: {
+    color: '#9D9791',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  primaryButton: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: '#050505',
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  broaderNotice: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E6E3DE',
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 7,
+    padding: 16,
+  },
+  noticeTitleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 7,
+  },
+  noticeTitle: {
+    color: '#38342F',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  noticeText: {
+    color: '#78726C',
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 19,
+  },
+  noticeWarning: {
+    color: '#8A6419',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
   },
 });

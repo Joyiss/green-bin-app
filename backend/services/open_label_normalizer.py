@@ -28,7 +28,70 @@ _MATERIAL_CATEGORIES = {
     "hazardous": "Hazardous",
     "organic": "Organic",
     "wood": "Wood",
+    "fabric/textile": "Fabric/Textile",
     "unknown": UNKNOWN_VALUE,
+}
+
+_APPROVED_DISPOSAL_CATEGORIES = {
+    "textiles": "Textiles",
+    "electronics": "Electronics",
+    "battery": "Battery",
+    "appliances": "Appliances",
+    "cardboard": "Cardboard",
+    "paper": "Paper",
+    "glass": "Glass",
+    "metal": "Metal",
+    "plastic": "Plastic",
+    "organic": "Organic",
+    "hazardous": "Hazardous",
+}
+
+_DISPOSAL_CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
+    "textiles": ("textile", "textiles", "fabric", "fabrics", "clothing", "clothes", "apparel"),
+    "electronics": (
+        "electronics",
+        "electronic",
+        "electronic device",
+        "electronic devices",
+        "electronic waste",
+        "e waste",
+        "e-waste",
+        "ewaste",
+    ),
+    "battery": ("battery", "batteries"),
+    "appliances": ("appliance", "appliances"),
+    "cardboard": ("cardboard", "scrap cardboard"),
+    "paper": ("paper", "paper product", "paper products"),
+    "glass": ("glass", "scrap glass"),
+    "metal": ("metal", "metals", "scrap metal", "scrap-metal"),
+    "plastic": ("plastic", "plastics"),
+    "organic": (
+        "organic",
+        "organics",
+        "organic waste",
+        "food",
+        "food waste",
+        "compost",
+        "compostable",
+        "compostables",
+    ),
+    "hazardous": ("hazardous", "hazardous waste", "household hazardous waste"),
+}
+
+_VAGUE_HINT_VALUES = {
+    "",
+    "unknown",
+    "unsure",
+    "uncertain",
+    "none",
+    "n a",
+    "na",
+    "not applicable",
+    "other",
+    "item",
+    "object",
+    "material",
+    "category",
 }
 
 _BROAD_CATEGORIES = {
@@ -170,6 +233,15 @@ def _title_case_label(value: str) -> str:
     return " ".join(words) if words else UNKNOWN_VALUE
 
 
+def _is_vague_hint(value: str) -> bool:
+    normalized_value = _clean_text(value)
+    if normalized_value in _VAGUE_HINT_VALUES:
+        return True
+    return normalized_value.startswith(
+        ("unknown ", "not sure", "cannot determine", "unable to determine")
+    )
+
+
 def _extract_flags(normalized_text: str) -> tuple[list[str], list[str]]:
     condition_flags: list[str] = []
     for flag, patterns in _CONDITION_FLAG_PATTERNS:
@@ -235,7 +307,7 @@ def _normalize_item_label(normalized_text: str) -> tuple[str, str]:
 
 def _map_material_hint(value: str) -> str:
     normalized_value = _clean_text(value)
-    if not normalized_value:
+    if _is_vague_hint(normalized_value):
         return UNKNOWN_VALUE
     if any(term in normalized_value for term in _METAL_HINT_TERMS):
         return _MATERIAL_CATEGORIES["metal"]
@@ -259,7 +331,9 @@ def _map_material_hint(value: str) -> str:
         return _MATERIAL_CATEGORIES["organic"]
     if "wood" in normalized_value:
         return _MATERIAL_CATEGORIES["wood"]
-    return UNKNOWN_VALUE
+    if any(term in normalized_value for term in ("fabric", "textile", "cloth")):
+        return _MATERIAL_CATEGORIES["fabric/textile"]
+    return _title_case_label(normalized_value)
 
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
@@ -391,10 +465,6 @@ def _infer_material_details(
         return _MATERIAL_CATEGORIES["wood"], "high", "keyword"
     if "battery" in special_flags:
         return _MATERIAL_CATEGORIES["battery"], "high", "keyword"
-    if "hazardous" in special_flags:
-        return _MATERIAL_CATEGORIES["hazardous"], "high", "keyword"
-    if "electronics" in special_flags:
-        return _MATERIAL_CATEGORIES["electronics"], "high", "keyword"
 
     if raw_has_plastic:
         return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
@@ -409,20 +479,39 @@ def _infer_material_details(
     if visual_has_glass or candidate_has_glass:
         return _MATERIAL_CATEGORIES["glass"], "medium", "visual_evidence"
 
+    if "hazardous" in special_flags and hinted_material == "Hazardous":
+        return _MATERIAL_CATEGORIES["hazardous"], "high", "keyword"
+    if "electronics" in special_flags and hinted_material == "Electronics":
+        return _MATERIAL_CATEGORIES["electronics"], "high", "keyword"
     if hinted_material != UNKNOWN_VALUE:
         return hinted_material, "low", "vlm_hint"
+
+    if "hazardous" in special_flags:
+        return _MATERIAL_CATEGORIES["hazardous"], "high", "keyword"
+    if "electronics" in special_flags:
+        return _MATERIAL_CATEGORIES["electronics"], "high", "keyword"
 
     return UNKNOWN_VALUE, "low", "fallback"
 
 
-def _map_broad_category_hint(value: str) -> str:
+def _map_disposal_category_hint(value: str) -> str:
     normalized_value = _clean_text(value)
-    if not normalized_value:
+    if _is_vague_hint(normalized_value):
+        return UNKNOWN_VALUE
+
+    for category_key, aliases in _DISPOSAL_CATEGORY_ALIASES.items():
+        if normalized_value in aliases:
+            return _APPROVED_DISPOSAL_CATEGORIES[category_key]
+
+    return UNKNOWN_VALUE
+
+
+def _normalize_broad_category_for_display(value: str) -> str:
+    normalized_value = _clean_text(value)
+    if _is_vague_hint(normalized_value):
         return UNKNOWN_VALUE
     if "drinkware" in normalized_value or "bottle" in normalized_value:
         return _BROAD_CATEGORIES["drinkware"]
-    if "electronics" in normalized_value:
-        return _BROAD_CATEGORIES["electronics"]
     if "food packaging" in normalized_value:
         return _BROAD_CATEGORIES["food packaging"]
     if "packaging" in normalized_value:
@@ -435,7 +524,10 @@ def _map_broad_category_hint(value: str) -> str:
         return _BROAD_CATEGORIES["hazardous household item"]
     if "household" in normalized_value:
         return _BROAD_CATEGORIES["household item"]
-    return UNKNOWN_VALUE
+    mapped_disposal_category = _map_disposal_category_hint(normalized_value)
+    if mapped_disposal_category != UNKNOWN_VALUE:
+        return mapped_disposal_category
+    return _title_case_label(normalized_value)
 
 
 def _infer_broad_category(
@@ -443,6 +535,10 @@ def _infer_broad_category(
     raw_broad_category: str,
     special_flags: list[str],
 ) -> str:
+    diagnostic_category = _normalize_broad_category_for_display(raw_broad_category)
+    if diagnostic_category != UNKNOWN_VALUE:
+        return diagnostic_category
+
     if item_label in {"Ceramic mug", "Mug", "Water bottle"}:
         return _BROAD_CATEGORIES["drinkware"]
     if item_label in {"Yogurt cup", "Pizza box"}:
@@ -454,9 +550,26 @@ def _infer_broad_category(
     if "electronics" in special_flags:
         return _BROAD_CATEGORIES["electronics"]
 
-    hinted_category = _map_broad_category_hint(raw_broad_category)
+    if item_label in {UNKNOWN_VALUE, ""}:
+        return UNKNOWN_VALUE
+    return _BROAD_CATEGORIES["household item"]
+
+
+def _infer_disposal_category(
+    item_label: str,
+    raw_broad_category: str,
+    special_flags: list[str],
+) -> str:
+    hinted_category = _map_disposal_category_hint(raw_broad_category)
     if hinted_category != UNKNOWN_VALUE:
         return hinted_category
+
+    if "battery" in special_flags:
+        return _APPROVED_DISPOSAL_CATEGORIES["battery"]
+    if "hazardous" in special_flags:
+        return _APPROVED_DISPOSAL_CATEGORIES["hazardous"]
+    if "electronics" in special_flags:
+        return _APPROVED_DISPOSAL_CATEGORIES["electronics"]
 
     if item_label in {UNKNOWN_VALUE, ""}:
         return UNKNOWN_VALUE
@@ -617,6 +730,11 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         str(raw_broad_category or ""),
         special_flags,
     )
+    disposal_category = _infer_disposal_category(
+        item_label,
+        str(raw_broad_category or ""),
+        special_flags,
+    )
 
     matched_supported_label = None
     if item_label not in {"", UNKNOWN_VALUE}:
@@ -637,8 +755,12 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         )
 
     normalized_payload = {
+        "normalized_item": item_label,
+        "disposal_category": disposal_category,
         "item_label": item_label,
         "material_category": material_category,
+        "original_vlm_broad_category": raw_broad_category,
+        "original_vlm_likely_material": likely_material,
         "material_confidence": material_confidence,
         "material_source": material_source,
         "broad_category": broad_category,
@@ -654,9 +776,10 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     }
 
     logger.info(
-        "Open recognition normalized. raw_label=%s normalized_item=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s matched_supported_label=%s",
+        "Open recognition normalized. raw_label=%s normalized_item=%s disposal_category=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s matched_supported_label=%s",
         raw_item_label,
-        normalized_payload["item_label"],
+        normalized_payload["normalized_item"],
+        normalized_payload["disposal_category"],
         normalized_payload["material_category"],
         normalized_payload["material_confidence"],
         normalized_payload["material_source"],

@@ -155,16 +155,63 @@ def _normalize_cached_classification(value: Any) -> dict[str, Any] | None:
 
     recognition_details = value.get("recognition_details")
     if isinstance(recognition_details, dict):
-        normalized_classification["recognition_details"] = recognition_details
+        existing_normalized_details = recognition_details.get("normalized")
+        has_raw_vlm_fields = any(
+            key in recognition_details
+            for key in ("raw_item_label", "likely_material", "broad_category")
+        )
+        needs_current_normalization = not (
+            isinstance(existing_normalized_details, dict)
+            and "normalized_item" in existing_normalized_details
+            and "disposal_category" in existing_normalized_details
+        )
+        normalized_recognition_details = (
+            normalize_open_recognition(recognition_details)
+            if has_raw_vlm_fields and needs_current_normalization
+            else recognition_details
+        )
+        normalized_classification["recognition_details"] = normalized_recognition_details
+
+        normalized_open_details = normalized_recognition_details.get("normalized")
+        if isinstance(normalized_open_details, dict):
+            normalized_item = str(
+                normalized_open_details.get("normalized_item")
+                or normalized_open_details.get("item_label")
+                or ""
+            ).strip()
+            disposal_category = str(
+                normalized_open_details.get("disposal_category") or ""
+            ).strip()
+            material_category = str(
+                normalized_open_details.get("material_category") or ""
+            ).strip()
+            broad_category = str(
+                normalized_open_details.get("broad_category") or ""
+            ).strip()
+
+            if _is_real_item_label(normalized_item):
+                normalized_classification["item"] = normalized_item
+            if disposal_category:
+                normalized_classification["category"] = disposal_category
+            if material_category:
+                normalized_classification["recognized_material_category"] = material_category
+            if broad_category:
+                normalized_classification["recognized_broad_category"] = broad_category
 
     recognized_material_category = value.get("recognized_material_category")
-    if isinstance(recognized_material_category, str):
+    if (
+        isinstance(recognized_material_category, str)
+        and "recognized_material_category" not in normalized_classification
+    ):
         normalized_classification["recognized_material_category"] = (
             recognized_material_category
         )
 
     recognized_broad_category = value.get("recognized_broad_category")
-    if isinstance(recognized_broad_category, str):
+    if (
+        isinstance(recognized_broad_category, str)
+        and "recognized_broad_category" not in normalized_classification
+    ):
         normalized_classification["recognized_broad_category"] = (
             recognized_broad_category
         )
@@ -321,7 +368,14 @@ def _get_normalized_open_recognition_details(
     if not isinstance(recognition_details, dict):
         return None
 
-    if isinstance(recognition_details.get("normalized"), dict):
+    normalized = recognition_details.get("normalized")
+    if (
+        isinstance(normalized, dict)
+        and "normalized_item" in normalized
+        and "disposal_category" in normalized
+        and "original_vlm_broad_category" in normalized
+        and "original_vlm_likely_material" in normalized
+    ):
         if "vlm_mode" in recognition_details:
             return recognition_details
         return {
@@ -391,35 +445,39 @@ def _build_open_vlm_classification(
     if recognition_details.get("status") != "confident":
         return None
 
-    normalized_item_label = str(normalized.get("item_label") or "").strip()
+    normalized_item_label = str(
+        normalized.get("normalized_item") or normalized.get("item_label") or ""
+    ).strip()
     if not _is_real_item_label(normalized_item_label):
         return None
 
     matched_supported_label = normalized.get("matched_supported_label")
+    disposal_category = str(
+        normalized.get("disposal_category") or ""
+    ).strip() or "Unknown"
+    material_category = str(
+        normalized.get("material_category") or ""
+    ).strip() or "Unknown"
+    broad_category = str(
+        normalized.get("broad_category") or ""
+    ).strip() or "Unknown"
     if isinstance(matched_supported_label, str) and matched_supported_label.strip():
         trusted_classification = build_selected_item_prediction(matched_supported_label)
         if trusted_classification.get("status") == "confident":
             return {
                 "item": normalized_item_label,
-                "category": trusted_classification.get("category", "Unknown"),
+                "category": disposal_category,
                 "status": "confident",
                 "candidates": [],
                 "trusted_guidance_available": True,
                 "trusted_guidance_label": matched_supported_label,
-                "recognized_material_category": normalized.get(
-                    "material_category", "Unknown"
-                ),
-                "recognized_broad_category": normalized.get(
-                    "broad_category", "Unknown"
-                ),
+                "recognized_material_category": material_category,
+                "recognized_broad_category": broad_category,
             }
 
-    material_category = str(normalized.get("material_category") or "").strip() or "Unknown"
-    broad_category = str(normalized.get("broad_category") or "").strip() or "Unknown"
-    final_category = material_category if material_category != "Unknown" else broad_category
     return {
         "item": normalized_item_label,
-        "category": final_category,
+        "category": disposal_category,
         "status": "confident",
         "candidates": [],
         "trusted_guidance_available": False,

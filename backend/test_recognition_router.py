@@ -7,7 +7,11 @@ from unittest.mock import patch
 from fastapi import HTTPException, UploadFile
 from PIL import Image
 
-from services.recognition_router import _build_cached_classification, recognize_item
+from services.recognition_router import (
+    _build_cached_classification,
+    _build_open_vlm_classification,
+    recognize_item,
+)
 
 
 def _make_image_bytes() -> bytes:
@@ -71,6 +75,61 @@ class RecognitionRouterTests(unittest.TestCase):
 
         self.assertEqual(result["item"], "Calculator")
         mock_phash.assert_not_called()
+
+    def test_open_calculator_uses_disposal_category_as_final_category(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "calculator",
+                    "likely_material": "plastic",
+                    "broad_category": "electronics",
+                    "candidates": [],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["item"], "Calculator")
+        self.assertEqual(result["category"], "Electronics")
+        self.assertEqual(result["recognized_material_category"], "Plastic")
+
+    def test_legacy_cached_open_classification_is_renormalized(self):
+        record = {
+            "item_label": "Calculator",
+            "metadata": {
+                "classification": {
+                    "item": "Calculator",
+                    "category": "Plastic",
+                    "status": "confident",
+                    "candidates": [],
+                    "trusted_guidance_available": False,
+                    "recognized_material_category": "Plastic",
+                    "recognized_broad_category": "Household item",
+                    "recognition_details": {
+                        "status": "confident",
+                        "raw_item_label": "calculator",
+                        "likely_material": "plastic",
+                        "broad_category": "electronics",
+                        "candidates": [],
+                        "normalized": {
+                            "item_label": "Calculator",
+                            "material_category": "Plastic",
+                            "broad_category": "Household item",
+                        },
+                    },
+                }
+            },
+        }
+
+        result = _build_cached_classification(record)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["category"], "Electronics")
+        self.assertEqual(
+            result["recognition_details"]["normalized"]["disposal_category"],
+            "Electronics",
+        )
 
     def test_invalid_image_returns_http_400(self):
         with self.assertRaises(HTTPException) as context:

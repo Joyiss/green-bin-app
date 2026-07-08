@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
+import MaskedView from '@react-native-masked-view/masked-view';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -21,6 +23,19 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, {
+  Easing,
+  FadeIn,
+  FadeOut,
+  cancelAnimation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 
 import {
   BOTTOM_NAV_BAR_HEIGHT,
@@ -29,7 +44,8 @@ import {
 } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
-import { setLastScannedItem } from '@/constants/scan-session';
+import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
+import { setLastNearbyScanContext } from '@/constants/scan-session';
 import {
   saveRecentScan,
   updateRecentScan,
@@ -39,6 +55,41 @@ import {
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
 const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
+const ANALYZING_STATUS_INTERVAL_MS = 1400;
+const ANALYZING_STATUS_MESSAGES = [
+  'Preparing image',
+  'Checking for barcode or text',
+  'Identifying the item',
+  'Finding disposal guidance',
+  'Building your result',
+  'Almost ready',
+] as const;
+const LOADING_SHIMMER_BAND_WIDTH = 110;
+const ANALYZING_PIXEL_COORDINATES = [
+  { left: 2, size: 3, top: 1 },
+  { left: 10, size: 4, top: 0 },
+  { left: 20, size: 3, top: 4 },
+  { left: 31, size: 4, top: 1 },
+  { left: 42, size: 3, top: 5 },
+  { left: 5, size: 4, top: 9 },
+  { left: 16, size: 3, top: 11 },
+  { left: 27, size: 4, top: 9 },
+  { left: 38, size: 3, top: 13 },
+  { left: 0, size: 3, top: 18 },
+  { left: 9, size: 4, top: 19 },
+  { left: 21, size: 3, top: 17 },
+  { left: 33, size: 4, top: 20 },
+  { left: 43, size: 3, top: 18 },
+  { left: 4, size: 3, top: 28 },
+  { left: 14, size: 4, top: 26 },
+  { left: 25, size: 3, top: 30 },
+  { left: 36, size: 4, top: 27 },
+  { left: 1, size: 4, top: 36 },
+  { left: 11, size: 3, top: 38 },
+  { left: 22, size: 4, top: 35 },
+  { left: 34, size: 3, top: 39 },
+  { left: 43, size: 4, top: 34 },
+] as const;
 const RESULT_SHEET_NAV_GAP = 16;
 const MAX_VISIBLE_CANDIDATES = 5;
 const MANUAL_KEYBOARD_GAP = 12;
@@ -87,6 +138,9 @@ type PredictionResponse = {
     candidates?: RawPredictionCandidate[] | null;
     raw_item_label?: unknown;
     normalized?: {
+      normalized_item?: unknown;
+      disposal_category?: unknown;
+      material_category?: unknown;
       item_label?: unknown;
       matched_supported_label?: unknown;
     } | null;
@@ -113,6 +167,12 @@ type ScannerResultData = {
   guidanceSource?: string;
   guidanceMetadata: Record<string, unknown>;
   showNearbyButton: boolean;
+  normalizedItem: string | null;
+  disposalCategory: string | null;
+  materialCategory: string | null;
+  disposalAction: string | null;
+  requiresLocationCheck: boolean;
+  supportsDonationReuse: boolean;
 };
 
 type NormalizedGuidanceMetadata = Record<string, unknown> & {
@@ -250,6 +310,19 @@ function getCompactPillLabel(response: PredictionResponse) {
   return impact;
 }
 
+function getNormalizedRecognitionValue(
+  response: PredictionResponse,
+  key: 'normalized_item' | 'disposal_category' | 'material_category',
+) {
+  const value = response.recognition_details?.normalized?.[key];
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalizedValue = value.trim();
+  return normalizedValue || null;
+}
+
 function getPredictionSummary(response: PredictionResponse) {
   const providedSummary = response.summary?.trim();
   if (providedSummary) {
@@ -352,6 +425,15 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
 
 function toSheetData(response: PredictionResponse): ScannerResultData {
   const action = getDisposalActionText(response.disposal_action);
+  const normalizedItem = getNormalizedRecognitionValue(response, 'normalized_item');
+  const normalizedDisposalCategory = getNormalizedRecognitionValue(
+    response,
+    'disposal_category',
+  );
+  const disposalCategory = normalizedDisposalCategory
+    ?? (getNearbyFallback(response.category) ? response.category : null);
+  const materialCategory = getNormalizedRecognitionValue(response, 'material_category');
+  const guidanceMetadata = getNormalizedGuidanceMetadata(response);
 
   return {
     item: response.item,
@@ -362,8 +444,20 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
     steps: response.steps,
     warnings: Array.isArray(response.warnings) ? response.warnings : [],
     guidanceSource: response.guidanceSource ?? response.guidance_source,
-    guidanceMetadata: getNormalizedGuidanceMetadata(response),
+    guidanceMetadata,
     showNearbyButton: shouldShowNearbyButton(response),
+    normalizedItem,
+    disposalCategory,
+    materialCategory,
+    disposalAction: response.disposal_action,
+    requiresLocationCheck: guidanceMetadata.requiresLocationCheck === true,
+    supportsDonationReuse: supportsNearbyDonationReuse({
+      item: normalizedItem ?? response.item,
+      disposalCategory,
+      disposalAction: response.disposal_action,
+      summary: response.summary,
+      steps: response.steps,
+    }),
   };
 }
 
@@ -515,6 +609,152 @@ function CameraPermissionNotice() {
   );
 }
 
+function AnalyzingImageAnimation() {
+  const scanProgress = useSharedValue(0);
+
+  useEffect(() => {
+    scanProgress.value = withRepeat(
+      withTiming(1, {
+        duration: 1800,
+        easing: Easing.inOut(Easing.cubic),
+      }),
+      -1,
+      true,
+    );
+
+    return () => {
+      cancelAnimation(scanProgress);
+      scanProgress.value = 0;
+    };
+  }, [scanProgress]);
+
+  const beamAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: interpolate(scanProgress.value, [0, 1], [-26, 26]) }],
+  }));
+  const mountainRevealAnimatedStyle = useAnimatedStyle(() => ({
+    width: interpolate(scanProgress.value, [0, 1], [0, 52]),
+  }));
+  const pixelRevealAnimatedStyle = useAnimatedStyle(() => ({
+    width: interpolate(scanProgress.value, [0, 1], [52, 0]),
+  }));
+
+  return (
+    <View
+      accessible
+      accessibilityLabel="Analyzing image"
+      accessibilityRole="progressbar"
+      style={styles.analyzingImageFrame}>
+      <View style={styles.analyzingGlyph}>
+        <View style={styles.analyzingGlyphOutline} />
+        <Reanimated.View
+          style={[styles.analyzingMountainReveal, mountainRevealAnimatedStyle]}>
+          <View style={styles.analyzingMountainCanvas}>
+            <View style={styles.analyzingSun} />
+            <View style={styles.analyzingMountainFirst} />
+            <View style={styles.analyzingMountainSecond} />
+          </View>
+        </Reanimated.View>
+        <Reanimated.View style={[styles.analyzingPixelReveal, pixelRevealAnimatedStyle]}>
+          <View style={styles.analyzingPixelField}>
+            {ANALYZING_PIXEL_COORDINATES.map((pixel, index) => (
+              <View
+                key={`${pixel.left}-${pixel.top}-${index}`}
+                style={[
+                  styles.analyzingPixel,
+                  {
+                    height: pixel.size,
+                    left: pixel.left,
+                    top: pixel.top,
+                    width: pixel.size,
+                  },
+                ]}
+              />
+            ))}
+          </View>
+        </Reanimated.View>
+      </View>
+      <Reanimated.View style={[styles.analyzingScanBeam, beamAnimatedStyle]}>
+        <View style={styles.analyzingScanLine} />
+        <View style={styles.analyzingScanCapTop} />
+        <View style={styles.analyzingScanCapBottom} />
+      </Reanimated.View>
+    </View>
+  );
+}
+
+function ShimmerLoadingText({ children }: { children: string }) {
+  const [textWidth, setTextWidth] = useState(0);
+  const shimmerProgress = useSharedValue(0);
+
+  useEffect(() => {
+    shimmerProgress.value = withRepeat(
+      withSequence(
+        withTiming(1, {
+          duration: 2200,
+          easing: Easing.bezier(0.4, 0, 0.2, 1),
+        }),
+        withDelay(750, withTiming(0, { duration: 0 })),
+      ),
+      -1,
+      false,
+    );
+
+    return () => {
+      cancelAnimation(shimmerProgress);
+      shimmerProgress.value = 0;
+    };
+  }, [shimmerProgress]);
+
+  const shimmerBandStyle = useAnimatedStyle(() => {
+    const translateX = interpolate(
+      shimmerProgress.value,
+      [0, 1],
+      [-LOADING_SHIMMER_BAND_WIDTH, textWidth],
+    );
+
+    return {
+      opacity: interpolate(shimmerProgress.value, [0, 0.12, 0.88, 1], [0, 1, 1, 0]),
+      transform: [{ translateX }],
+    };
+  });
+
+  return (
+    <View
+      onLayout={({ nativeEvent }) => setTextWidth(nativeEvent.layout.width)}
+      style={styles.loadingShimmerTextWrap}>
+      <Text numberOfLines={1} style={styles.loadingText}>
+        {children}
+      </Text>
+      {textWidth > 0 ? (
+        <MaskedView
+          maskElement={
+            <Text numberOfLines={1} style={styles.loadingShimmerMaskText}>
+              {children}
+            </Text>
+          }
+          pointerEvents="none"
+          style={[styles.loadingShimmerMask, { width: textWidth }]}>
+          <Reanimated.View style={[styles.loadingShimmerGradientBand, shimmerBandStyle]}>
+            <LinearGradient
+              colors={[
+                'rgba(18,18,18,0)',
+                'rgba(18,18,18,0.12)',
+                'rgba(5,5,5,0.62)',
+                'rgba(18,18,18,0.12)',
+                'rgba(18,18,18,0)',
+              ]}
+              locations={[0, 0.22, 0.5, 0.78, 1]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={StyleSheet.absoluteFillObject}
+            />
+          </Reanimated.View>
+        </MaskedView>
+      ) : null}
+    </View>
+  );
+}
+
 type CameraAreaProps = {
   cameraRef: React.RefObject<CameraView | null>;
   cameraPreviewKey: number;
@@ -551,7 +791,10 @@ function CameraArea({
   onTakePhoto,
 }: CameraAreaProps) {
   const cameraWarmupOpacity = useRef(new Animated.Value(1)).current;
+  const [analyzingStatusIndex, setAnalyzingStatusIndex] = useState(0);
   const shouldHideCameraUi = isCameraActive && !capturedImageUri && !isCameraReady;
+  const shouldShowCaptureGuide =
+    isCameraActive && isCameraReady && !capturedImageUri && !isLoading;
   const isCaptureDisabled = isLoading || !isCameraActive || !isCameraReady;
   const [renderCameraWarmupOverlay, setRenderCameraWarmupOverlay] = useState(shouldHideCameraUi);
 
@@ -572,6 +815,23 @@ function CameraArea({
       }
     });
   }, [cameraWarmupOpacity, shouldHideCameraUi]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setAnalyzingStatusIndex(0);
+      return;
+    }
+
+    if (analyzingStatusIndex === ANALYZING_STATUS_MESSAGES.length - 1) {
+      return;
+    }
+
+    const statusTimeout = setTimeout(() => {
+      setAnalyzingStatusIndex((currentIndex) => currentIndex + 1);
+    }, ANALYZING_STATUS_INTERVAL_MS);
+
+    return () => clearTimeout(statusTimeout);
+  }, [analyzingStatusIndex, isLoading]);
 
   return (
     <View style={styles.cameraCard}>
@@ -619,13 +879,15 @@ function CameraArea({
               )}
             </View>
 
-            <View pointerEvents="none" style={styles.scanFrameWrap}>
-              <View style={styles.scanFrame}>
-                <View style={styles.targetRing}>
-                  <View style={styles.targetDot} />
+            {shouldShowCaptureGuide ? (
+              <View pointerEvents="none" style={styles.scanFrameWrap}>
+                <View style={styles.scanFrame}>
+                  <View style={styles.targetRing}>
+                    <View style={styles.targetDot} />
+                  </View>
                 </View>
               </View>
-            </View>
+            ) : null}
 
             <View
               style={[
@@ -652,10 +914,15 @@ function CameraArea({
         ) : null}
 
         {capturedImageUri && isLoading ? (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator color="#FFFFFF" size="large" />
-            <Text style={styles.loadingText}>Analyzing...</Text>
-          </View>
+          <Reanimated.View
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(160)}
+            style={styles.loadingOverlay}>
+            <AnalyzingImageAnimation />
+            <ShimmerLoadingText>
+              {ANALYZING_STATUS_MESSAGES[analyzingStatusIndex]}
+            </ShimmerLoadingText>
+          </Reanimated.View>
         ) : null}
       </View>
     </View>
@@ -968,7 +1235,15 @@ export default function ScannerScreen() {
 
     if (prediction.status === 'confident' && prediction.item) {
       const nextResult = toSheetData(prediction);
-      setLastScannedItem(prediction.item);
+      setLastNearbyScanContext({
+        item: prediction.item,
+        normalizedItem: nextResult.normalizedItem,
+        disposalCategory: nextResult.disposalCategory,
+        materialCategory: nextResult.materialCategory,
+        disposalAction: nextResult.disposalAction,
+        requiresLocationCheck: nextResult.requiresLocationCheck,
+        supportsDonationReuse: nextResult.supportsDonationReuse,
+      });
       setResult(nextResult);
       setVisibleSheetState('confident');
       setSheetState('confident');
@@ -1082,9 +1357,11 @@ export default function ScannerScreen() {
     }
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
+      const camera = cameraRef.current;
+      const photo = await camera.takePictureAsync({
         quality: 0.7,
         base64: false,
+        skipProcessing: false,
       });
 
       if (!photo?.uri) {
@@ -1250,7 +1527,15 @@ export default function ScannerScreen() {
                       ? () =>
                           router.navigate({
                             pathname: '/(tabs)/nearby',
-                            params: { item: result.item },
+                            params: {
+                              item: result.item,
+                              normalizedItem: result.normalizedItem ?? undefined,
+                              disposalCategory: result.disposalCategory ?? undefined,
+                              materialCategory: result.materialCategory ?? undefined,
+                              disposalAction: result.disposalAction ?? undefined,
+                              requiresLocationCheck: String(result.requiresLocationCheck),
+                              supportsDonationReuse: String(result.supportsDonationReuse),
+                            },
                           })
                       : undefined
                   }
@@ -1542,19 +1827,157 @@ const styles = StyleSheet.create({
   },
   loadingOverlay: {
     alignItems: 'center',
-    backgroundColor: 'rgba(5, 5, 5, 0.36)',
+    backgroundColor: 'rgba(4, 8, 9, 0.52)',
     bottom: 0,
+    gap: 18,
     justifyContent: 'center',
     left: 0,
     position: 'absolute',
     right: 0,
     top: 0,
   },
+  analyzingImageFrame: {
+    alignItems: 'center',
+    height: 86,
+    justifyContent: 'center',
+    width: 92,
+  },
+  analyzingGlyph: {
+    height: 52,
+    position: 'relative',
+    width: 58,
+  },
+  analyzingGlyphOutline: {
+    borderColor: '#FFFFFF',
+    borderRadius: 7,
+    borderWidth: 3,
+    bottom: 3,
+    left: 3,
+    position: 'absolute',
+    right: 3,
+    top: 3,
+  },
+  analyzingMountainReveal: {
+    bottom: 3,
+    left: 3,
+    overflow: 'hidden',
+    position: 'absolute',
+    top: 3,
+  },
+  analyzingMountainCanvas: {
+    height: 46,
+    left: 0,
+    position: 'absolute',
+    top: 0,
+    width: 52,
+  },
+  analyzingSun: {
+    borderColor: '#FFFFFF',
+    borderRadius: 999,
+    borderWidth: 3,
+    height: 11,
+    left: 12,
+    position: 'absolute',
+    top: 11,
+    width: 11,
+  },
+  analyzingMountainFirst: {
+    backgroundColor: '#FFFFFF',
+    bottom: 12,
+    height: 3,
+    left: 2,
+    position: 'absolute',
+    transform: [{ rotate: '-42deg' }],
+    width: 30,
+  },
+  analyzingMountainSecond: {
+    backgroundColor: '#FFFFFF',
+    bottom: 12,
+    height: 3,
+    left: 24,
+    position: 'absolute',
+    transform: [{ rotate: '43deg' }],
+    width: 28,
+  },
+  analyzingPixelReveal: {
+    bottom: 3,
+    overflow: 'hidden',
+    position: 'absolute',
+    right: 3,
+    top: 3,
+  },
+  analyzingPixelField: {
+    height: 46,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    width: 52,
+  },
+  analyzingScanBeam: {
+    alignItems: 'center',
+    bottom: 12,
+    justifyContent: 'center',
+    left: 44,
+    position: 'absolute',
+    top: 12,
+    width: 4,
+  },
+  analyzingScanLine: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    height: '100%',
+    width: 3,
+  },
+  analyzingScanCapTop: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    height: 3,
+    left: -3,
+    position: 'absolute',
+    top: 0,
+    width: 10,
+  },
+  analyzingScanCapBottom: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 999,
+    bottom: 0,
+    height: 3,
+    left: -3,
+    position: 'absolute',
+    width: 10,
+  },
+  analyzingPixel: {
+    backgroundColor: '#FFFFFF',
+    position: 'absolute',
+  },
+  loadingShimmerTextWrap: {
+    alignSelf: 'center',
+    position: 'relative',
+  },
   loadingText: {
-    color: '#FFFFFF',
+    color: '#A9A9A9',
     fontSize: 16,
     fontWeight: '700',
-    marginTop: 12,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  loadingShimmerMask: {
+    bottom: 0,
+    left: 0,
+    overflow: 'hidden',
+    position: 'absolute',
+    top: 0,
+  },
+  loadingShimmerMaskText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  loadingShimmerGradientBand: {
+    height: 22,
+    width: LOADING_SHIMMER_BAND_WIDTH,
   },
   sheetWrap: {
     left: 16,

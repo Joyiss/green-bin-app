@@ -27,7 +27,15 @@ async def predict(
         classification = await recognize_item(file=file, selected_item=selected_item)
         guidance_started = perf_counter()
         try:
-            return build_prediction_response(classification)
+            response = build_prediction_response(classification)
+            recognition_details = classification.get("recognition_details")
+            if isinstance(recognition_details, dict):
+                normalized_details = recognition_details.get("normalized")
+                if isinstance(normalized_details, dict):
+                    response["recognition_details"] = {
+                        "normalized": normalized_details,
+                    }
+            return response
         finally:
             logger.info(
                 "predict_timing stage=guidance duration_ms=%.1f",
