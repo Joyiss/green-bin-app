@@ -94,16 +94,21 @@ _VAGUE_HINT_VALUES = {
     "category",
 }
 
-_BROAD_CATEGORIES = {
-    "drinkware": "Drinkware",
-    "household item": "Household item",
-    "electronics": "Electronics",
-    "packaging": "Packaging",
-    "food packaging": "Food packaging",
-    "paper product": "Paper product",
-    "organic waste": "Organic waste",
-    "hazardous household item": "Hazardous household item",
-    "unknown": UNKNOWN_VALUE,
+_ROUTING_CATEGORIES = {
+    "automotive": "automotive",
+    "batteries": "batteries",
+    "construction": "construction",
+    "electronics": "electronics",
+    "garden": "garden",
+    "glass": "glass",
+    "hazardous": "hazardous",
+    "household": "household",
+    "metal": "metal",
+    "paint": "paint",
+    "paper": "paper",
+    "plastic": "plastic",
+    "unknown": "unknown",
+    "unsupported": "unsupported",
 }
 
 _CONDITION_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
@@ -506,53 +511,114 @@ def _map_disposal_category_hint(value: str) -> str:
     return UNKNOWN_VALUE
 
 
-def _normalize_broad_category_for_display(value: str) -> str:
+def _map_routing_category_hint(value: str) -> str:
     normalized_value = _clean_text(value)
     if _is_vague_hint(normalized_value):
-        return UNKNOWN_VALUE
-    if "drinkware" in normalized_value or "bottle" in normalized_value:
-        return _BROAD_CATEGORIES["drinkware"]
-    if "food packaging" in normalized_value:
-        return _BROAD_CATEGORIES["food packaging"]
-    if "packaging" in normalized_value:
-        return _BROAD_CATEGORIES["packaging"]
-    if "paper" in normalized_value:
-        return _BROAD_CATEGORIES["paper product"]
-    if "organic" in normalized_value:
-        return _BROAD_CATEGORIES["organic waste"]
-    if "hazard" in normalized_value:
-        return _BROAD_CATEGORIES["hazardous household item"]
+        return _ROUTING_CATEGORIES["unknown"]
+    if normalized_value in _ROUTING_CATEGORIES:
+        return _ROUTING_CATEGORIES[normalized_value]
+    if normalized_value in {"battery", "batteries"}:
+        return _ROUTING_CATEGORIES["batteries"]
+    if any(term in normalized_value for term in ("electronics", "electronic", "e waste", "e-waste", "ewaste")):
+        return _ROUTING_CATEGORIES["electronics"]
+    if "automotive" in normalized_value or "vehicle" in normalized_value or "car " in f"{normalized_value} ":
+        return _ROUTING_CATEGORIES["automotive"]
+    if "construction" in normalized_value or "demolition" in normalized_value or "building material" in normalized_value:
+        return _ROUTING_CATEGORIES["construction"]
+    if any(term in normalized_value for term in ("garden", "yard", "lawn", "organic", "compost")):
+        return _ROUTING_CATEGORIES["garden"]
+    if "glass" in normalized_value:
+        return _ROUTING_CATEGORIES["glass"]
+    if "paint" in normalized_value:
+        return _ROUTING_CATEGORIES["paint"]
+    if any(term in normalized_value for term in ("hazard", "chemical", "medical", "medicine")):
+        return _ROUTING_CATEGORIES["hazardous"]
+    if "cardboard" in normalized_value or "paper" in normalized_value:
+        return _ROUTING_CATEGORIES["paper"]
+    if "metal" in normalized_value or "aluminum" in normalized_value or "steel" in normalized_value:
+        return _ROUTING_CATEGORIES["metal"]
+    if "plastic" in normalized_value:
+        return _ROUTING_CATEGORIES["plastic"]
     if "household" in normalized_value:
-        return _BROAD_CATEGORIES["household item"]
+        return _ROUTING_CATEGORIES["household"]
+    if normalized_value in {"appliance", "appliances", "textile", "textiles", "fabric", "fabrics", "clothing", "clothes", "apparel"}:
+        return _ROUTING_CATEGORIES["household"]
+    if normalized_value in {"organic", "organics", "organic waste"}:
+        return _ROUTING_CATEGORIES["garden"]
     mapped_disposal_category = _map_disposal_category_hint(normalized_value)
-    if mapped_disposal_category != UNKNOWN_VALUE:
-        return mapped_disposal_category
-    return _title_case_label(normalized_value)
+    if mapped_disposal_category != UNKNOWN_VALUE and _clean_text(mapped_disposal_category) != normalized_value:
+        return _map_routing_category_hint(mapped_disposal_category)
+    return _ROUTING_CATEGORIES["unknown"]
+
+
+def _infer_routing_category_from_item(
+    item_label: str,
+    normalized_text: str,
+    likely_material: str,
+) -> str:
+    item_text = _clean_text(f"{item_label} {normalized_text}")
+    material_text = _clean_text(likely_material)
+
+    if any(term in item_text for term in ("keyboard", "computer mouse", "calculator", "phone charger", "charger", "charging cable", "cable", "cord", "usb", "laptop", "computer", "monitor", "printer", "television", "tv", "tablet", "smartphone", "cell phone", "phone", "remote", "headphone", "earbud")):
+        return _ROUTING_CATEGORIES["electronics"]
+    if any(term in item_text for term in ("battery", "batteries", "lithium", "alkaline", "rechargeable", "vape")):
+        return _ROUTING_CATEGORIES["batteries"]
+    if "paint" in item_text:
+        return _ROUTING_CATEGORIES["paint"]
+    if any(term in item_text for term in ("propane", "motor oil", "medication", "medicine", "chemical", "aerosol", "cleaning spray", "light bulb")):
+        return _ROUTING_CATEGORIES["hazardous"]
+    if any(term in item_text for term in ("cardboard", "pizza box", "paper", "newspaper", "magazine", "book", "envelope")):
+        return _ROUTING_CATEGORIES["paper"]
+    if "glass" in item_text:
+        return _ROUTING_CATEGORIES["glass"]
+    if any(term in item_text for term in ("plastic", "pet", "pete")):
+        return _ROUTING_CATEGORIES["plastic"]
+    if any(term in item_text for term in ("metal", "aluminum", "aluminium", "steel")):
+        return _ROUTING_CATEGORIES["metal"]
+    if any(term in item_text for term in ("automotive", "tire", "car ", "vehicle")):
+        return _ROUTING_CATEGORIES["automotive"]
+    if any(term in item_text for term in ("construction", "demolition", "drywall", "asphalt", "concrete")):
+        return _ROUTING_CATEGORIES["construction"]
+    if any(term in item_text for term in ("leaves", "branches", "grass", "garden", "yard")):
+        return _ROUTING_CATEGORIES["garden"]
+
+    if material_text in _ROUTING_CATEGORIES and material_text not in {"unknown", "unsupported"}:
+        return _ROUTING_CATEGORIES[material_text]
+    if material_text == "cardboard":
+        return _ROUTING_CATEGORIES["paper"]
+    if any(term in material_text for term in ("plastic", "pet", "pete")):
+        return _ROUTING_CATEGORIES["plastic"]
+    if any(term in material_text for term in ("metal", "aluminum", "aluminium", "steel")):
+        return _ROUTING_CATEGORIES["metal"]
+    if "glass" in material_text:
+        return _ROUTING_CATEGORIES["glass"]
+    return _ROUTING_CATEGORIES["unknown"]
 
 
 def _infer_broad_category(
     item_label: str,
+    normalized_text: str,
+    likely_material: str,
     raw_broad_category: str,
     special_flags: list[str],
 ) -> str:
-    diagnostic_category = _normalize_broad_category_for_display(raw_broad_category)
-    if diagnostic_category != UNKNOWN_VALUE:
-        return diagnostic_category
-
-    if item_label in {"Ceramic mug", "Mug", "Water bottle"}:
-        return _BROAD_CATEGORIES["drinkware"]
-    if item_label in {"Yogurt cup", "Pizza box"}:
-        return _BROAD_CATEGORIES["food packaging"]
-    if item_label in {"Charging cable", "Phone charger", "Charger", "Cable"}:
-        return _BROAD_CATEGORIES["electronics"]
+    item_category = _infer_routing_category_from_item(item_label, normalized_text, likely_material)
+    if item_category != _ROUTING_CATEGORIES["unknown"]:
+        return item_category
+    if "battery" in special_flags:
+        return _ROUTING_CATEGORIES["batteries"]
     if "hazardous" in special_flags:
-        return _BROAD_CATEGORIES["hazardous household item"]
+        return _ROUTING_CATEGORIES["hazardous"]
     if "electronics" in special_flags:
-        return _BROAD_CATEGORIES["electronics"]
+        return _ROUTING_CATEGORIES["electronics"]
+
+    routed_hint = _map_routing_category_hint(raw_broad_category)
+    if routed_hint != _ROUTING_CATEGORIES["unknown"]:
+        return routed_hint
 
     if item_label in {UNKNOWN_VALUE, ""}:
-        return UNKNOWN_VALUE
-    return _BROAD_CATEGORIES["household item"]
+        return _ROUTING_CATEGORIES["unknown"]
+    return _ROUTING_CATEGORIES["unknown"]
 
 
 def _infer_disposal_category(
@@ -573,7 +639,7 @@ def _infer_disposal_category(
 
     if item_label in {UNKNOWN_VALUE, ""}:
         return UNKNOWN_VALUE
-    return _BROAD_CATEGORIES["household item"]
+    return "Household item"
 
 
 def _normalize_candidate_label(value: Any) -> str:
@@ -727,6 +793,8 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     )
     broad_category = _infer_broad_category(
         item_label,
+        normalized_text,
+        str(likely_material or ""),
         str(raw_broad_category or ""),
         special_flags,
     )

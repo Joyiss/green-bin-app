@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Linking,
   Pressable,
   ScrollView,
@@ -17,6 +17,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
+import { LocationCardSkeletonList } from '@/components/location-card-skeleton';
 import { API_BASE_URL } from '@/constants/api';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import { getLastNearbyScanContext, getLastScannedItem } from '@/constants/scan-session';
@@ -30,6 +31,28 @@ type NearbyLocationsResponse = {
   item: string;
   material_id: number | null;
   locations: NearbyLocation[];
+  reason?: 'unsupported_material' | null;
+  earth911_search_skipped?: boolean;
+  material_resolution?: {
+    original_label?: string | null;
+    normalized_label?: string | null;
+    resolved_material_label?: string | null;
+    matched_material_name?: string | null;
+    match_type?: 'exact' | 'alias' | 'llm' | 'none' | string;
+    confidence?: number;
+    llm_confidence?: 'high' | 'low' | null;
+    llm_reason?: string | null;
+    llm_selection?: string | null;
+    validation_failure_reason?: string | null;
+    routing_category?: string | null;
+    routing_category_source?: string | null;
+    catalog_family_filter?: string | null;
+    catalog_selection_candidates?: string[];
+    protected_item?: boolean;
+    protected_item_specific?: boolean;
+    stale_catalog_used?: boolean;
+    search_skipped?: boolean;
+  } | null;
 };
 
 type Coordinates = {
@@ -39,13 +62,23 @@ type Coordinates = {
 
 type EmptySearchScope = 'exact' | 'broader';
 
+type NearbySearchContext = {
+  normalizedItem?: string | null;
+  broadCategory?: string | null;
+  disposalCategory?: string | null;
+  materialCategory?: string | null;
+};
+
 type NearbyRouteParams = {
+  autoSearch?: string | string[];
   item?: string | string[];
   normalizedItem?: string | string[];
   disposalCategory?: string | string[];
+  broadCategory?: string | string[];
   materialCategory?: string | string[];
   disposalAction?: string | string[];
   requiresLocationCheck?: string | string[];
+  scanSessionId?: string | string[];
   supportsDonationReuse?: string | string[];
 };
 
@@ -77,12 +110,28 @@ function getLocationSearchText(location: NearbyLocation) {
     .toLowerCase();
 }
 
-async function fetchNearbyLocations(item: string, coordinates: Coordinates) {
+async function fetchNearbyLocations(
+  item: string,
+  coordinates: Coordinates,
+  context: NearbySearchContext = {},
+) {
   const query = new URLSearchParams({
     item,
     lat: String(coordinates.latitude),
     lon: String(coordinates.longitude),
   });
+  if (context.normalizedItem) {
+    query.set('normalized_item', context.normalizedItem);
+  }
+  if (context.broadCategory) {
+    query.set('broad_category', context.broadCategory);
+  }
+  if (context.disposalCategory) {
+    query.set('disposal_category', context.disposalCategory);
+  }
+  if (context.materialCategory) {
+    query.set('material_category', context.materialCategory);
+  }
   const response = await fetch(`${API_BASE_URL}/nearby_locations?${query.toString()}`);
 
   if (!response.ok) {
@@ -105,63 +154,99 @@ function routeBoolean(value: string | null, fallback: boolean) {
 export default function NearbyScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const [, refreshOnFocus] = useState(0);
   const routeParams = useLocalSearchParams<NearbyRouteParams>();
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshOnFocus((current) => current + 1);
+    }, []),
+  );
+
   const sessionContext = getLastNearbyScanContext();
+  const routeAutoSearch = routeBoolean(getRouteValue(routeParams.autoSearch), false);
   const routeItem = getRouteValue(routeParams.item);
-  const selectedItem = routeItem ?? sessionContext?.item ?? getLastScannedItem();
-  const sessionMatchesItem =
-    !!selectedItem &&
-    !!sessionContext?.item &&
-    normalizeSearchText(selectedItem) === normalizeSearchText(sessionContext.item);
+  const routeScanSessionId = getRouteValue(routeParams.scanSessionId);
+  const routeMatchesCurrentScan =
+    !!sessionContext?.scanSessionId && routeScanSessionId === sessionContext.scanSessionId;
+  const routeReferencesCurrentScan = routeScanSessionId
+    ? routeMatchesCurrentScan
+    : !!sessionContext;
+  const canUseRouteParams = routeReferencesCurrentScan;
+  const selectedItem =
+    sessionContext?.item ?? (canUseRouteParams ? routeItem : null) ?? getLastScannedItem();
   const normalizedItem =
-    getRouteValue(routeParams.normalizedItem) ??
-    (sessionMatchesItem ? sessionContext?.normalizedItem : null);
+    sessionContext?.normalizedItem ??
+    (canUseRouteParams ? getRouteValue(routeParams.normalizedItem) : null);
   const displayItem = normalizedItem ?? selectedItem;
   const disposalCategory =
-    getRouteValue(routeParams.disposalCategory) ??
-    (sessionMatchesItem ? sessionContext?.disposalCategory : null);
+    sessionContext?.disposalCategory ??
+    (canUseRouteParams ? getRouteValue(routeParams.disposalCategory) : null);
+  const broadCategory =
+    sessionContext?.broadCategory ??
+    (canUseRouteParams ? getRouteValue(routeParams.broadCategory) : null);
+  const materialCategory =
+    sessionContext?.materialCategory ??
+    (canUseRouteParams ? getRouteValue(routeParams.materialCategory) : null);
   const disposalAction =
-    getRouteValue(routeParams.disposalAction) ??
-    (sessionMatchesItem ? sessionContext?.disposalAction : null);
+    sessionContext?.disposalAction ??
+    (canUseRouteParams ? getRouteValue(routeParams.disposalAction) : null);
   const requiresLocationCheck = routeBoolean(
-    getRouteValue(routeParams.requiresLocationCheck),
-    sessionMatchesItem ? (sessionContext?.requiresLocationCheck ?? false) : false,
+    canUseRouteParams ? getRouteValue(routeParams.requiresLocationCheck) : null,
+    sessionContext?.requiresLocationCheck ?? false,
   );
   const supportsDonationReuse = routeBoolean(
-    getRouteValue(routeParams.supportsDonationReuse),
-    sessionMatchesItem
-      ? (sessionContext?.supportsDonationReuse ?? false)
-      : supportsNearbyDonationReuse({
-          item: displayItem ?? '',
-          disposalCategory,
-          disposalAction,
-        }),
+    canUseRouteParams ? getRouteValue(routeParams.supportsDonationReuse) : null,
+    sessionContext?.supportsDonationReuse ??
+      supportsNearbyDonationReuse({
+        item: displayItem ?? '',
+        disposalCategory,
+        disposalAction,
+      }),
   );
+  const shouldAutoSearch =
+    routeAutoSearch && routeReferencesCurrentScan && !!selectedItem;
+  const activeNearbyKey =
+    sessionContext?.scanSessionId ?? (canUseRouteParams ? routeScanSessionId ?? selectedItem : null);
   const broaderFallback = getNearbyFallback(disposalCategory);
 
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
+  const [searchStateNearbyKey, setSearchStateNearbyKey] = useState<string | null>(null);
   const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [emptySearchScope, setEmptySearchScope] = useState<EmptySearchScope | null>(null);
   const [broaderSearchTerm, setBroaderSearchTerm] = useState<string | null>(null);
+  const [isUnsupportedMaterial, setIsUnsupportedMaterial] = useState(false);
+
+  useEffect(() => {
+    // Nearby is a persistent tab, so clear the previous search state when the active scan changes.
+    setLocations([]);
+    setSearchStateNearbyKey(null);
+    setCoordinates(null);
+    setSearchQuery('');
+    setIsLoading(false);
+    setErrorMessage(null);
+    setEmptySearchScope(null);
+    setBroaderSearchTerm(null);
+    setIsUnsupportedMaterial(false);
+  }, [selectedItem, sessionContext?.scanSessionId]);
 
   useEffect(() => {
     let isActive = true;
 
     async function loadLocations() {
-      if (!selectedItem) {
-        setLocations([]);
-        setEmptySearchScope(null);
-        setErrorMessage('Scan an item to load real drop-off locations.');
+      if (!selectedItem || !shouldAutoSearch) {
         return;
       }
 
       setIsLoading(true);
+      setSearchStateNearbyKey(activeNearbyKey);
       setErrorMessage(null);
       setEmptySearchScope(null);
       setBroaderSearchTerm(null);
+      setIsUnsupportedMaterial(false);
 
       try {
         const permission = await Location.requestForegroundPermissionsAsync();
@@ -183,7 +268,12 @@ export default function NearbyScreen() {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
         };
-        const data = await fetchNearbyLocations(selectedItem, nextCoordinates);
+        const data = await fetchNearbyLocations(selectedItem, nextCoordinates, {
+          broadCategory,
+          disposalCategory,
+          materialCategory,
+          normalizedItem,
+        });
         if (!isActive) {
           return;
         }
@@ -191,14 +281,22 @@ export default function NearbyScreen() {
         const nextLocations = data.locations ?? [];
         setCoordinates(nextCoordinates);
         setLocations(nextLocations);
-        setEmptySearchScope(nextLocations.length ? null : 'exact');
+        if (data.reason === 'unsupported_material') {
+          setIsUnsupportedMaterial(true);
+          setEmptySearchScope(null);
+        } else {
+          setIsUnsupportedMaterial(false);
+          setEmptySearchScope(nextLocations.length ? null : 'exact');
+        }
       } catch (error) {
         if (!isActive) {
           return;
         }
 
         setLocations([]);
+        setSearchStateNearbyKey(activeNearbyKey);
         setEmptySearchScope(null);
+        setIsUnsupportedMaterial(false);
         if (error instanceof Error && error.message === 'Location permission denied') {
           setErrorMessage('Location access is required to load nearby recycling sites.');
         } else if (error instanceof Error && error.message === 'Location unavailable') {
@@ -218,7 +316,15 @@ export default function NearbyScreen() {
     return () => {
       isActive = false;
     };
-  }, [selectedItem]);
+  }, [
+    activeNearbyKey,
+    broadCategory,
+    disposalCategory,
+    materialCategory,
+    normalizedItem,
+    selectedItem,
+    shouldAutoSearch,
+  ]);
 
   async function tryBroaderSearch() {
     if (!broaderFallback || !coordinates) {
@@ -228,6 +334,7 @@ export default function NearbyScreen() {
     setIsLoading(true);
     setErrorMessage(null);
     setEmptySearchScope(null);
+    setIsUnsupportedMaterial(false);
     setSearchQuery('');
     setBroaderSearchTerm(broaderFallback.searchTerm);
 
@@ -235,11 +342,20 @@ export default function NearbyScreen() {
       const data = await fetchNearbyLocations(broaderFallback.searchTerm, coordinates);
       const nextLocations = data.locations ?? [];
       setLocations(nextLocations);
+      setSearchStateNearbyKey(activeNearbyKey);
       setBroaderSearchTerm(broaderFallback.searchTerm);
-      setEmptySearchScope(nextLocations.length ? null : 'broader');
+      if (data.reason === 'unsupported_material') {
+        setIsUnsupportedMaterial(true);
+        setEmptySearchScope(null);
+      } else {
+        setIsUnsupportedMaterial(false);
+        setEmptySearchScope(nextLocations.length ? null : 'broader');
+      }
     } catch {
       setLocations([]);
+      setSearchStateNearbyKey(activeNearbyKey);
       setBroaderSearchTerm(null);
+      setIsUnsupportedMaterial(false);
       setErrorMessage('Could not load broader nearby results right now.');
     } finally {
       setIsLoading(false);
@@ -250,18 +366,45 @@ export default function NearbyScreen() {
     ? `Find approved drop-off and recycling sites near you for ${displayItem.toLowerCase()}.`
     : 'Find approved drop-off and recycling sites near you.';
   const normalizedSearchQuery = normalizeSearchText(searchQuery);
+  const hasCurrentNearbyState =
+    !!selectedItem && !!activeNearbyKey && searchStateNearbyKey === activeNearbyKey;
+  const currentLocations =
+    hasCurrentNearbyState ? locations : [];
+  const currentErrorMessage = hasCurrentNearbyState ? errorMessage : null;
+  const currentEmptySearchScope = hasCurrentNearbyState ? emptySearchScope : null;
+  const currentBroaderSearchTerm = hasCurrentNearbyState ? broaderSearchTerm : null;
+  const isCurrentLoading = hasCurrentNearbyState && isLoading;
+  const isCurrentUnsupportedMaterial = hasCurrentNearbyState && isUnsupportedMaterial;
   const filteredLocations = normalizedSearchQuery
-    ? locations.filter((location) =>
+    ? currentLocations.filter((location) =>
         getLocationSearchText(location).includes(normalizedSearchQuery)
       )
-    : locations;
+    : currentLocations;
   const showEmptySearchState =
-    !isLoading && !errorMessage && !!normalizedSearchQuery && filteredLocations.length === 0;
+    !isCurrentLoading &&
+    !currentErrorMessage &&
+    !isCurrentUnsupportedMaterial &&
+    !!normalizedSearchQuery &&
+    filteredLocations.length === 0;
   const showBroaderNotice =
-    !isLoading && !errorMessage && !!broaderSearchTerm && locations.length > 0;
-  const canTryBroaderSearch = emptySearchScope === 'exact' && !!broaderFallback;
+    !isCurrentLoading &&
+    !currentErrorMessage &&
+    !!currentBroaderSearchTerm &&
+    currentLocations.length > 0;
+  const showNoItemState = !isCurrentLoading && !currentErrorMessage && !selectedItem;
+  const showReadyState =
+    !isCurrentLoading &&
+    !currentErrorMessage &&
+    !!selectedItem &&
+    !shouldAutoSearch &&
+    !currentEmptySearchScope &&
+    !isCurrentUnsupportedMaterial &&
+    currentLocations.length === 0;
+  const canTryBroaderSearch = currentEmptySearchScope === 'exact' && !!broaderFallback;
+  const unsupportedMaterialMessage =
+    "We couldn't find nearby drop-off locations for this item. This item may not be supported by our location database yet. Check your city or county's disposal rules for the most accurate guidance.";
   const noResultsExplanation =
-    emptySearchScope === 'broader' && broaderFallback
+    currentEmptySearchScope === 'broader' && broaderFallback
       ? `We couldn’t find nearby listings using ${broaderFallback.searchTerm}, either.`
       : `We couldn’t find a nearby listing specifically for ${displayItem ?? 'this item'}.`;
   const guidanceOnlyText = requiresLocationCheck
@@ -302,22 +445,58 @@ export default function NearbyScreen() {
         ]}
         showsVerticalScrollIndicator={false}
         style={styles.cards}>
-        {isLoading ? (
+        {isCurrentLoading ? (
+          <LocationCardSkeletonList />
+        ) : null}
+
+        {!isCurrentLoading && currentErrorMessage ? (
           <View style={styles.stateCard}>
-            <ActivityIndicator color="#050505" size="small" />
-            <Text style={styles.stateText}>
-              {broaderSearchTerm ? 'Loading broader Earth911 locations...' : 'Loading Earth911 locations...'}
+            <Text selectable style={styles.stateText}>{currentErrorMessage}</Text>
+          </View>
+        ) : null}
+
+        {showNoItemState ? (
+          <View style={styles.stateCard}>
+            <View style={styles.stateIcon}>
+              <Ionicons color="#5F5A54" name="camera-outline" size={22} />
+            </View>
+            <Text selectable style={styles.stateTitle}>Scan an item first</Text>
+            <Text selectable style={styles.stateText}>
+              Scan something on the Scan tab, then open Nearby when you want location results.
             </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.navigate('/(tabs)')}
+              style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>Go to Scan</Text>
+              <Ionicons color="#FFFFFF" name="camera-outline" size={16} />
+            </Pressable>
           </View>
         ) : null}
 
-        {!isLoading && errorMessage ? (
+        {showReadyState ? (
           <View style={styles.stateCard}>
-            <Text selectable style={styles.stateText}>{errorMessage}</Text>
+            <View style={styles.stateIcon}>
+              <Ionicons color="#5F5A54" name="location-outline" size={22} />
+            </View>
+            <Text selectable style={styles.stateTitle}>Ready when you are</Text>
+            <Text selectable style={styles.stateText}>
+              {`Nearby results for ${displayItem ?? selectedItem} have not been loaded yet.`}
+            </Text>
+            <Text selectable style={styles.guidanceText}>
+              Go back to the Scan tab and tap Find Nearby Locations to search for this item.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.navigate('/(tabs)')}
+              style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>Go to Scan</Text>
+              <Ionicons color="#FFFFFF" name="camera-outline" size={16} />
+            </Pressable>
           </View>
         ) : null}
 
-        {!isLoading && !errorMessage && emptySearchScope ? (
+        {!isCurrentLoading && !currentErrorMessage && currentEmptySearchScope ? (
           <View style={styles.stateCard}>
             <View style={styles.stateIcon}>
               <Ionicons color="#5F5A54" name="location-outline" size={22} />
@@ -365,6 +544,23 @@ export default function NearbyScreen() {
           </View>
         ) : null}
 
+        {!isCurrentLoading && !currentErrorMessage && isCurrentUnsupportedMaterial ? (
+          <View style={styles.stateCard}>
+            <View style={styles.stateIcon}>
+              <Ionicons color="#5F5A54" name="information-circle-outline" size={22} />
+            </View>
+            <Text selectable style={styles.stateTitle}>No supported material match</Text>
+            <Text selectable style={styles.stateText}>{unsupportedMaterialMessage}</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.navigate('/(tabs)')}
+              style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>Scan another item</Text>
+              <Ionicons color="#FFFFFF" name="camera-outline" size={16} />
+            </Pressable>
+          </View>
+        ) : null}
+
         {showBroaderNotice ? (
           <View style={styles.broaderNotice}>
             <View style={styles.noticeTitleRow}>
@@ -372,7 +568,7 @@ export default function NearbyScreen() {
               <Text selectable style={styles.noticeTitle}>Broader match</Text>
             </View>
             <Text selectable style={styles.noticeText}>
-              Found using: {broaderSearchTerm}{'\n'}
+              Found using: {currentBroaderSearchTerm}{'\n'}
               Not verified specifically for: {displayItem ?? selectedItem}
             </Text>
             <Text selectable style={styles.noticeWarning}>
@@ -381,8 +577,8 @@ export default function NearbyScreen() {
           </View>
         ) : null}
 
-        {!isLoading &&
-          !errorMessage &&
+        {!isCurrentLoading &&
+          !currentErrorMessage &&
           filteredLocations.map((location) => (
             <LocationCard
               key={location.id}

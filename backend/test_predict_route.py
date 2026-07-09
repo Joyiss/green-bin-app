@@ -157,7 +157,7 @@ class PredictRouteTests(unittest.TestCase):
             "recognition_source": "vlm_open",
             "trusted_guidance_available": False,
             "recognized_material_category": "Metal",
-            "recognized_broad_category": "Drinkware",
+            "recognized_broad_category": "metal",
             "recognition_details": {
                 "status": "confident",
                 "raw_item_label": "water bottle",
@@ -170,7 +170,7 @@ class PredictRouteTests(unittest.TestCase):
                 "normalized": {
                     "item_label": "Water bottle",
                     "material_category": "Metal",
-                    "broad_category": "Drinkware",
+                    "broad_category": "metal",
                     "condition_flags": [],
                     "special_handling_flags": [],
                     "matched_supported_label": None,
@@ -275,7 +275,7 @@ class PredictRouteTests(unittest.TestCase):
             "recognition_source": "vlm_open",
             "trusted_guidance_available": False,
             "recognized_material_category": "Plastic",
-            "recognized_broad_category": "Drinkware",
+            "recognized_broad_category": "plastic",
             "recognition_details": {
                 "status": "confident",
                 "raw_item_label": "water bottle",
@@ -293,7 +293,7 @@ class PredictRouteTests(unittest.TestCase):
                 "normalized": {
                     "item_label": "Water Bottle",
                     "material_category": "Plastic",
-                    "broad_category": "Drinkware",
+                    "broad_category": "plastic",
                     "condition_flags": [],
                     "special_handling_flags": [],
                     "matched_supported_label": None,
@@ -346,7 +346,7 @@ class PredictRouteTests(unittest.TestCase):
             "trusted_guidance_available": True,
             "trusted_guidance_label": "Cable",
             "recognized_material_category": "Electronics",
-            "recognized_broad_category": "Electronics",
+            "recognized_broad_category": "electronics",
         }
 
         with patch(
@@ -421,16 +421,16 @@ class PredictRouteTests(unittest.TestCase):
             "recognition_source": "vlm_open",
             "trusted_guidance_available": False,
             "recognized_material_category": "Mixed Material",
-            "recognized_broad_category": "Household item",
+            "recognized_broad_category": "household",
             "recognition_details": {
                 "status": "confident",
                 "raw_item_label": "pencil",
                 "likely_material": "mixed material",
-                "broad_category": "household item",
+                "broad_category": "household",
                 "normalized": {
                     "item_label": "Pencil",
                     "material_category": "Mixed Material",
-                    "broad_category": "Household item",
+                    "broad_category": "household",
                     "condition_flags": [],
                     "special_handling_flags": [],
                     "matched_supported_label": None,
@@ -474,7 +474,7 @@ class PredictRouteTests(unittest.TestCase):
             "trusted_guidance_available": True,
             "trusted_guidance_label": "Cable",
             "recognized_material_category": "Electronics",
-            "recognized_broad_category": "Electronics",
+            "recognized_broad_category": "electronics",
         }
 
         with patch(
@@ -526,7 +526,7 @@ class PredictRouteTests(unittest.TestCase):
             "recognition_source": "vlm_open",
             "trusted_guidance_available": False,
             "recognized_material_category": "Battery",
-            "recognized_broad_category": "Batteries",
+            "recognized_broad_category": "batteries",
             "recognition_details": {
                 "status": "confident",
                 "raw_item_label": "battery",
@@ -537,7 +537,7 @@ class PredictRouteTests(unittest.TestCase):
                 "normalized": {
                     "item_label": "Battery",
                     "material_category": "Battery",
-                    "broad_category": "Batteries",
+                    "broad_category": "batteries",
                     "condition_flags": ["requires_dropoff", "hazardous"],
                     "special_handling_flags": ["battery", "dropoff_recommended"],
                     "matched_supported_label": None,
@@ -736,7 +736,7 @@ class PredictRouteTests(unittest.TestCase):
             "recognition_source": "vlm_open",
             "trusted_guidance_available": False,
             "recognized_material_category": "Battery",
-            "recognized_broad_category": "Electronics",
+            "recognized_broad_category": "electronics",
             "recognition_details": {
                 "status": "confident",
                 "raw_item_label": "battery",
@@ -747,7 +747,7 @@ class PredictRouteTests(unittest.TestCase):
                 "normalized": {
                     "item_label": "Battery",
                     "material_category": "Battery",
-                    "broad_category": "Electronics",
+                    "broad_category": "electronics",
                     "condition_flags": [],
                     "special_handling_flags": ["battery", "dropoff_recommended"],
                     "matched_supported_label": None,

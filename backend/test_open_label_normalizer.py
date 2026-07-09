@@ -21,6 +21,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["normalized_item"], "Curtain")
         self.assertEqual(result["normalized"]["disposal_category"], "Textiles")
         self.assertEqual(result["normalized"]["material_category"], "Fabric/Textile")
+        self.assertEqual(result["normalized"]["broad_category"], "household")
         self.assertEqual(
             result["normalized"]["original_vlm_broad_category"], "textiles"
         )
@@ -42,6 +43,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["normalized_item"], "Calculator")
         self.assertEqual(result["normalized"]["disposal_category"], "Electronics")
         self.assertEqual(result["normalized"]["material_category"], "Plastic")
+        self.assertEqual(result["normalized"]["broad_category"], "electronics")
 
     def test_electronic_item_keeps_specific_material_hint(self):
         result = normalize_open_recognition(
@@ -55,6 +57,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
 
         self.assertEqual(result["normalized"]["disposal_category"], "Electronics")
         self.assertEqual(result["normalized"]["material_category"], "Plastic")
+        self.assertEqual(result["normalized"]["broad_category"], "electronics")
 
     def test_approved_disposal_category_aliases(self):
         cases = {
@@ -85,7 +88,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
                 )
                 self.assertEqual(result["normalized"]["disposal_category"], expected)
 
-    def test_unmapped_broad_category_is_diagnostic_only(self):
+    def test_unmapped_broad_category_normalizes_to_unknown_routing_category(self):
         result = normalize_open_recognition(
             {
                 "raw_item_label": "decorative object",
@@ -95,7 +98,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["normalized"]["broad_category"], "Home Decor")
+        self.assertEqual(result["normalized"]["broad_category"], "unknown")
         self.assertEqual(result["normalized"]["disposal_category"], "Household item")
         self.assertEqual(result["normalized"]["material_category"], "Rubber")
 
@@ -111,6 +114,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
 
         self.assertEqual(result["normalized"]["disposal_category"], "Household item")
         self.assertEqual(result["normalized"]["material_category"], "Unknown")
+        self.assertEqual(result["normalized"]["broad_category"], "unknown")
         self.assertEqual(result["normalized"]["original_vlm_broad_category"], "unknown")
 
     def test_alias_normalizes_ceramic_mug(self):
@@ -128,7 +132,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Ceramic")
         self.assertEqual(result["normalized"]["material_confidence"], "high")
         self.assertEqual(result["normalized"]["material_source"], "keyword")
-        self.assertEqual(result["normalized"]["broad_category"], "Drinkware")
+        self.assertEqual(result["normalized"]["broad_category"], "unknown")
 
     def test_keyword_normalizes_phone_charger_with_special_flags(self):
         result = normalize_open_recognition(
@@ -144,7 +148,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Electronics")
         self.assertEqual(result["normalized"]["material_confidence"], "high")
         self.assertEqual(result["normalized"]["material_source"], "keyword")
-        self.assertEqual(result["normalized"]["broad_category"], "Electronics")
+        self.assertEqual(result["normalized"]["broad_category"], "electronics")
         self.assertEqual(
             result["normalized"]["special_handling_flags"],
             ["electronics", "dropoff_recommended"],
@@ -164,7 +168,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Food-soiled cardboard")
         self.assertEqual(result["normalized"]["material_confidence"], "high")
         self.assertEqual(result["normalized"]["material_source"], "keyword")
-        self.assertEqual(result["normalized"]["broad_category"], "Food packaging")
+        self.assertEqual(result["normalized"]["broad_category"], "paper")
         self.assertEqual(result["normalized"]["condition_flags"], ["food_soiled"])
 
     def test_generic_water_bottle_with_stainless_material_stays_unmatched(self):
@@ -181,7 +185,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Metal")
         self.assertEqual(result["normalized"]["material_confidence"], "low")
         self.assertEqual(result["normalized"]["material_source"], "vlm_hint")
-        self.assertEqual(result["normalized"]["broad_category"], "Drinkware")
+        self.assertEqual(result["normalized"]["broad_category"], "metal")
         self.assertEqual(result["normalized"]["matched_supported_label"], None)
 
     def test_plastic_water_bottle_maps_to_supported_plastic_label(self):
@@ -198,6 +202,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Plastic")
         self.assertEqual(result["normalized"]["material_confidence"], "high")
         self.assertEqual(result["normalized"]["material_source"], "keyword")
+        self.assertEqual(result["normalized"]["broad_category"], "plastic")
         self.assertEqual(
             result["normalized"]["matched_supported_label"],
             "Plastic water bottle",
@@ -217,7 +222,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Mixed Material")
         self.assertEqual(result["normalized"]["material_confidence"], "low")
         self.assertEqual(result["normalized"]["material_source"], "vlm_hint")
-        self.assertEqual(result["normalized"]["broad_category"], "Drinkware")
+        self.assertEqual(result["normalized"]["broad_category"], "plastic")
         self.assertEqual(result["normalized"]["matched_supported_label"], None)
 
     def test_plastic_water_bottle_candidate_does_not_override_stainless_material(self):
@@ -393,7 +398,7 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Unknown")
         self.assertEqual(result["normalized"]["material_confidence"], "low")
         self.assertEqual(result["normalized"]["material_source"], "fallback")
-        self.assertEqual(result["normalized"]["broad_category"], "Unknown")
+        self.assertEqual(result["normalized"]["broad_category"], "unknown")
         self.assertEqual(result["normalized"]["condition_flags"], [])
         self.assertEqual(result["normalized"]["special_handling_flags"], [])
         self.assertEqual(result["normalized"]["matched_supported_label"], None)

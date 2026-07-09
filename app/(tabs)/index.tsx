@@ -45,7 +45,10 @@ import {
 import { ResultSheet } from '@/components/result-sheet';
 import { API_BASE_URL } from '@/constants/api';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
-import { setLastNearbyScanContext } from '@/constants/scan-session';
+import {
+  clearLastNearbyScanContext,
+  setLastNearbyScanContext,
+} from '@/constants/scan-session';
 import {
   saveRecentScan,
   updateRecentScan,
@@ -140,6 +143,7 @@ type PredictionResponse = {
     normalized?: {
       normalized_item?: unknown;
       disposal_category?: unknown;
+      broad_category?: unknown;
       material_category?: unknown;
       item_label?: unknown;
       matched_supported_label?: unknown;
@@ -169,6 +173,7 @@ type ScannerResultData = {
   showNearbyButton: boolean;
   normalizedItem: string | null;
   disposalCategory: string | null;
+  broadCategory: string | null;
   materialCategory: string | null;
   disposalAction: string | null;
   requiresLocationCheck: boolean;
@@ -312,7 +317,7 @@ function getCompactPillLabel(response: PredictionResponse) {
 
 function getNormalizedRecognitionValue(
   response: PredictionResponse,
-  key: 'normalized_item' | 'disposal_category' | 'material_category',
+  key: 'normalized_item' | 'disposal_category' | 'broad_category' | 'material_category',
 ) {
   const value = response.recognition_details?.normalized?.[key];
   if (typeof value !== 'string') {
@@ -432,6 +437,7 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
   );
   const disposalCategory = normalizedDisposalCategory
     ?? (getNearbyFallback(response.category) ? response.category : null);
+  const broadCategory = getNormalizedRecognitionValue(response, 'broad_category');
   const materialCategory = getNormalizedRecognitionValue(response, 'material_category');
   const guidanceMetadata = getNormalizedGuidanceMetadata(response);
 
@@ -448,6 +454,7 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
     showNearbyButton: shouldShowNearbyButton(response),
     normalizedItem,
     disposalCategory,
+    broadCategory,
     materialCategory,
     disposalAction: response.disposal_action,
     requiresLocationCheck: guidanceMetadata.requiresLocationCheck === true,
@@ -1152,6 +1159,7 @@ export default function ScannerScreen() {
 
   const resetScanner = () => {
     predictRequestRef.current += 1;
+    clearLastNearbyScanContext();
     clearActiveScanSession();
     restoreCameraPreview();
     setRequestState('idle');
@@ -1236,9 +1244,12 @@ export default function ScannerScreen() {
     if (prediction.status === 'confident' && prediction.item) {
       const nextResult = toSheetData(prediction);
       setLastNearbyScanContext({
+        scanSessionId:
+          activeScanSessionRef.current?.id ?? `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         item: prediction.item,
         normalizedItem: nextResult.normalizedItem,
         disposalCategory: nextResult.disposalCategory,
+        broadCategory: nextResult.broadCategory,
         materialCategory: nextResult.materialCategory,
         disposalAction: nextResult.disposalAction,
         requiresLocationCheck: nextResult.requiresLocationCheck,
@@ -1290,6 +1301,7 @@ export default function ScannerScreen() {
     predictRequestRef.current = requestId;
 
     if (imageUri) {
+      clearLastNearbyScanContext();
       activeScanSessionRef.current = createActiveScanSession(imageUri);
       setCapturedImageUri(imageUri);
       setResult(null);
@@ -1528,12 +1540,15 @@ export default function ScannerScreen() {
                           router.navigate({
                             pathname: '/(tabs)/nearby',
                             params: {
+                              autoSearch: 'true',
                               item: result.item,
                               normalizedItem: result.normalizedItem ?? undefined,
                               disposalCategory: result.disposalCategory ?? undefined,
+                              broadCategory: result.broadCategory ?? undefined,
                               materialCategory: result.materialCategory ?? undefined,
                               disposalAction: result.disposalAction ?? undefined,
                               requiresLocationCheck: String(result.requiresLocationCheck),
+                              scanSessionId: activeScanSessionRef.current?.id ?? undefined,
                               supportsDonationReuse: String(result.supportsDonationReuse),
                             },
                           })

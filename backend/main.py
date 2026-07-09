@@ -14,11 +14,13 @@ try:
     from .repositories import cache_repository
     from .routes.predict import router as predict_router
     from .services import clip_service, phash_service
+    from .services.earth911_material_resolver import resolve_earth911_material
 except ImportError:
     from materials import MATERIAL_LABELS
     from repositories import cache_repository
     from routes.predict import router as predict_router
     from services import clip_service, phash_service
+    from services.earth911_material_resolver import resolve_earth911_material
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -36,6 +38,7 @@ LOCATION_CARD_ACCENTS = ("#88D39D", "#F2C572", "#7FC6FF")
 LOCATION_CARD_MAP_STYLES = ("grid", "building", "pin")
 EARTH911_SESSION = requests.Session()
 EARTH911_SESSION.trust_env = False
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.add_middleware(
@@ -397,17 +400,70 @@ def get_location_details(location_id: str) -> dict[str, Any]:
 
 
 @app.get("/nearby_locations")
-def nearby_locations(item: str, lat: float, lon: float) -> dict[str, Any]:
+def nearby_locations(
+    item: str,
+    lat: float,
+    lon: float,
+    normalized_item: str | None = None,
+    broad_category: str | None = None,
+    disposal_category: str | None = None,
+    material_category: str | None = None,
+) -> dict[str, Any]:
     try:
-        material_result = _earth911_request("earth911.searchMaterials", {"query": item})
-        material_id = _extract_material_id(material_result, item)
+        resolver_label = normalized_item.strip() if normalized_item and normalized_item.strip() else item
+        recognition_details = {
+            key: value
+            for key, value in {
+                "broad_category": broad_category,
+                "disposal_category": disposal_category,
+                "material_category": material_category,
+            }.items()
+            if value
+        } or None
+        material_resolution = resolve_earth911_material(
+            resolver_label,
+            recognition_details,
+            _earth911_request,
+        )
+        material_id = material_resolution.get("material_id")
+        logger.info(
+            "earth911_material_resolution original_label=%s normalized_label=%s resolved_material_label=%s matched_material=%s material_id=%s match_type=%s routing_category=%s routing_category_source=%s catalog_family_filter=%s protected_item=%s protected_item_specific=%s llm_selection=%s llm_confidence=%s llm_reason=%s validation_failure_reason=%s catalog_selection_candidates=%s stale_catalog_used=%s search_skipped=%s",
+            material_resolution.get("original_label"),
+            material_resolution.get("normalized_label"),
+            material_resolution.get("resolved_material_label"),
+            material_resolution.get("matched_material_name"),
+            material_resolution.get("material_id"),
+            material_resolution.get("match_type"),
+            material_resolution.get("routing_category"),
+            material_resolution.get("routing_category_source"),
+            material_resolution.get("catalog_family_filter"),
+            material_resolution.get("protected_item"),
+            material_resolution.get("protected_item_specific"),
+            material_resolution.get("llm_selection"),
+            material_resolution.get("llm_confidence"),
+            material_resolution.get("llm_reason"),
+            material_resolution.get("validation_failure_reason"),
+            material_resolution.get("catalog_selection_candidates"),
+            material_resolution.get("stale_catalog_used"),
+            material_resolution.get("search_skipped"),
+        )
 
         if material_id is None:
-            return {"item": item, "material_id": None, "locations": []}
+            return {
+                "item": item,
+                "material_id": None,
+                "locations": [],
+                "reason": "unsupported_material",
+                "earth911_search_skipped": True,
+                "material_resolution": material_resolution,
+            }
 
         return {
             "item": item,
             "material_id": material_id,
+            "reason": None,
+            "earth911_search_skipped": False,
+            "material_resolution": material_resolution,
             "locations": _search_locations_for_material(lat, lon, material_id),
         }
     except HTTPException:

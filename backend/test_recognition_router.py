@@ -105,7 +105,7 @@ class RecognitionRouterTests(unittest.TestCase):
                     "candidates": [],
                     "trusted_guidance_available": False,
                     "recognized_material_category": "Plastic",
-                    "recognized_broad_category": "Household item",
+                    "recognized_broad_category": "household",
                     "recognition_details": {
                         "status": "confident",
                         "raw_item_label": "calculator",
@@ -115,7 +115,7 @@ class RecognitionRouterTests(unittest.TestCase):
                         "normalized": {
                             "item_label": "Calculator",
                             "material_category": "Plastic",
-                            "broad_category": "Household item",
+                            "broad_category": "household",
                         },
                     },
                 }

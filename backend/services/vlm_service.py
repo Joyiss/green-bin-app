@@ -63,12 +63,16 @@ OPEN_DETECTION_PROMPT = (
     "Do not provide steps.\n"
     "Rules:\n"
     '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
-    "- raw_item_label, likely_material, and broad_category should each be short plain-language strings, or \"\" if unknown.\n"
+    "- raw_item_label and likely_material should each be short plain-language strings, or \"\" if unknown.\n"
+    "- likely_material is the physical material hint, such as plastic, metal, glass, ceramic, paper, or fabric.\n"
+    "- broad_category is only for disposal/location-search routing and must be exactly one of: automotive, batteries, construction, electronics, garden, glass, hazardous, household, metal, paint, paper, plastic, unknown, unsupported.\n"
+    "- Do not use physical material for broad_category when the item routes through a special stream.\n"
+    "- Examples: keyboard -> electronics, not plastic; computer mouse -> electronics, not plastic; calculator -> electronics; phone charger -> electronics; battery -> batteries; paint can -> paint or hazardous, not metal; cardboard box -> paper; plastic water bottle -> plastic; glass bottle -> glass.\n"
     "- candidates must contain at most 3 objects.\n"
     "- each candidate object must contain label and confidence.\n"
     "- visual_evidence must be a short string, 12 words or fewer, or \"\" if unknown.\n"
     "Return shape:\n"
-    '{"status":"confident","raw_item_label":"ceramic mug","likely_material":"ceramic","broad_category":"drinkware","candidates":[{"label":"ceramic mug","confidence":0.91},{"label":"coffee mug","confidence":0.73}],"visual_evidence":"Handle, cup opening, glossy rigid body."}\n'
+    '{"status":"confident","raw_item_label":"keyboard","likely_material":"plastic","broad_category":"electronics","candidates":[{"label":"keyboard","confidence":0.91}],"visual_evidence":"Keys and USB cable visible."}\n'
 )
 BARCODE_AWARE_PROMPT_SUFFIX = (
     "\n\n"
@@ -123,7 +127,25 @@ OPEN_DETECTION_RESPONSE_SCHEMA = {
         },
         "raw_item_label": {"type": "string"},
         "likely_material": {"type": "string"},
-        "broad_category": {"type": "string"},
+        "broad_category": {
+            "type": "string",
+            "enum": [
+                "automotive",
+                "batteries",
+                "construction",
+                "electronics",
+                "garden",
+                "glass",
+                "hazardous",
+                "household",
+                "metal",
+                "paint",
+                "paper",
+                "plastic",
+                "unknown",
+                "unsupported",
+            ],
+        },
         "candidates": {
             "type": "array",
             "items": {

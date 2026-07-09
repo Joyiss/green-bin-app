@@ -1,9 +1,11 @@
 let lastScannedItem: string | null = null;
 
 export type NearbyScanContext = {
+  scanSessionId: string;
   item: string;
   normalizedItem: string | null;
   disposalCategory: string | null;
+  broadCategory: string | null;
   materialCategory: string | null;
   disposalAction: string | null;
   requiresLocationCheck: boolean;
@@ -19,6 +21,11 @@ export function setLastScannedItem(item: string) {
 export function setLastNearbyScanContext(context: NearbyScanContext) {
   lastScannedItem = context.item;
   lastNearbyScanContext = context;
+}
+
+export function clearLastNearbyScanContext() {
+  lastScannedItem = null;
+  lastNearbyScanContext = null;
 }
 
 export function getLastScannedItem() {
