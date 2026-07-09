@@ -7,12 +7,12 @@ from typing import Any
 try:
     from ..materials import resolve_material_label
     from ..rules import get_rules
-    from . import guidance_llm_service, guidance_retrieval_service
+    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service
     from .guidance_key_service import normalize_guidance_phrase
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
-    from services import guidance_llm_service, guidance_retrieval_service
+    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service
     from services.guidance_key_service import normalize_guidance_phrase
 
 logger = logging.getLogger(__name__)
@@ -1234,8 +1234,13 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _lookup_json_guidance(classification: dict[str, Any]) -> list[dict[str, Any]]:
-    retrieval_inputs = _build_retrieval_inputs(classification)
+def _lookup_json_guidance(
+    classification: dict[str, Any],
+    *,
+    retrieval_inputs: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if retrieval_inputs is None:
+        retrieval_inputs = _build_retrieval_inputs(classification)
     try:
         return guidance_retrieval_service.retrieve_guidance_chunks(**retrieval_inputs) or []
     except Exception:
@@ -1525,11 +1530,38 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 
     retrieval_inputs = _build_retrieval_inputs(classification)
     _log_resolution_started(classification, retrieval_inputs)
-    retrieval_results = _lookup_json_guidance(classification)
+    retrieval_results = _lookup_json_guidance(
+        classification,
+        retrieval_inputs=retrieval_inputs,
+    )
     _log_retrieval_complete(retrieval_results)
     llm_context = _build_llm_context(classification)
 
     if retrieval_results:
+        cache_context = guidance_cache_service.build_source_grounded_cache_context(
+            classification=classification,
+            retrieval_inputs=retrieval_inputs,
+            retrieval_results=retrieval_results,
+            llm_context=llm_context,
+        )
+        cached_guidance = guidance_cache_service.get_cached_source_grounded_guidance(
+            cache_context
+        )
+        if isinstance(cached_guidance, dict):
+            _log_guidance_selected(
+                cached_guidance,
+                chunk_ids=cached_guidance.get("guidance_metadata", {}).get(
+                    "retrieved_chunk_ids"
+                ),
+                requires_location_check=bool(
+                    cached_guidance.get("guidance_metadata", {}).get(
+                        "requires_location_check"
+                    )
+                ),
+                reason="guidance_cache_hit",
+            )
+            return cached_guidance
+
         llm_result = guidance_llm_service.try_generate_source_grounded_guidance(
             **llm_context,
             retrieval_results=retrieval_results,
@@ -1546,6 +1578,14 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
                 requires_location_check=bool(
                     llm_guidance["guidance_metadata"].get("requires_location_check")
                 ),
+            )
+            guidance_cache_service.write_source_grounded_guidance_if_cacheable(
+                classification=classification,
+                guidance=llm_guidance,
+                cache_context=cache_context,
+                retrieval_inputs=retrieval_inputs,
+                retrieval_results=retrieval_results,
+                llm_context=llm_context,
             )
             return llm_guidance
 
@@ -1579,6 +1619,14 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             requires_location_check=bool(
                 guidance.get("guidance_metadata", {}).get("requires_location_check")
             ),
+        )
+        guidance_cache_service.write_source_grounded_guidance_if_cacheable(
+            classification=classification,
+            guidance=guidance,
+            cache_context=cache_context,
+            retrieval_inputs=retrieval_inputs,
+            retrieval_results=retrieval_results,
+            llm_context=llm_context,
         )
         return guidance
 
@@ -1722,8 +1770,10 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
     if isinstance(guidance_metadata, dict) and guidance_metadata:
         response["guidance_metadata"] = guidance_metadata
 
-    if "cache_hit" in classification:
-        response["cache_hit"] = bool(classification["cache_hit"])
+    if "cache_hit" in classification or "cache_hit" in guidance:
+        response["cache_hit"] = bool(
+            classification.get("cache_hit") or guidance.get("cache_hit")
+        )
     if "recognition_source" in classification:
         response["recognition_source"] = classification["recognition_source"]
 

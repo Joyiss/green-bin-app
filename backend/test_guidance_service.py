@@ -159,6 +159,131 @@ class GuidanceServiceTests(unittest.TestCase):
         )
         mock_rules.assert_not_called()
 
+    def test_source_grounded_cache_hit_skips_llm_generation(self):
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+        }
+        retrieval_results = [_retrieval_result(_json_chunk())]
+        cached_guidance = {
+            "disposal_action": "drop-off",
+            "material_code": None,
+            "impact_level": "Check Local Guidance",
+            "summary": "Use cached battery drop-off guidance.",
+            "steps": ["Tape exposed terminals.", "Use a drop-off location."],
+            "guidance_source": "json_rag_llm_generated",
+            "guidance_metadata": {
+                "retrieved_chunk_ids": ["chunk-1"],
+                "requires_location_check": True,
+                "guidance_cache_hit": True,
+                "guidance_cache_key": "cache-key",
+                "cache_key_version": "guidance_cache_v1",
+            },
+            "cache_hit": True,
+        }
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=retrieval_results,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=cached_guidance,
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+            ) as mock_llm,
+            patch(
+                "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
+            ) as mock_write,
+        ):
+            response = build_prediction_response(classification)
+
+        self.assertTrue(response["cache_hit"])
+        self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
+        self.assertTrue(response["guidance_metadata"]["guidance_cache_hit"])
+        self.assertEqual(response["guidance_metadata"]["guidance_cache_key"], "cache-key")
+        mock_llm.assert_not_called()
+        mock_write.assert_not_called()
+
+    def test_source_grounded_cache_miss_calls_existing_generation_path(self):
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+        }
+        retrieval_results = [_retrieval_result(_json_chunk())]
+        llm_guidance = {
+            "disposal_action": "drop-off",
+            "material_code": None,
+            "impact_level": "Check Local Guidance",
+            "summary": "Use a battery drop-off program.",
+            "steps": ["Tape exposed terminals.", "Use drop-off."],
+            "guidance_source": "json_rag_llm_generated",
+            "guidance_metadata": {"sources_used": ["chunk-1"]},
+        }
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=retrieval_results,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+                return_value={"guidance": llm_guidance, "failure_reason": None},
+            ) as mock_llm,
+        ):
+            response = build_prediction_response(classification)
+
+        mock_llm.assert_called_once()
+        self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
+
+    def test_expired_source_grounded_cache_row_is_ignored_by_lookup_and_generation_proceeds(self):
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+        }
+        retrieval_results = [_retrieval_result(_json_chunk())]
+        llm_guidance = {
+            "disposal_action": "drop-off",
+            "material_code": None,
+            "impact_level": "Check Local Guidance",
+            "summary": "Use fresh battery drop-off guidance.",
+            "steps": ["Tape exposed terminals.", "Use drop-off."],
+            "guidance_source": "json_rag_llm_generated",
+            "guidance_metadata": {"sources_used": ["chunk-1"]},
+        }
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=retrieval_results,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ) as mock_cache_lookup,
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+                return_value={"guidance": llm_guidance, "failure_reason": None},
+            ) as mock_llm,
+        ):
+            response = build_prediction_response(classification)
+
+        mock_cache_lookup.assert_called_once()
+        mock_llm.assert_called_once()
+        self.assertEqual(response["summary"], "Use fresh battery drop-off guidance.")
+
     def test_direct_json_remains_fallback_when_groq_output_is_invalid(self):
         classification = {
             "item": "Battery",
@@ -193,6 +318,37 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("limitations", response["guidance_metadata"])
         self.assertIn("why_this_action", response["guidance_metadata"])
         self.assertIn("retrieved_chunk_ids", response["guidance_metadata"])
+
+    def test_direct_json_source_grounded_guidance_is_written_when_cacheable(self):
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+        }
+        chunk = _json_chunk()
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[_retrieval_result(chunk)],
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+                return_value={"guidance": None, "failure_reason": "invalid_json"},
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
+            ) as mock_write,
+        ):
+            response = build_prediction_response(classification)
+
+        self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
+        mock_write.assert_called_once()
 
     def test_open_normalized_item_material_and_category_can_retrieve_chunks(self):
         classification = {
@@ -966,6 +1122,22 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertIsNone(response["disposal_action"])
         self.assertEqual(response["summary"], "Trusted disposal guidance is not available yet.")
+
+    def test_safe_fallback_is_never_written_to_guidance_cache(self):
+        classification = {
+            "item": "",
+            "category": "Unknown",
+            "status": "unknown",
+            "candidates": [],
+        }
+
+        with patch(
+            "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
+        ) as mock_write:
+            response = build_prediction_response(classification)
+
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        mock_write.assert_not_called()
 
 
 if __name__ == "__main__":
