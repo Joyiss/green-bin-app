@@ -7,12 +7,14 @@ import logging
 import os
 import re
 from pathlib import Path
+from time import perf_counter
 
 import requests
 from dotenv import load_dotenv
 from PIL import Image
 
 try:
+    from . import request_context
     from ..materials import (
         LABEL_TO_CATEGORY,
         MATERIAL_LABELS,
@@ -22,6 +24,7 @@ try:
         resolve_material_label,
     )
 except ImportError:
+    from services import request_context
     from materials import (
         LABEL_TO_CATEGORY,
         MATERIAL_LABELS,
@@ -178,6 +181,31 @@ CONFIDENT_SCORE = 1.0
 CONFIDENT_SCORE_STEP = 0.08
 UNCERTAIN_TOP_SCORE = 0.58
 UNCERTAIN_SCORE_STEP = 0.02
+
+
+def _duration_ms(started: float) -> float:
+    return (perf_counter() - started) * 1000
+
+
+def _log_vlm_timing(stage: str, started: float, **fields: object) -> None:
+    request_id = request_context.get_predict_request_id()
+    if request_id is not None and "request_id" not in fields:
+        fields = {"request_id": request_id, **fields}
+    field_text = " ".join(f"{key}={value}" for key, value in fields.items())
+    if field_text:
+        logger.info(
+            "vlm_timing stage=%s duration_ms=%.1f %s",
+            stage,
+            _duration_ms(started),
+            field_text,
+        )
+        return
+
+    logger.info(
+        "vlm_timing stage=%s duration_ms=%.1f",
+        stage,
+        _duration_ms(started),
+    )
 
 
 def normalize_vlm_recognition_mode(value: object) -> str:
@@ -626,28 +654,101 @@ def _call_vision_model(
     response_schema: dict[str, object] | None = None,
     *,
     max_tokens: int = DEFAULT_VLM_MAX_TOKENS,
+    request_label: str = "detection",
 ) -> str:
     headers = {
         "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
         "Content-Type": "application/json",
     }
-    response = requests.post(
-        _cloudflare_api_url(),
-        headers=headers,
-        json=_build_payload(
-            image_base64,
-            prompt_text,
-            response_schema=response_schema,
-            max_tokens=max_tokens,
-        ),
-        timeout=60,
+    payload_started = perf_counter()
+    payload = _build_payload(
+        image_base64,
+        prompt_text,
+        response_schema=response_schema,
+        max_tokens=max_tokens,
     )
+    _log_vlm_timing(
+        "payload_construction",
+        payload_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        request=request_label,
+        prompt_chars=len(prompt_text),
+        image_base64_chars=len(image_base64),
+        has_response_schema=response_schema is not None,
+        max_tokens=max_tokens,
+    )
+
+    request_started = perf_counter()
+    try:
+        response = requests.post(
+            _cloudflare_api_url(),
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+    except Exception as exc:
+        _log_vlm_timing(
+            "cloudflare_http_request",
+            request_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            request=request_label,
+            timeout_seconds=60,
+            proxy_env_present=any(
+                os.getenv(name)
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+            ),
+            result="exception",
+            error_type=type(exc).__name__,
+        )
+        raise
+    else:
+        _log_vlm_timing(
+            "cloudflare_http_request",
+            request_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            request=request_label,
+            timeout_seconds=60,
+            proxy_env_present=any(
+                os.getenv(name)
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+            ),
+            status_code=getattr(response, "status_code", "unknown"),
+        )
     response.raise_for_status()
-    return _extract_cloudflare_response_text(response.json())
+
+    extraction_started = perf_counter()
+    try:
+        response_json = response.json()
+        raw_output = _extract_cloudflare_response_text(response_json)
+    except Exception as exc:
+        _log_vlm_timing(
+            "cloudflare_response_extract",
+            extraction_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            request=request_label,
+            result="exception",
+            error_type=type(exc).__name__,
+        )
+        raise
+    _log_vlm_timing(
+        "cloudflare_response_extract",
+        extraction_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        request=request_label,
+        raw_output_chars=len(raw_output),
+    )
+    return raw_output
 
 
 def _parse_detection_result(raw_output: str) -> dict[str, object]:
+    parse_started = perf_counter()
     parsed_output: dict[str, object]
+    parse_mode = "exact"
 
     try:
         parsed_output = _extract_json_object(raw_output)
@@ -655,8 +756,20 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
         partial_output = _extract_partial_json_fields(raw_output)
         if partial_output:
             parsed_output = partial_output
+            parse_mode = "partial"
         else:
-            return _parse_detection_result_from_text(raw_output)
+            result = _parse_detection_result_from_text(raw_output)
+            _log_vlm_timing(
+                "json_parse",
+                parse_started,
+                provider="cloudflare",
+                model=CLOUDFLARE_AI_MODEL,
+                mode="constrained",
+                parse_mode="prose",
+                status=result.get("status"),
+                raw_output_chars=len(raw_output),
+            )
+            return result
 
     status = str(parsed_output.get("status", "")).strip().lower()
     if status not in {"confident", "uncertain", "unknown"}:
@@ -699,12 +812,24 @@ def _parse_detection_result(raw_output: str) -> dict[str, object]:
         if not normalized_primary:
             status = "unknown"
 
-    return {
+    result = {
         "status": status,
         "primary_label": normalized_primary or "",
         "candidate_labels": normalized_candidates,
         "raw_output": raw_output,
     }
+    _log_vlm_timing(
+        "json_parse",
+        parse_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        mode="constrained",
+        parse_mode=parse_mode,
+        status=status,
+        candidate_count=len(normalized_candidates),
+        raw_output_chars=len(raw_output),
+    )
+    return result
 
 
 def _unknown_open_detection_result(
@@ -805,6 +930,7 @@ def _extract_partial_open_detection_fields(raw_text: str) -> dict[str, object]:
 
 
 def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
+    parse_started = perf_counter()
     parse_mode = "exact"
     try:
         parsed_output = _extract_json_object(raw_output)
@@ -812,7 +938,18 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         parsed_output = _extract_partial_open_detection_fields(raw_output)
         if not parsed_output:
             logger.warning("Open VLM JSON parse failed; returning unknown.")
-            return _unknown_open_detection_result(raw_output)
+            result = _unknown_open_detection_result(raw_output)
+            _log_vlm_timing(
+                "json_parse",
+                parse_started,
+                provider="cloudflare",
+                model=CLOUDFLARE_AI_MODEL,
+                mode="open",
+                parse_mode="failed",
+                status=result.get("status"),
+                raw_output_chars=len(raw_output),
+            )
+            return result
         parse_mode = "recovered"
 
     status = str(parsed_output.get("status", "")).strip().lower()
@@ -858,7 +995,18 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         )
         if not recovered_has_signal:
             logger.warning("Open VLM JSON recovery failed; returning unknown.")
-            return _unknown_open_detection_result(raw_output)
+            result = _unknown_open_detection_result(raw_output)
+            _log_vlm_timing(
+                "json_parse",
+                parse_started,
+                provider="cloudflare",
+                model=CLOUDFLARE_AI_MODEL,
+                mode="open",
+                parse_mode="recovery_failed",
+                status=result.get("status"),
+                raw_output_chars=len(raw_output),
+            )
+            return result
         logger.info(
             "Open VLM JSON parse recovered. status=%s raw_item_label=%s candidate_count=%s",
             status,
@@ -873,7 +1021,7 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
             len(parsed_candidates),
         )
 
-    return {
+    result = {
         "status": status,
         "raw_item_label": raw_item_label,
         "likely_material": likely_material,
@@ -882,17 +1030,48 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         "visual_evidence": visual_evidence,
         "raw_output": raw_output,
     }
+    _log_vlm_timing(
+        "json_parse",
+        parse_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        mode="open",
+        parse_mode=parse_mode,
+        status=status,
+        candidate_count=len(result["candidates"]),
+        raw_output_chars=len(raw_output),
+    )
+    return result
 
 
 def _maybe_verify_confident_result(
     image_base64: str,
     result: dict[str, object],
 ) -> dict[str, object]:
+    verification_started = perf_counter()
     if result.get("status") != "confident":
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=True,
+            reason="status_not_confident",
+            status=result.get("status"),
+        )
         return result
 
     primary_label = (result.get("primary_label") or "").strip()
     if not primary_label:
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=True,
+            reason="missing_primary_label",
+            status=result.get("status"),
+        )
         return result
 
     verification_prompt = build_multi_object_verification_prompt(primary_label)
@@ -900,6 +1079,7 @@ def _maybe_verify_confident_result(
         image_base64,
         verification_prompt,
         response_schema=VERIFICATION_RESPONSE_SCHEMA,
+        request_label="verification",
     )
 
     print(f"Verification raw: {verification_output!r}")
@@ -908,11 +1088,29 @@ def _maybe_verify_confident_result(
         verification_result = _parse_detection_result(verification_output)
     except (ValueError, TypeError) as exc:
         print(f"Verification parse failed: {exc}")
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=False,
+            result="parse_failed",
+            error_type=type(exc).__name__,
+        )
         return result
 
     print(f"Verification parsed: {verification_result!r}")
 
     if verification_result.get("status") == "uncertain":
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=False,
+            result="used_uncertain",
+            status=verification_result.get("status"),
+        )
         return verification_result
 
     verified_label = verification_result.get("primary_label", "")
@@ -924,19 +1122,48 @@ def _maybe_verify_confident_result(
         and verified_label
         and verified_label in original_candidate_set
     ):
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=False,
+            result="used_confident",
+            status=verification_result.get("status"),
+            verified_label=verified_label,
+        )
         return verification_result
 
     distinct_candidates = [
         candidate for candidate in original_candidates if candidate != primary_label
     ]
     if distinct_candidates:
-        return {
+        adjusted_result = {
             "status": "uncertain",
             "primary_label": primary_label,
             "candidate_labels": original_candidates[:3],
             "raw_output": str(result.get("raw_output", "")),
         }
+        _log_vlm_timing(
+            "verification",
+            verification_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            skipped=False,
+            result="forced_uncertain",
+            status=adjusted_result.get("status"),
+        )
+        return adjusted_result
 
+    _log_vlm_timing(
+        "verification",
+        verification_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        skipped=False,
+        result="kept_original",
+        status=result.get("status"),
+    )
     return result
 
 
@@ -952,12 +1179,27 @@ def _detect_object_constrained(
         if not CLOUDFLARE_API_TOKEN:
             raise RuntimeError("CLOUDFLARE_API_TOKEN is not set in backend/.env.")
 
+        encode_started = perf_counter()
+        original_size = image.size
+        original_mode = image.mode
         rgb_image = image.convert("RGB")
         buffer = io.BytesIO()
         rgb_image.save(buffer, format="JPEG", quality=75)
 
         img_bytes = buffer.getvalue()
         image_base64 = base64.b64encode(img_bytes).decode("utf-8")
+        _log_vlm_timing(
+            "image_preprocess_encode",
+            encode_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="constrained",
+            original_dimensions=f"{original_size[0]}x{original_size[1]}",
+            original_mode=original_mode,
+            outgoing_dimensions=f"{rgb_image.size[0]}x{rgb_image.size[1]}",
+            outgoing_image_bytes=len(img_bytes),
+            image_base64_chars=len(image_base64),
+        )
 
         raw_output = _call_vision_model(
             image_base64,
@@ -966,12 +1208,14 @@ def _detect_object_constrained(
                 barcode_context=barcode_context,
             ),
             response_schema=DETECTION_RESPONSE_SCHEMA,
+            request_label="detection",
         )
         print(f"Cloudflare Vision raw output: {raw_output!r}")
 
         result = _parse_detection_result(raw_output)
 
         if result.get("status") == "uncertain" and len(result.get("candidate_labels", [])) < 2:
+            fallback_started = perf_counter()
             fallback_prompt = build_uncertain_fallback_prompt(
                 result.get("primary_label", "")
             )
@@ -984,6 +1228,7 @@ def _detect_object_constrained(
                     barcode_context=barcode_context,
                 ),
                 response_schema=DETECTION_RESPONSE_SCHEMA,
+                request_label="uncertain_fallback",
             )
             print(f"Cloudflare Vision fallback raw output: {fallback_output!r}")
 
@@ -992,9 +1237,44 @@ def _detect_object_constrained(
             except (ValueError, TypeError) as exc:
                 print(f"Fallback parse failed: {exc}")
                 fallback_result = result
+                _log_vlm_timing(
+                    "retry_or_repair",
+                    fallback_started,
+                    provider="cloudflare",
+                    model=CLOUDFLARE_AI_MODEL,
+                    mode="constrained",
+                    retry="uncertain_fallback",
+                    result="parse_failed",
+                    error_type=type(exc).__name__,
+                )
+            else:
+                _log_vlm_timing(
+                    "retry_or_repair",
+                    fallback_started,
+                    provider="cloudflare",
+                    model=CLOUDFLARE_AI_MODEL,
+                    mode="constrained",
+                    retry="uncertain_fallback",
+                    result="parsed",
+                    status=fallback_result.get("status"),
+                    candidate_count=len(fallback_result.get("candidate_labels", [])),
+                )
 
             if fallback_result.get("primary_label") or fallback_result.get("candidate_labels"):
                 result = fallback_result
+        else:
+            skipped_retry_started = perf_counter()
+            _log_vlm_timing(
+                "retry_or_repair",
+                skipped_retry_started,
+                provider="cloudflare",
+                model=CLOUDFLARE_AI_MODEL,
+                mode="constrained",
+                skipped=True,
+                reason="no_uncertain_fallback",
+                status=result.get("status"),
+                candidate_count=len(result.get("candidate_labels", [])),
+            )
 
         result = _maybe_verify_confident_result(image_base64, result)
 
@@ -1028,11 +1308,27 @@ def _detect_object_open(
         if not CLOUDFLARE_API_TOKEN:
             raise RuntimeError("CLOUDFLARE_API_TOKEN is not set in backend/.env.")
 
+        encode_started = perf_counter()
+        original_size = image.size
+        original_mode = image.mode
         rgb_image = image.convert("RGB")
         buffer = io.BytesIO()
         rgb_image.save(buffer, format="JPEG", quality=75)
 
-        image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        img_bytes = buffer.getvalue()
+        image_base64 = base64.b64encode(img_bytes).decode("utf-8")
+        _log_vlm_timing(
+            "image_preprocess_encode",
+            encode_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="open",
+            original_dimensions=f"{original_size[0]}x{original_size[1]}",
+            original_mode=original_mode,
+            outgoing_dimensions=f"{rgb_image.size[0]}x{rgb_image.size[1]}",
+            outgoing_image_bytes=len(img_bytes),
+            image_base64_chars=len(image_base64),
+        )
 
         raw_output = _call_vision_model(
             image_base64,
@@ -1042,10 +1338,23 @@ def _detect_object_open(
             ),
             response_schema=OPEN_DETECTION_RESPONSE_SCHEMA,
             max_tokens=OPEN_VLM_MAX_TOKENS,
+            request_label="open_detection",
         )
         print(f"Cloudflare Vision open raw output: {raw_output!r}")
 
         result = _parse_open_detection_result(raw_output)
+        skipped_retry_started = perf_counter()
+        _log_vlm_timing(
+            "retry_or_repair",
+            skipped_retry_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="open",
+            skipped=True,
+            reason="no_open_retry",
+            status=result.get("status"),
+            candidate_count=len(result.get("candidates", [])),
+        )
     except Exception as exc:
         print(f"Cloudflare Workers AI error: {exc}")
         return _unknown_open_detection_result("", error=str(exc))
@@ -1081,8 +1390,9 @@ def detect_object(
 def build_prediction_result(
     detection_result: dict[str, object],
 ) -> dict[str, object]:
+    normalization_started = perf_counter()
     if "raw_item_label" in detection_result:
-        return {
+        result = {
             "top_predictions": [],
             "scores": [0.0 for _ in MATERIAL_LABELS],
             "top1_score": 0.0,
@@ -1091,6 +1401,16 @@ def build_prediction_result(
             "detected_label": "",
             "recognition_details": detection_result,
         }
+        _log_vlm_timing(
+            "result_normalization",
+            normalization_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="open",
+            status=detection_result.get("status"),
+            candidate_count=len(detection_result.get("candidates", [])),
+        )
+        return result
 
     detection_status = str(detection_result.get("status", "unknown"))
     primary_label = str(detection_result.get("primary_label", "")).strip()
@@ -1113,7 +1433,7 @@ def build_prediction_result(
         ]
         top1_score = top_predictions[0][1]
         top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
-        return {
+        result = {
             "top_predictions": top_predictions,
             "scores": scores,
             "top1_score": top1_score,
@@ -1122,6 +1442,16 @@ def build_prediction_result(
             "detected_label": primary_label,
             "category": LABEL_TO_CATEGORY[primary_label],
         }
+        _log_vlm_timing(
+            "result_normalization",
+            normalization_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="constrained",
+            status=detection_status,
+            candidate_count=len(top_predictions),
+        )
+        return result
 
     if detection_status == "uncertain" and len(candidate_labels) >= 2:
         top_predictions = [
@@ -1134,7 +1464,7 @@ def build_prediction_result(
         ]
         top1_score = top_predictions[0][1]
         top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
-        return {
+        result = {
             "top_predictions": top_predictions,
             "scores": scores,
             "top1_score": top1_score,
@@ -1142,13 +1472,23 @@ def build_prediction_result(
             "margin": top1_score - top2_score,
             "detected_label": primary_label or top_predictions[0][0],
         }
+        _log_vlm_timing(
+            "result_normalization",
+            normalization_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="constrained",
+            status=detection_status,
+            candidate_count=len(top_predictions),
+        )
+        return result
 
     detected_label = primary_label or ""
     if not detected_label and candidate_labels:
         detected_label = str(candidate_labels[0]).strip()
 
     if not detected_label:
-        return {
+        result = {
             "top_predictions": [],
             "scores": [0.0 for _ in MATERIAL_LABELS],
             "top1_score": 0.0,
@@ -1156,10 +1496,20 @@ def build_prediction_result(
             "margin": 0.0,
             "detected_label": "",
         }
+        _log_vlm_timing(
+            "result_normalization",
+            normalization_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="constrained",
+            status=detection_status,
+            candidate_count=0,
+        )
+        return result
 
     canonical_label = resolve_material_label(detected_label)
     if canonical_label is None:
-        return {
+        result = {
             "top_predictions": [],
             "scores": [0.0 for _ in MATERIAL_LABELS],
             "top1_score": 0.0,
@@ -1167,6 +1517,17 @@ def build_prediction_result(
             "margin": 0.0,
             "detected_label": detected_label,
         }
+        _log_vlm_timing(
+            "result_normalization",
+            normalization_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="constrained",
+            status=detection_status,
+            candidate_count=0,
+            resolved=False,
+        )
+        return result
 
     top_predictions = _rank_candidate_predictions(
         [canonical_label, *candidate_labels],
@@ -1179,7 +1540,7 @@ def build_prediction_result(
     ]
     top1_score = top_predictions[0][1]
     top2_score = top_predictions[1][1] if len(top_predictions) > 1 else 0.0
-    return {
+    result = {
         "top_predictions": top_predictions,
         "scores": scores,
         "top1_score": top1_score,
@@ -1188,6 +1549,17 @@ def build_prediction_result(
         "detected_label": detected_label,
         "category": LABEL_TO_CATEGORY[canonical_label],
     }
+    _log_vlm_timing(
+        "result_normalization",
+        normalization_started,
+        provider="cloudflare",
+        model=CLOUDFLARE_AI_MODEL,
+        mode="constrained",
+        status=detection_status,
+        candidate_count=len(top_predictions),
+        resolved=True,
+    )
+    return result
 
 
 def get_top_predictions(

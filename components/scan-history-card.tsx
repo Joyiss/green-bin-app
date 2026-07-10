@@ -13,6 +13,7 @@ export type ScanHistoryCardItem = {
   disposalLabel: string;
   scannedAtLabel: string;
   imageUri?: string | null;
+  disposalStatus?: 'needs_action' | 'disposed';
   thumbnailVariant?: ScanHistoryCardThumbnailVariant;
 };
 
@@ -69,9 +70,41 @@ function ScanThumbnail({ variant }: { variant: ScanHistoryCardThumbnailVariant }
   );
 }
 
-export function ScanHistoryCard({ item }: { item: ScanHistoryCardItem }) {
+function getDisposalStatusDisplay(status: ScanHistoryCardItem['disposalStatus']) {
+  if (status === 'disposed') {
+    return {
+      icon: 'checkmark-circle-outline' as const,
+      label: 'Disposed',
+      style: styles.disposedStatusChip,
+      textStyle: styles.disposedStatusChipText,
+      color: '#2E6B47',
+    };
+  }
+
+  return {
+    icon: 'time-outline' as const,
+    label: 'Needs action',
+    style: styles.needsActionStatusChip,
+    textStyle: styles.needsActionStatusChipText,
+    color: '#7C6A52',
+  };
+}
+
+export function ScanHistoryCard({
+  item,
+  onPress,
+}: {
+  item: ScanHistoryCardItem;
+  onPress?: () => void;
+}) {
+  const statusDisplay = getDisposalStatusDisplay(item.disposalStatus);
+
   return (
-    <Pressable disabled style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+    <Pressable
+      accessibilityRole="button"
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && onPress && styles.cardPressed]}>
       <View style={styles.thumbnailWrap}>
         {item.imageUri ? (
           <Image source={{ uri: item.imageUri }} style={styles.thumbnailImage} />
@@ -96,6 +129,13 @@ export function ScanHistoryCard({ item }: { item: ScanHistoryCardItem }) {
       <View style={styles.chevronButton}>
         <Ionicons color="#181818" name="chevron-forward" size={22} />
       </View>
+
+      <View style={[styles.statusChip, statusDisplay.style]}>
+        <Ionicons color={statusDisplay.color} name={statusDisplay.icon} size={13} />
+        <Text numberOfLines={1} style={[styles.statusChipText, statusDisplay.textStyle]}>
+          {statusDisplay.label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -112,6 +152,7 @@ const styles = StyleSheet.create({
     minHeight: 102,
     paddingHorizontal: 14,
     paddingVertical: 14,
+    position: 'relative',
     shadowColor: '#111827',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.06,
@@ -167,6 +208,35 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.4,
   },
+  statusChip: {
+    alignItems: 'center',
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 4,
+    justifyContent: 'center',
+    maxWidth: 118,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    position: 'absolute',
+    right: 14,
+    top: 12,
+  },
+  statusChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  needsActionStatusChip: {
+    backgroundColor: '#F5EFE5',
+  },
+  needsActionStatusChipText: {
+    color: '#7C6A52',
+  },
+  disposedStatusChip: {
+    backgroundColor: '#E9F4EC',
+  },
+  disposedStatusChipText: {
+    color: '#2E6B47',
+  },
   timeText: {
     color: '#908F8D',
     fontSize: 12,
@@ -180,6 +250,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     height: 42,
     justifyContent: 'center',
+    marginTop: 28,
     width: 42,
   },
   bottleWrap: {

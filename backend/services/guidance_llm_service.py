@@ -6,11 +6,17 @@ import math
 import os
 import re
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
+
+try:
+    from . import request_context
+except ImportError:
+    from services import request_context
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
@@ -34,6 +40,23 @@ _SOURCE_NAMES = (
     "according to",
     "federal guidelines",
 )
+
+
+def _duration_ms(started: float) -> float:
+    return (perf_counter() - started) * 1000
+
+
+def _log_guidance_llm_timing(stage: str, started: float, **fields: object) -> None:
+    request_id = request_context.get_predict_request_id()
+    if request_id is not None and "request_id" not in fields:
+        fields = {"request_id": request_id, **fields}
+    field_text = " ".join(f"{key}={value}" for key, value in fields.items())
+    logger.info(
+        "guidance_llm_timing stage=%s duration_ms=%.1f %s",
+        stage,
+        _duration_ms(started),
+        field_text,
+    )
 _ABSOLUTE_CLAIMS = (
     "accepted everywhere",
     "recyclable everywhere",
@@ -189,6 +212,7 @@ def _sanitize_response_preview(value: Any, *, max_length: int = 500) -> str | No
 
 def _groq_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
     endpoint = "https://api.groq.com/openai/v1/chat/completions"
+    request_started = perf_counter()
     try:
         response = requests.post(
             endpoint,
@@ -204,8 +228,37 @@ def _groq_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
             },
             timeout=settings["timeout_seconds"],
         )
+        _log_guidance_llm_timing(
+            "groq_http_request",
+            request_started,
+            provider=settings.get("provider"),
+            model=settings.get("model"),
+            mode=mode,
+            timeout_seconds=settings.get("timeout_seconds"),
+            prompt_chars=len(prompt),
+            proxy_env_present=any(
+                os.getenv(name)
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+            ),
+            status_code=getattr(response, "status_code", "unknown"),
+        )
         response.raise_for_status()
     except requests.RequestException as exc:
+        _log_guidance_llm_timing(
+            "groq_http_request",
+            request_started,
+            provider=settings.get("provider"),
+            model=settings.get("model"),
+            mode=mode,
+            timeout_seconds=settings.get("timeout_seconds"),
+            prompt_chars=len(prompt),
+            proxy_env_present=any(
+                os.getenv(name)
+                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+            ),
+            result="exception",
+            error_type=type(exc).__name__,
+        )
         status = getattr(getattr(exc, "response", None), "status_code", None)
         body = _sanitize_response_preview(getattr(getattr(exc, "response", None), "text", None))
         logger.info(
@@ -214,7 +267,29 @@ def _groq_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
             settings.get("model"), _safe_endpoint_path(endpoint),
         )
         raise
-    return _extract_groq_text(response.json())
+    extraction_started = perf_counter()
+    try:
+        raw_text = _extract_groq_text(response.json())
+    except Exception as exc:
+        _log_guidance_llm_timing(
+            "groq_response_extract",
+            extraction_started,
+            provider=settings.get("provider"),
+            model=settings.get("model"),
+            mode=mode,
+            result="exception",
+            error_type=type(exc).__name__,
+        )
+        raise
+    _log_guidance_llm_timing(
+        "groq_response_extract",
+        extraction_started,
+        provider=settings.get("provider"),
+        model=settings.get("model"),
+        mode=mode,
+        raw_output_chars=len(raw_text),
+    )
+    return raw_text
 
 
 def _strip_chunk_for_llm(chunk: dict[str, Any]) -> dict[str, Any]:
@@ -778,6 +853,18 @@ def _generate_with_retry(
     validation_errors: list[str] = []
     current_prompt = prompt
     for attempt in range(2):
+        attempt_started = perf_counter()
+        logger.info(
+            "guidance_llm_attempt request_id=%s mode=%s item=%s attempt=%s provider=%s model=%s timeout_seconds=%s repair_attempt=%s",
+            request_context.get_predict_request_id(),
+            mode,
+            item,
+            attempt + 1,
+            settings.get("provider"),
+            settings.get("model"),
+            settings.get("timeout_seconds"),
+            attempt > 0,
+        )
         try:
             raw_response = _groq_request(current_prompt, settings=settings, mode=mode)
             if attempt == 0:
@@ -790,10 +877,25 @@ def _generate_with_retry(
                 mode=mode, item=item, original_output=original_output,
                 reasons=[reason], repair_attempted=attempt > 0,
             )
+            _log_guidance_llm_timing(
+                "attempt_total",
+                attempt_started,
+                mode=mode,
+                attempt=attempt + 1,
+                result="request_exception",
+                reason=reason,
+            )
             return _llm_result(guidance=fallback, failure_reason=None)
         except (ValueError, json.JSONDecodeError):
             validation_errors = ["invalid_json"]
             if attempt == 0:
+                _log_guidance_llm_timing(
+                    "attempt_total",
+                    attempt_started,
+                    mode=mode,
+                    attempt=attempt + 1,
+                    result="invalid_json_repair_scheduled",
+                )
                 current_prompt = _build_repair_prompt(
                     original_prompt=prompt,
                     validation_errors=validation_errors,
@@ -805,6 +907,13 @@ def _generate_with_retry(
                 mode=mode, item=item, original_output=original_output,
                 reasons=validation_errors, repair_attempted=True,
             )
+            _log_guidance_llm_timing(
+                "attempt_total",
+                attempt_started,
+                mode=mode,
+                attempt=attempt + 1,
+                result="invalid_json_fallback",
+            )
             return _llm_result(guidance=fallback, failure_reason=None)
 
         validated, validation_errors = validate_guidance_basic(parsed, context)
@@ -814,6 +923,14 @@ def _generate_with_retry(
                 mode, item, validated["disposal_action"],
                 "repaired_llm" if attempt else "original_llm",
             )
+            _log_guidance_llm_timing(
+                "attempt_total",
+                attempt_started,
+                mode=mode,
+                attempt=attempt + 1,
+                result="validated",
+                repair_attempt=attempt > 0,
+            )
             return _llm_result(guidance=accepted_builder(validated, attempt > 0), failure_reason=None)
 
         logger.info(
@@ -821,6 +938,14 @@ def _generate_with_retry(
             mode, item, _sanitize_response_preview(original_output), validation_errors, attempt > 0,
         )
         if attempt == 0:
+            _log_guidance_llm_timing(
+                "attempt_total",
+                attempt_started,
+                mode=mode,
+                attempt=attempt + 1,
+                result="validation_repair_scheduled",
+                validation_errors=",".join(validation_errors),
+            )
             current_prompt = _build_repair_prompt(
                 original_prompt=prompt, validation_errors=validation_errors,
                 previous_response=parsed,
@@ -830,6 +955,14 @@ def _generate_with_retry(
         _log_deterministic_fallback(
             mode=mode, item=item, original_output=original_output,
             reasons=validation_errors, repair_attempted=True,
+        )
+        _log_guidance_llm_timing(
+            "attempt_total",
+            attempt_started,
+            mode=mode,
+            attempt=attempt + 1,
+            result="validation_fallback",
+            validation_errors=",".join(validation_errors),
         )
         return _llm_result(guidance=fallback, failure_reason=None)
     return _llm_result(guidance=None, failure_reason="validation_failed")

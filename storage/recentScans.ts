@@ -3,7 +3,30 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const RECENT_SCANS_STORAGE_KEY = 'green-bin:recent-scans';
 export const MAX_RECENT_SCANS = 50;
 
-type RecentScanStatus = 'confident' | 'uncertain' | 'unknown';
+export type RecentScanRecognitionStatus = 'confident' | 'uncertain' | 'unknown';
+export type RecentScanDisposalStatus = 'needs_action' | 'disposed';
+
+export type RecentScanGuidanceSnapshot = {
+  itemName: string;
+  category: string | null;
+  disposalAction: string | null;
+  materialCode: string | null;
+  impactLevel: string | null;
+  summary: string | null;
+  steps: string[];
+  warnings: string[];
+  guidanceSource: string | null;
+  guidanceMetadata: Record<string, unknown> | null;
+  recognitionSource: string | null;
+  imageUri: string | null;
+  createdAt: string;
+  normalizedItem: string | null;
+  disposalCategory: string | null;
+  broadCategory: string | null;
+  materialCategory: string | null;
+  requiresLocationCheck: boolean;
+  supportsDonationReuse: boolean;
+};
 
 export type RecentScan = {
   id: string;
@@ -16,12 +39,15 @@ export type RecentScan = {
   disposalAction: string | null;
   materialCode: string | null;
   impactLevel: string | null;
-  status: RecentScanStatus;
+  recognitionStatus: RecentScanRecognitionStatus;
+  disposalStatus: RecentScanDisposalStatus;
+  createdAt: string;
   scannedAt: string;
   updatedAt: string;
   materialTag?: string | null;
   summary?: string | null;
   steps: string[];
+  guidanceSnapshot: RecentScanGuidanceSnapshot;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -36,12 +62,32 @@ function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' ? value : null;
 }
 
-function normalizeRecentScanStatus(value: unknown): RecentScanStatus {
+function normalizeRecentScanRecognitionStatus(value: unknown): RecentScanRecognitionStatus {
   if (value === 'confident' || value === 'uncertain' || value === 'unknown') {
     return value;
   }
 
   return 'confident';
+}
+
+function normalizeRecentScanDisposalStatus(value: unknown): RecentScanDisposalStatus {
+  if (value === 'disposed') {
+    return 'disposed';
+  }
+
+  return 'needs_action';
+}
+
+function normalizeOptionalRecord(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return null;
+  }
+
+  return value;
+}
+
+function normalizeOptionalBoolean(value: unknown) {
+  return value === true;
 }
 
 function normalizeRecentScan(value: unknown): RecentScan | null {
@@ -61,24 +107,62 @@ function normalizeRecentScan(value: unknown): RecentScan | null {
 
   const disposalLabel = typeof value.disposalLabel === 'string' ? value.disposalLabel : 'TRASH';
   const wasCorrected = typeof value.wasCorrected === 'boolean' ? value.wasCorrected : false;
+  const createdAt = typeof value.createdAt === 'string' ? value.createdAt : scannedAt;
+  const updatedAt = typeof value.updatedAt === 'string' ? value.updatedAt : scannedAt;
+  const imageUri = normalizeOptionalString(value.imageUri);
+  const category = normalizeOptionalString(value.category);
+  const disposalAction = normalizeOptionalString(value.disposalAction);
+  const materialCode = normalizeOptionalString(value.materialCode);
+  const impactLevel = normalizeOptionalString(value.impactLevel);
+  const summary = normalizeOptionalString(value.summary);
+  const steps = isStringArray(value.steps) ? value.steps : [];
+  const guidanceSnapshotValue = normalizeOptionalRecord(value.guidanceSnapshot);
+  const guidanceSnapshotSteps = isStringArray(guidanceSnapshotValue?.steps)
+    ? guidanceSnapshotValue.steps
+    : steps;
 
   return {
     id,
     predictedItem: normalizeOptionalString(value.predictedItem),
     finalItem,
     wasCorrected,
-    imageUri: normalizeOptionalString(value.imageUri),
-    category: normalizeOptionalString(value.category),
+    imageUri,
+    category,
     disposalLabel,
-    disposalAction: normalizeOptionalString(value.disposalAction),
-    materialCode: normalizeOptionalString(value.materialCode),
-    impactLevel: normalizeOptionalString(value.impactLevel),
-    status: normalizeRecentScanStatus(value.status),
+    disposalAction,
+    materialCode,
+    impactLevel,
+    recognitionStatus: normalizeRecentScanRecognitionStatus(value.recognitionStatus ?? value.status),
+    disposalStatus: normalizeRecentScanDisposalStatus(value.disposalStatus),
+    createdAt,
     scannedAt,
-    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : scannedAt,
+    updatedAt,
     materialTag: normalizeOptionalString(value.materialTag),
-    summary: normalizeOptionalString(value.summary),
-    steps: isStringArray(value.steps) ? value.steps : [],
+    summary,
+    steps,
+    guidanceSnapshot: {
+      itemName: typeof guidanceSnapshotValue?.itemName === 'string' ? guidanceSnapshotValue.itemName : finalItem,
+      category: normalizeOptionalString(guidanceSnapshotValue?.category) ?? category,
+      disposalAction: normalizeOptionalString(guidanceSnapshotValue?.disposalAction) ?? disposalAction,
+      materialCode: normalizeOptionalString(guidanceSnapshotValue?.materialCode) ?? materialCode,
+      impactLevel: normalizeOptionalString(guidanceSnapshotValue?.impactLevel) ?? impactLevel,
+      summary: normalizeOptionalString(guidanceSnapshotValue?.summary) ?? summary,
+      steps: guidanceSnapshotSteps,
+      warnings: isStringArray(guidanceSnapshotValue?.warnings) ? guidanceSnapshotValue.warnings : [],
+      guidanceSource: normalizeOptionalString(guidanceSnapshotValue?.guidanceSource),
+      guidanceMetadata: normalizeOptionalRecord(guidanceSnapshotValue?.guidanceMetadata),
+      recognitionSource: normalizeOptionalString(guidanceSnapshotValue?.recognitionSource),
+      imageUri: normalizeOptionalString(guidanceSnapshotValue?.imageUri) ?? imageUri,
+      createdAt: typeof guidanceSnapshotValue?.createdAt === 'string'
+        ? guidanceSnapshotValue.createdAt
+        : createdAt,
+      normalizedItem: normalizeOptionalString(guidanceSnapshotValue?.normalizedItem),
+      disposalCategory: normalizeOptionalString(guidanceSnapshotValue?.disposalCategory),
+      broadCategory: normalizeOptionalString(guidanceSnapshotValue?.broadCategory),
+      materialCategory: normalizeOptionalString(guidanceSnapshotValue?.materialCategory),
+      requiresLocationCheck: normalizeOptionalBoolean(guidanceSnapshotValue?.requiresLocationCheck),
+      supportsDonationReuse: normalizeOptionalBoolean(guidanceSnapshotValue?.supportsDonationReuse),
+    },
   };
 }
 

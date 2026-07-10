@@ -1,5 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -123,6 +124,7 @@ function buildSections(scans: RecentScan[]) {
       disposalLabel: scan.disposalLabel,
       scannedAtLabel: formatScanTime(scan.scannedAt),
       imageUri: scan.imageUri,
+      disposalStatus: scan.disposalStatus,
       thumbnailVariant: getFallbackThumbnailVariant(scan.finalItem),
     });
   });
@@ -132,6 +134,7 @@ function buildSections(scans: RecentScan[]) {
 
 export default function RecentScansScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [hasLoadedScans, setHasLoadedScans] = useState(false);
   const openSwipeableRef = useRef<Swipeable | null>(null);
@@ -312,7 +315,16 @@ export default function RecentScansScreen() {
                   }}
                   renderRightActions={() => renderRightActions(item.id)}
                   rightThreshold={56}>
-                  <ScanHistoryCard item={item} />
+                  <ScanHistoryCard
+                    item={item}
+                    onPress={() => {
+                      closeAllSwipeables();
+                      router.push({
+                        pathname: '/recent-scan/[id]',
+                        params: { id: item.id },
+                      });
+                    }}
+                  />
                 </Swipeable>
               ))}
             </View>

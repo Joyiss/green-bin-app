@@ -24,6 +24,13 @@ export default function RootLayout() {
               statusBarTranslucent: true,
             }}
           />
+          <Stack.Screen
+            name="recent-scan/[id]"
+            options={{
+              headerShown: false,
+              presentation: 'modal',
+            }}
+          />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

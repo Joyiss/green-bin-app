@@ -48,12 +48,16 @@ From the **repository root** (`green-bin-app/`):
    GUIDANCE_LLM_PROVIDER=groq
    GUIDANCE_LLM_MODEL=llama-3.1-8b-instant
    GROQ_API_KEY=your-groq-api-key
+   DAILY_SCAN_LIMIT=40
+   REQUIRE_SCAN_CLIENT_ID=false
    ENABLE_CLIP_WARMUP=true
    ENABLE_NEAREST_PHASH_LOOKUP=false
    ```
 
    `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
    `GUIDANCE_LLM_MODEL` defaults to `llama-3.1-8b-instant` if you omit it.
+   `DAILY_SCAN_LIMIT` defaults to `40` if omitted or invalid.
+   `REQUIRE_SCAN_CLIENT_ID` defaults to `false` for local development. Set it to `true` for production or closed testing so `/predict` rejects requests missing `X-GreenBin-Client-Id` before recognition work.
    `ENABLE_CLIP_WARMUP` defaults to `true`; set it to `false` to disable background CLIP initialization.
    `ENABLE_NEAREST_PHASH_LOOKUP` defaults to `false`; enable it only when approximate pHash matching is worth the full-cache scan cost.
 

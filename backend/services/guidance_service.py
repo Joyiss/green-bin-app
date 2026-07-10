@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import logging
 import re
+from time import perf_counter
 from typing import Any
 
 try:
     from ..materials import resolve_material_label
     from ..rules import get_rules
-    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service
+    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
     from .guidance_key_service import normalize_guidance_phrase
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
-    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service
+    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
     from services.guidance_key_service import normalize_guidance_phrase
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,19 @@ _LLM_SKIP_REASONS = {
     "missing_GROQ_API_KEY",
     "no_chunks",
 }
+
+
+def _log_guidance_timing(stage: str, started: float, **fields: Any) -> None:
+    request_id = request_context.get_predict_request_id()
+    if request_id is not None and "request_id" not in fields:
+        fields = {"request_id": request_id, **fields}
+    field_text = " ".join(f"{key}={value}" for key, value in fields.items())
+    logger.info(
+        "guidance_timing stage=%s duration_ms=%.1f %s",
+        stage,
+        (perf_counter() - started) * 1000,
+        field_text,
+    )
 _COMMON_LOW_RISK_WARNING = (
     "Do not place this item in curbside recycling unless your local program accepts it."
 )
@@ -1530,22 +1544,43 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 
     retrieval_inputs = _build_retrieval_inputs(classification)
     _log_resolution_started(classification, retrieval_inputs)
+    retrieval_started = perf_counter()
     retrieval_results = _lookup_json_guidance(
         classification,
         retrieval_inputs=retrieval_inputs,
+    )
+    _log_guidance_timing(
+        "retrieval",
+        retrieval_started,
+        result_count=len(retrieval_results),
+        item=retrieval_inputs.get("item_label"),
+        category=retrieval_inputs.get("category"),
     )
     _log_retrieval_complete(retrieval_results)
     llm_context = _build_llm_context(classification)
 
     if retrieval_results:
+        cache_context_started = perf_counter()
         cache_context = guidance_cache_service.build_source_grounded_cache_context(
             classification=classification,
             retrieval_inputs=retrieval_inputs,
             retrieval_results=retrieval_results,
             llm_context=llm_context,
         )
+        _log_guidance_timing(
+            "cache_context",
+            cache_context_started,
+            retrieved_chunk_count=len(retrieval_results),
+            cache_key_present=bool(cache_context.get("cache_key")) if cache_context else False,
+        )
+        cache_lookup_started = perf_counter()
         cached_guidance = guidance_cache_service.get_cached_source_grounded_guidance(
             cache_context
+        )
+        _log_guidance_timing(
+            "cache_lookup",
+            cache_lookup_started,
+            hit=isinstance(cached_guidance, dict),
         )
         if isinstance(cached_guidance, dict):
             _log_guidance_selected(
@@ -1562,9 +1597,16 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             )
             return cached_guidance
 
+        llm_started = perf_counter()
         llm_result = guidance_llm_service.try_generate_source_grounded_guidance(
             **llm_context,
             retrieval_results=retrieval_results,
+        )
+        _log_guidance_timing(
+            "llm_source_grounded",
+            llm_started,
+            guidance_returned=isinstance(llm_result.get("guidance"), dict),
+            failure_reason=llm_result.get("failure_reason"),
         )
         llm_guidance = llm_result.get("guidance")
         if isinstance(llm_guidance, dict):
@@ -1579,6 +1621,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
                     llm_guidance["guidance_metadata"].get("requires_location_check")
                 ),
             )
+            cache_write_started = perf_counter()
             guidance_cache_service.write_source_grounded_guidance_if_cacheable(
                 classification=classification,
                 guidance=llm_guidance,
@@ -1587,6 +1630,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
                 retrieval_results=retrieval_results,
                 llm_context=llm_context,
             )
+            _log_guidance_timing("cache_write", cache_write_started, attempted=True)
             return llm_guidance
 
         llm_fallback_reason = _first_non_empty_string(llm_result.get("failure_reason"))
@@ -1620,6 +1664,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
                 guidance.get("guidance_metadata", {}).get("requires_location_check")
             ),
         )
+        cache_write_started = perf_counter()
         guidance_cache_service.write_source_grounded_guidance_if_cacheable(
             classification=classification,
             guidance=guidance,
@@ -1628,6 +1673,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             retrieval_results=retrieval_results,
             llm_context=llm_context,
         )
+        _log_guidance_timing("cache_write", cache_write_started, attempted=True)
         return guidance
 
     logger.info("LLM guidance skipped. reason=%s", "no_retrieved_chunks")
@@ -1635,6 +1681,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
     low_risk_evaluation = _evaluate_low_risk_open_item(classification)
     low_risk_eligible = bool(low_risk_evaluation["eligible"])
     if low_risk_eligible:
+        llm_started = perf_counter()
         llm_result = guidance_llm_service.try_generate_general_safe_guidance(
             recognized_item=llm_context["recognized_item"],
             normalized_item_label=llm_context["normalized_item_label"],
@@ -1646,6 +1693,13 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             candidates=llm_context["candidates"],
             low_risk_reason=_first_non_empty_string(low_risk_evaluation.get("reason")),
             matched_terms=list(low_risk_evaluation.get("matched_terms") or []),
+        )
+        _log_guidance_timing(
+            "llm_general_safe",
+            llm_started,
+            guidance_returned=isinstance(llm_result.get("guidance"), dict),
+            failure_reason=llm_result.get("failure_reason"),
+            low_risk_reason=low_risk_evaluation.get("reason"),
         )
         llm_guidance = llm_result.get("guidance")
         if isinstance(llm_guidance, dict):

@@ -54,6 +54,10 @@ import {
   updateRecentScan,
   type RecentScan,
 } from '../../storage/recentScans';
+import {
+  getInstallationId,
+  saveScanUsageMetadata,
+} from '../../storage/scanUsage';
 
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
@@ -134,9 +138,17 @@ type PredictionResponse = {
   steps: string[];
   guidance_source?: string;
   guidanceSource?: string;
+  recognition_source?: string;
+  recognitionSource?: string;
   warnings?: string[];
   guidance_metadata?: Record<string, unknown>;
   guidanceMetadata?: Record<string, unknown>;
+  daily_limit?: number;
+  dailyLimit?: number;
+  scans_remaining?: number;
+  scansRemaining?: number;
+  reset_at?: string;
+  resetAt?: string;
   recognition_details?: {
     candidates?: RawPredictionCandidate[] | null;
     raw_item_label?: unknown;
@@ -476,6 +488,21 @@ function isPredictionRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+async function readJsonResponse(response: Response) {
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isDailyScanLimitResponse(value: unknown) {
+  return (
+    isPredictionRecord(value) &&
+    value.error === 'daily_scan_limit_reached'
+  );
+}
+
 function getCandidateLabel(value: unknown) {
   if (typeof value === 'string') {
     return value.trim();
@@ -612,6 +639,64 @@ function CameraPermissionNotice() {
       <Pressable onPress={() => Linking.openSettings()} style={styles.permissionButton}>
         <Text style={styles.permissionButtonText}>Open Settings</Text>
       </Pressable>
+    </View>
+  );
+}
+
+function DailyScanLimitWarning({
+  bottomInset,
+  maxHeight,
+  onDismiss,
+}: {
+  bottomInset: number;
+  maxHeight: number;
+  onDismiss: () => void;
+}) {
+  return (
+    <View
+      accessibilityViewIsModal
+      pointerEvents="auto"
+      style={styles.rateLimitOverlay}
+    >
+      <Pressable
+        accessibilityLabel="Dismiss daily scan limit warning"
+        onPress={onDismiss}
+        style={StyleSheet.absoluteFill}
+      />
+
+      <View
+        accessibilityRole="alert"
+        style={[
+          styles.rateLimitCard,
+          {
+            marginBottom: bottomInset + BOTTOM_NAV_BAR_TOTAL_HEIGHT + 20,
+            maxHeight,
+          },
+        ]}
+      >
+        <View style={styles.rateLimitIcon}>
+          <Ionicons color="#15311A" name="time-outline" size={24} />
+        </View>
+
+        <View style={styles.rateLimitTextBlock}>
+          <Text style={styles.rateLimitEyebrow}>Daily Limit</Text>
+          <Text style={styles.rateLimitTitle}>You’re out of scans for today</Text>
+          <Text style={styles.rateLimitMessage}>
+            You’ve used all 40 scans for today. Your scans reset tomorrow.
+          </Text>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={onDismiss}
+          style={({ pressed }) => [
+            styles.rateLimitButton,
+            pressed && styles.buttonPressed,
+          ]}
+        >
+          <Text style={styles.rateLimitButtonText}>Got it</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -945,6 +1030,7 @@ export default function ScannerScreen() {
   const cameraReadyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraLoadingOverlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const predictRequestRef = useRef(0);
+  const predictInFlightCountRef = useRef(0);
   const activeScanSessionRef = useRef<ActiveScanSession | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [requestState, setRequestState] = useState<RequestState>('idle');
@@ -964,6 +1050,7 @@ export default function ScannerScreen() {
   const [selectedManualLabel, setSelectedManualLabel] = useState<string | null>(null);
   const [manualKeyboardOffset, setManualKeyboardOffset] = useState(0);
   const [sheetHeight, setSheetHeight] = useState(0);
+  const [isRateLimitWarningVisible, setIsRateLimitWarningVisible] = useState(false);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
   const bottomNavOffset = Math.max(insets.bottom, BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET);
   const resultSheetBottomOffset =
@@ -1164,6 +1251,7 @@ export default function ScannerScreen() {
     restoreCameraPreview();
     setRequestState('idle');
     setSheetState('idle');
+    setIsRateLimitWarningVisible(false);
     resetManualEntry();
 
     if (visibleSheetState === 'idle') {
@@ -1189,6 +1277,7 @@ export default function ScannerScreen() {
       requestSource === 'selection' ||
       (predictedItem !== null &&
         normalizeLabelKey(predictedItem) !== normalizeLabelKey(finalItem));
+    const resultSnapshot = toSheetData(prediction);
     const nextRecentScan: RecentScan = {
       id: activeSession.id,
       predictedItem,
@@ -1200,12 +1289,35 @@ export default function ScannerScreen() {
       disposalAction: prediction.disposal_action,
       materialCode: prediction.material_code,
       impactLevel: prediction.impact_level,
-      status: activeSession.originalStatus,
+      recognitionStatus: activeSession.originalStatus,
+      disposalStatus: 'needs_action',
+      createdAt: activeSession.scannedAt,
       scannedAt: activeSession.scannedAt,
       updatedAt: new Date().toISOString(),
       materialTag: getCompactPillLabel(prediction),
-      summary: getPredictionSummary(prediction),
+      summary: resultSnapshot.summary,
       steps: prediction.steps,
+      guidanceSnapshot: {
+        itemName: finalItem,
+        category: prediction.category || null,
+        disposalAction: prediction.disposal_action,
+        materialCode: prediction.material_code,
+        impactLevel: prediction.impact_level,
+        summary: resultSnapshot.summary,
+        steps: resultSnapshot.steps,
+        warnings: resultSnapshot.warnings,
+        guidanceSource: prediction.guidanceSource ?? prediction.guidance_source ?? null,
+        guidanceMetadata: resultSnapshot.guidanceMetadata,
+        recognitionSource: prediction.recognitionSource ?? prediction.recognition_source ?? null,
+        imageUri: activeSession.imageUri,
+        createdAt: activeSession.scannedAt,
+        normalizedItem: resultSnapshot.normalizedItem,
+        disposalCategory: resultSnapshot.disposalCategory,
+        broadCategory: resultSnapshot.broadCategory,
+        materialCategory: resultSnapshot.materialCategory,
+        requiresLocationCheck: resultSnapshot.requiresLocationCheck,
+        supportsDonationReuse: resultSnapshot.supportsDonationReuse,
+      },
     };
 
     if (activeSession.hasSavedRecord) {
@@ -1299,6 +1411,9 @@ export default function ScannerScreen() {
     const fallbackCandidates = requestSource === 'selection' ? candidates : [];
     const requestId = predictRequestRef.current + 1;
     predictRequestRef.current = requestId;
+    const backendRequestId = `mobile-${Date.now()}-${requestId}`;
+    const requestStartedAt = Date.now();
+    setIsRateLimitWarningVisible(false);
 
     if (imageUri) {
       clearLastNearbyScanContext();
@@ -1310,6 +1425,19 @@ export default function ScannerScreen() {
     }
 
     setRequestState('loading');
+    predictInFlightCountRef.current += 1;
+    console.log(
+      '[predict] start',
+      JSON.stringify({
+        requestId: backendRequestId,
+        localRequestId: requestId,
+        source: requestSource,
+        hasImage: !!imageUri,
+        selectedItem: !!selectedItem,
+        inFlight: predictInFlightCountRef.current,
+        overlapping: predictInFlightCountRef.current > 1,
+      })
+    );
 
     const formData = new FormData();
     if (selectedItem) {
@@ -1324,25 +1452,69 @@ export default function ScannerScreen() {
     }
 
     try {
+      const installationId = await getInstallationId();
       const response = await fetch(`${API_BASE_URL}/predict`, {
         method: 'POST',
+        headers: {
+          'X-Request-ID': backendRequestId,
+          'X-GreenBin-Client-Id': installationId,
+        },
         body: formData,
       });
+      const responseBody = await readJsonResponse(response);
+      console.log(
+        '[predict] response',
+        JSON.stringify({
+          requestId: backendRequestId,
+          status: response.status,
+          ok: response.ok,
+          durationMs: Date.now() - requestStartedAt,
+        })
+      );
+
+      if (response.status === 429 && isDailyScanLimitResponse(responseBody)) {
+        await saveScanUsageMetadata(responseBody);
+        if (requestId !== predictRequestRef.current) {
+          return;
+        }
+
+        clearLastNearbyScanContext();
+        clearActiveScanSession();
+        restoreCameraPreview();
+        resetManualEntry();
+        setResult(null);
+        setCandidates([]);
+        setVisibleSheetState('idle');
+        setSheetState('idle');
+        setSheetHeight(0);
+        setIsRateLimitWarningVisible(true);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
       }
 
-      const prediction = (await response.json()) as PredictionResponse;
+      const prediction = responseBody as PredictionResponse;
       if (requestId !== predictRequestRef.current) {
         return;
       }
 
+      await saveScanUsageMetadata(prediction);
       await applyPrediction(prediction, requestSource, fallbackCandidates);
-    } catch {
+    } catch (error) {
       if (requestId !== predictRequestRef.current) {
         return;
       }
+
+      console.warn(
+        '[predict] failed',
+        JSON.stringify({
+          requestId: backendRequestId,
+          durationMs: Date.now() - requestStartedAt,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      );
 
       if (selectedItem) {
         Alert.alert('Could not confirm that selection. Please try again.');
@@ -1357,6 +1529,17 @@ export default function ScannerScreen() {
         Alert.alert('Could not analyze image. Please try again.');
       }
     } finally {
+      predictInFlightCountRef.current = Math.max(0, predictInFlightCountRef.current - 1);
+      console.log(
+        '[predict] finish',
+        JSON.stringify({
+          requestId: backendRequestId,
+          localRequestId: requestId,
+          active: requestId === predictRequestRef.current,
+          durationMs: Date.now() - requestStartedAt,
+          inFlight: predictInFlightCountRef.current,
+        })
+      );
       if (requestId === predictRequestRef.current) {
         setRequestState('idle');
       }
@@ -1481,6 +1664,10 @@ export default function ScannerScreen() {
   const activeSheetMaxHeight = isManualCorrectionVisible
     ? manualSheetMaxHeight
     : normalSheetMaxHeight;
+  const rateLimitWarningMaxHeight = Math.max(
+    260,
+    windowHeight - insets.top - insets.bottom - BOTTOM_NAV_BAR_TOTAL_HEIGHT - 64,
+  );
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
@@ -1689,6 +1876,14 @@ export default function ScannerScreen() {
             </Animated.View>
           ) : null}
         </View>
+
+        {isRateLimitWarningVisible ? (
+          <DailyScanLimitWarning
+            bottomInset={bottomNavOffset}
+            maxHeight={rateLimitWarningMaxHeight}
+            onDismiss={() => setIsRateLimitWarningVisible(false)}
+          />
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -1705,6 +1900,72 @@ const styles = StyleSheet.create({
   sheetOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 20,
+  },
+  rateLimitOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(4, 8, 9, 0.42)',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    zIndex: 40,
+  },
+  rateLimitCard: {
+    alignSelf: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E9E5DF',
+    borderRadius: 24,
+    borderWidth: 1,
+    gap: 14,
+    overflow: 'hidden',
+    padding: 18,
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    width: '100%',
+  },
+  rateLimitIcon: {
+    alignItems: 'center',
+    backgroundColor: '#F4F1EC',
+    borderRadius: 18,
+    height: 48,
+    justifyContent: 'center',
+    width: 48,
+  },
+  rateLimitTextBlock: {
+    gap: 7,
+  },
+  rateLimitEyebrow: {
+    color: '#807B75',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 2.4,
+    textTransform: 'uppercase',
+  },
+  rateLimitTitle: {
+    color: '#111111',
+    fontSize: 22,
+    fontWeight: '900',
+    lineHeight: 27,
+  },
+  rateLimitMessage: {
+    color: '#66605B',
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  rateLimitButton: {
+    alignItems: 'center',
+    backgroundColor: '#111111',
+    borderRadius: 999,
+    justifyContent: 'center',
+    marginTop: 2,
+    minHeight: 48,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
+  },
+  rateLimitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
   },
   cameraCard: {
     flex: 1,

@@ -23,6 +23,7 @@ try:
         get_product_by_barcode,
         map_product_to_item_label,
     )
+    from . import request_context
     from . import vlm_service
     from .confidence_router import TOP_K, evaluate_clip_candidates
 except ImportError:
@@ -37,6 +38,7 @@ except ImportError:
         get_product_by_barcode,
         map_product_to_item_label,
     )
+    from services import request_context
     from services import vlm_service
     from services.confidence_router import TOP_K, evaluate_clip_candidates
 
@@ -78,7 +80,8 @@ def _timed_stage(stage: str):
         yield
     finally:
         logger.info(
-            "predict_timing stage=%s duration_ms=%.1f",
+            "predict_timing request_id=%s stage=%s duration_ms=%.1f",
+            request_context.get_predict_request_id(),
             stage,
             (perf_counter() - started) * 1000,
         )
@@ -915,7 +918,8 @@ async def recognize_item(
                             phash_distance,
                         )
                         logger.info(
-                            "predict_timing stage=phash_total duration_ms=%.1f",
+                            "predict_timing request_id=%s stage=phash_total duration_ms=%.1f",
+                            request_context.get_predict_request_id(),
                             (perf_counter() - phash_total_started) * 1000,
                         )
                         return _with_recognition_metadata(
@@ -943,7 +947,8 @@ async def recognize_item(
             logger.warning("pHash cache lookup failed: %s", exc)
 
         logger.info(
-            "predict_timing stage=phash_total duration_ms=%.1f",
+            "predict_timing request_id=%s stage=phash_total duration_ms=%.1f",
+            request_context.get_predict_request_id(),
             (perf_counter() - phash_total_started) * 1000,
         )
 
@@ -1015,7 +1020,8 @@ async def recognize_item(
                         logger.warning("Recognition cache save failed: %s", exc)
 
                     logger.info(
-                        "predict_timing stage=barcode duration_ms=%.1f",
+                        "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
+                        request_context.get_predict_request_id(),
                         (perf_counter() - barcode_started) * 1000,
                     )
                     return _with_recognition_metadata(
@@ -1088,7 +1094,8 @@ async def recognize_item(
                                 "Skipping CLIP/VLM due to Open Food Facts barcode lookup."
                             )
                             logger.info(
-                                "predict_timing stage=barcode duration_ms=%.1f",
+                                "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
+                                request_context.get_predict_request_id(),
                                 (perf_counter() - barcode_started) * 1000,
                             )
                             return _with_recognition_metadata(
@@ -1126,7 +1133,8 @@ async def recognize_item(
         )
 
         logger.info(
-            "predict_timing stage=barcode duration_ms=%.1f",
+            "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
+            request_context.get_predict_request_id(),
             (perf_counter() - barcode_started) * 1000,
         )
 
@@ -1150,20 +1158,28 @@ async def recognize_item(
                     "packaging": barcode_signal["product_lookup"].get("packaging"),
                 }
             with _timed_stage("vlm"):
-                predictions = _normalize_open_prediction_result(
-                    vlm_service.get_top_predictions(
-                        image,
-                        barcode_aware=True,
-                        barcode_context=barcode_context,
-                    )
+                raw_predictions = vlm_service.get_top_predictions(
+                    image,
+                    barcode_aware=True,
+                    barcode_context=barcode_context,
                 )
-            recognition_source = _open_vlm_recognition_source(predictions)
-            classification = _with_recognition_metadata(
-                _attach_recognition_details(_build_vlm_classification(predictions), predictions),
-                cache_hit=False,
-                recognition_source=recognition_source,
-            )
-            _log_final_classification(classification)
+                normalization_started = perf_counter()
+                predictions = _normalize_open_prediction_result(raw_predictions)
+                recognition_source = _open_vlm_recognition_source(predictions)
+                classification = _with_recognition_metadata(
+                    _attach_recognition_details(_build_vlm_classification(predictions), predictions),
+                    cache_hit=False,
+                    recognition_source=recognition_source,
+                )
+                logger.info(
+                    "predict_timing request_id=%s stage=vlm_result_normalization duration_ms=%.1f recognition_source=%s status=%s item=%s",
+                    request_context.get_predict_request_id(),
+                    (perf_counter() - normalization_started) * 1000,
+                    recognition_source,
+                    classification.get("status"),
+                    classification.get("item"),
+                )
+                _log_final_classification(classification)
 
             should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
                 classification,
@@ -1270,16 +1286,24 @@ async def recognize_item(
 
         logger.info("Proceeding to VLM inference after pHash, barcode, and CLIP checks.")
         with _timed_stage("vlm"):
-            predictions = _normalize_open_prediction_result(
-                vlm_service.get_top_predictions(image)
+            raw_predictions = vlm_service.get_top_predictions(image)
+            normalization_started = perf_counter()
+            predictions = _normalize_open_prediction_result(raw_predictions)
+            recognition_source = _open_vlm_recognition_source(predictions)
+            classification = _with_recognition_metadata(
+                _attach_recognition_details(_build_vlm_classification(predictions), predictions),
+                cache_hit=False,
+                recognition_source=recognition_source,
             )
-        recognition_source = _open_vlm_recognition_source(predictions)
-        classification = _with_recognition_metadata(
-            _attach_recognition_details(_build_vlm_classification(predictions), predictions),
-            cache_hit=False,
-            recognition_source=recognition_source,
-        )
-        _log_final_classification(classification)
+            logger.info(
+                "predict_timing request_id=%s stage=vlm_result_normalization duration_ms=%.1f recognition_source=%s status=%s item=%s",
+                request_context.get_predict_request_id(),
+                (perf_counter() - normalization_started) * 1000,
+                recognition_source,
+                classification.get("status"),
+                classification.get("item"),
+            )
+            _log_final_classification(classification)
         cache_policy = _finalize_vlm_cache_policy(
             classification=classification,
             barcode_signal=barcode_signal,
