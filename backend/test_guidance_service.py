@@ -1242,7 +1242,10 @@ class GuidanceServiceTests(unittest.TestCase):
         ) as mock_write:
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(
+            response["guidance_source"], "recognition_clarification_required"
+        )
+        self.assertTrue(response["clarification"]["required"])
         mock_write.assert_not_called()
 
 

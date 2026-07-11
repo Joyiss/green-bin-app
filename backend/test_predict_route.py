@@ -495,6 +495,10 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["item"], "Plastic Water Bottle")
         self.assertEqual(response.json()["category"], "Plastic")
         self.assertEqual(response.json()["status"], "confident")
+        self.assertEqual(
+            response.json()["recognition_source"], "user_confirmed_selection"
+        )
+        self.assertNotIn("clarification", response.json())
         self.assertNotEqual(response.json()["guidance_source"], "safe_fallback")
         self.assertEqual(
             response.json()["candidates"],
@@ -526,7 +530,12 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"], "")
         self.assertEqual(response.json()["category"], "Unknown")
-        self.assertEqual(response.json()["status"], "unknown")
+        self.assertEqual(response.json()["status"], "uncertain")
+        self.assertTrue(response.json()["clarification"]["required"])
+        self.assertIn(
+            "recognition_status_unknown",
+            response.json()["clarification"]["reason_codes"],
+        )
         self.assertEqual(response.json()["candidates"], [])
 
     def test_predict_low_risk_open_item_can_use_deterministic_low_risk_fallback(self):
@@ -712,17 +721,32 @@ class PredictRouteTests(unittest.TestCase):
             {
                 "item": "",
                 "category": "Unknown",
-                "status": "unknown",
+                "status": "uncertain",
                 "candidates": [],
                 "disposal_action": None,
                 "material_code": None,
                 "impact_level": None,
-                "summary": None,
+                "summary": "Confirm or correct the recognized item before disposal guidance is shown.",
                 "steps": [],
-                "guidance_source": "safe_fallback",
-                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
+                "guidance_source": "recognition_clarification_required",
+                "guidance_metadata": {
+                    "final_generation_path": "recognition_clarification",
+                    "clarification_reason_codes": ["recognition_status_unknown"],
+                },
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
+                "clarification": {
+                    "required": True,
+                    "reason_codes": ["recognition_status_unknown"],
+                    "retake_recommended": True,
+                    "retake_guidance": (
+                        "Retake the photo with the whole item visible in brighter light, "
+                        "with labels and physical features in focus."
+                    ),
+                    "message": (
+                        "Confirm or correct the recognized item before disposal guidance is shown."
+                    ),
+                },
             },
         )
 

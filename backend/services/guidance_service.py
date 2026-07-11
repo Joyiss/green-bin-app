@@ -10,11 +10,13 @@ try:
     from ..rules import get_rules
     from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
     from .guidance_key_service import normalize_guidance_phrase
+    from .recognition_clarification_service import evaluate_clarification
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
     from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
     from services.guidance_key_service import normalize_guidance_phrase
+    from services.recognition_clarification_service import evaluate_clarification
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +221,21 @@ def _empty_guidance() -> dict[str, Any]:
         "summary": None,
         "steps": [],
         "guidance_source": "safe_fallback",
+    }
+
+
+def _clarification_guidance(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "disposal_action": None,
+        "material_code": None,
+        "impact_level": None,
+        "summary": decision.get("message"),
+        "steps": [],
+        "guidance_source": "recognition_clarification_required",
+        "guidance_metadata": {
+            "final_generation_path": "recognition_clarification",
+            "clarification_reason_codes": list(decision.get("reason_codes") or []),
+        },
     }
 
 
@@ -460,6 +477,7 @@ def _log_guidance_selected(
     item: str | None = None,
     category: str | None = None,
     low_risk_eligible: bool | None = None,
+    reason_codes: list[str] | None = None,
 ) -> None:
     log_parts = [f"source={guidance.get('guidance_source')}"]
     if chunk_ids is not None:
@@ -478,6 +496,8 @@ def _log_guidance_selected(
         log_parts.append(f"low_risk_eligible={low_risk_eligible}")
     if reason:
         log_parts.append(f"reason={reason}")
+    if reason_codes is not None:
+        log_parts.append(f"reason_codes={_format_log_list(reason_codes)}")
 
     logger.info("Guidance selected. %s", " ".join(log_parts))
 
@@ -1625,14 +1645,20 @@ def _legacy_rules_allowed(classification: dict[str, Any]) -> bool:
     return classification.get("trusted_guidance_available") is True
 
 
-def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
-    if classification.get("status") != "confident":
-        guidance = _empty_guidance()
+def _resolve_guidance(
+    classification: dict[str, Any],
+    *,
+    clarification_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    decision = clarification_decision or evaluate_clarification(classification)
+    if decision.get("required") is True:
+        guidance = _clarification_guidance(decision)
         _log_guidance_selected(
             guidance,
-            reason="classification_not_confident",
+            reason="recognition_clarification_required",
             item=_first_non_empty_string(classification.get("item")),
             category=_first_non_empty_string(classification.get("category")),
+            reason_codes=list(decision.get("reason_codes") or []),
         )
         return guidance
 
@@ -1882,7 +1908,11 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
-    guidance = _resolve_guidance(classification)
+    clarification_decision = evaluate_clarification(classification)
+    guidance = _resolve_guidance(
+        classification,
+        clarification_decision=clarification_decision,
+    )
 
     guidance_metadata = guidance.get("guidance_metadata")
     if not isinstance(guidance_metadata, dict):
@@ -1903,7 +1933,11 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
     response = {
         "item": _format_item_name(str(classification.get("item") or "")),
         "category": classification.get("category", UNKNOWN_CATEGORY),
-        "status": classification.get("status", "unknown"),
+        "status": (
+            "uncertain"
+            if clarification_decision.get("required") is True
+            else classification.get("status", "unknown")
+        ),
         "candidates": _build_response_candidates(classification),
         "disposal_action": guidance["disposal_action"],
         "material_code": guidance["material_code"],
@@ -1930,6 +1964,18 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         response["recognition_confidence"] = classification[
             "recognition_confidence"
         ]
+    if clarification_decision.get("required") is True:
+        response["clarification"] = {
+            "required": True,
+            "reason_codes": list(
+                clarification_decision.get("reason_codes") or []
+            ),
+            "retake_recommended": bool(
+                clarification_decision.get("retake_recommended")
+            ),
+            "retake_guidance": clarification_decision.get("retake_guidance"),
+            "message": clarification_decision.get("message"),
+        }
 
     logger.info(
         "Guidance resolution finished. source=%s item=%s disposal_action=%s steps_count=%s",

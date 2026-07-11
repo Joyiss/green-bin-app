@@ -50,6 +50,12 @@ import {
   setLastNearbyScanContext,
 } from '@/constants/scan-session';
 import {
+  DEFAULT_REVIEW_SUMMARY,
+  getRecognitionReviewSummary,
+  resolvePredictionFlowStatus,
+  type PredictionClarification,
+} from '@/app/prediction-flow';
+import {
   saveRecentScan,
   updateRecentScan,
   type RecentScan,
@@ -140,6 +146,9 @@ type PredictionResponse = {
   guidanceSource?: string;
   recognition_source?: string;
   recognitionSource?: string;
+  recognition_confidence?: Record<string, unknown>;
+  recognitionConfidence?: Record<string, unknown>;
+  clarification?: PredictionClarification | null;
   warnings?: string[];
   guidance_metadata?: Record<string, unknown>;
   guidanceMetadata?: Record<string, unknown>;
@@ -1043,6 +1052,7 @@ export default function ScannerScreen() {
   const [isTorchOn, setIsTorchOn] = useState(false);
   const [result, setResult] = useState<ScannerResultData | null>(null);
   const [candidates, setCandidates] = useState<PredictionCandidate[]>([]);
+  const [reviewSummary, setReviewSummary] = useState(DEFAULT_REVIEW_SUMMARY);
   const [materialLabels, setMaterialLabels] = useState<string[] | null>(null);
   const [isLoadingMaterialLabels, setIsLoadingMaterialLabels] = useState(false);
   const [materialLabelsError, setMaterialLabelsError] = useState<string | null>(null);
@@ -1230,6 +1240,7 @@ export default function ScannerScreen() {
     setManualEntryText('');
     setSelectedManualLabel(null);
     setMaterialLabelsError(null);
+    setReviewSummary(DEFAULT_REVIEW_SUMMARY);
     setVisibleSheetState('uncertain');
     setSheetState('uncertain');
 
@@ -1252,6 +1263,7 @@ export default function ScannerScreen() {
     setRequestState('idle');
     setSheetState('idle');
     setIsRateLimitWarningVisible(false);
+    setReviewSummary(DEFAULT_REVIEW_SUMMARY);
     resetManualEntry();
 
     if (visibleSheetState === 'idle') {
@@ -1340,10 +1352,12 @@ export default function ScannerScreen() {
     fallbackCandidates: PredictionCandidate[] = []
   ) => {
     const nextCandidates = normalizePredictionCandidates(prediction, fallbackCandidates);
+    const nextFlowStatus = resolvePredictionFlowStatus(prediction);
 
     resetManualEntry();
     setResult(null);
     setCandidates(nextCandidates);
+    setReviewSummary(getRecognitionReviewSummary(prediction));
 
     if (requestSource === 'image' && activeScanSessionRef.current) {
       activeScanSessionRef.current = {
@@ -1353,7 +1367,7 @@ export default function ScannerScreen() {
       };
     }
 
-    if (prediction.status === 'confident' && prediction.item) {
+    if (nextFlowStatus === 'confident' && prediction.item) {
       const nextResult = toSheetData(prediction);
       setLastNearbyScanContext({
         scanSessionId:
@@ -1379,7 +1393,7 @@ export default function ScannerScreen() {
       return;
     }
 
-    if (prediction.status === 'uncertain') {
+    if (nextFlowStatus === 'uncertain') {
       setVisibleSheetState('uncertain');
       setSheetState('uncertain');
       if (!materialLabels && !isLoadingMaterialLabels) {
@@ -1759,7 +1773,7 @@ export default function ScannerScreen() {
                   materialTag="Correct Item"
                   onButtonPress={resetScanner}
                   steps={[]}
-                  summary="Choose the item that best matches your scan."
+                  summary={reviewSummary}
                   title="Search for the correct item"
                   keyboardShouldPersistTaps="handled">
                   <View style={styles.manualEntrySection}>
