@@ -16,7 +16,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-CACHE_KEY_VERSION = "guidance_cache_v1"
+CACHE_KEY_VERSION = "guidance_cache_v2"
 SOURCE_CORPUS_VERSION = "green_bin_rag_sources_v1"
 SOURCE_GROUNDED_CACHE_POLICY = "source_grounded"
 STATIC_RULES_CACHE_POLICY = "static_rules"
@@ -143,6 +143,40 @@ def _source_fingerprint(retrieved_chunk_ids: list[str]) -> str:
     )
 
 
+def _retrieval_applicability_signature(
+    retrieval_results: list[dict[str, Any]],
+) -> list[str]:
+    signature: list[str] = []
+    for result in retrieval_results:
+        if not isinstance(result, dict):
+            continue
+        chunk_id = _normalize_optional_string(
+            result.get("chunk_id") or result.get("chunk", {}).get("id")
+        )
+        if chunk_id is None:
+            continue
+        applicability = _normalize_optional_string(result.get("applicability")) or "applicable"
+        reasons = _stable_sorted_strings(result.get("applicability_reason_codes"))
+        source_conditions = result.get("source_conditions")
+        condition_parts: list[str] = []
+        if isinstance(source_conditions, dict):
+            for state in ("confirmed", "unknown", "contradicted"):
+                values = _stable_sorted_strings(source_conditions.get(state))
+                if values:
+                    condition_parts.append(f"{state}={','.join(values)}")
+        signature.append(
+            "|".join(
+                [
+                    chunk_id,
+                    applicability,
+                    ",".join(reasons),
+                    ";".join(condition_parts),
+                ]
+            )
+        )
+    return sorted(signature, key=str.casefold)
+
+
 def _metadata_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -191,6 +225,7 @@ def build_source_grounded_cache_context(
     )
     source_fingerprint = _source_fingerprint(retrieved_chunk_ids)
     location_scope = _retrieval_location_scope(retrieval_results)
+    applicability_signature = _retrieval_applicability_signature(retrieval_results)
 
     cache_key_input = {
         "cache_key_version": CACHE_KEY_VERSION,
@@ -201,6 +236,7 @@ def build_source_grounded_cache_context(
         "condition_flags": condition_flags,
         "special_handling_flags": special_handling_flags,
         "visual_observations": visual_observations,
+        "retrieval_applicability": applicability_signature,
         "location_scope": location_scope,
         "retrieved_chunk_ids": retrieved_chunk_ids,
         "source_corpus_version": SOURCE_CORPUS_VERSION,
@@ -224,7 +260,6 @@ def build_source_grounded_cache_context(
         "broad_category_key": cache_key_input["broad_category_key"],
         "condition_flags": condition_flags,
         "special_handling_flags": special_handling_flags,
-        "visual_observations": visual_observations,
         "location_scope": location_scope,
         "retrieved_chunk_ids": retrieved_chunk_ids,
         "source_corpus_version": SOURCE_CORPUS_VERSION,
@@ -279,9 +314,21 @@ def get_cached_source_grounded_guidance(
         return None
     if guidance.get("guidance_source") not in SOURCE_GROUNDED_CACHEABLE_SOURCES:
         return None
+    if row.get("cache_key_version") != CACHE_KEY_VERSION:
+        return None
     if _normalize_optional_string(guidance.get("disposal_action")) is None:
         return None
     if not _normalize_string_list(row.get("retrieved_chunk_ids")):
+        return None
+    metadata = _metadata_object(guidance.get("guidance_metadata"))
+    action = (_normalize_optional_string(guidance.get("disposal_action")) or "").casefold()
+    if action in {
+        "recycle",
+        "compost",
+        "donate/reuse",
+        "drop-off",
+        "household hazardous waste",
+    } and not _normalize_string_list(metadata.get("applicable_chunk_ids")):
         return None
 
     disposal_guidance_repository.record_guidance_cache_hit(row.get("id"))
@@ -364,6 +411,16 @@ def source_grounded_guidance_is_cacheable(
         return False
     if not _normalize_string_list(guidance.get("steps")):
         return False
+    metadata = _metadata_object(guidance.get("guidance_metadata"))
+    action = (_normalize_optional_string(guidance.get("disposal_action")) or "").casefold()
+    if action in {
+        "recycle",
+        "compost",
+        "donate/reuse",
+        "drop-off",
+        "household hazardous waste",
+    } and not _normalize_string_list(metadata.get("applicable_chunk_ids")):
+        return False
     return True
 
 
@@ -402,6 +459,7 @@ def build_cache_payload(
         "retrieval_context": {
             "retrieval_inputs": retrieval_inputs,
             "llm_context": llm_context,
+            "applicability": _retrieval_applicability_signature(retrieval_results),
         },
         "source_names": retrieval_metadata["source_names"],
         "source_urls": retrieval_metadata["source_urls"],

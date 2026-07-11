@@ -25,7 +25,7 @@ DEFAULT_GUIDANCE_LLM_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS = 10.0
 MAX_LLM_SOURCE_CHUNKS = 3
 MAX_SUMMARY_LENGTH = 240
-GUIDANCE_PROMPT_VERSION = "groq_basic_guidance_v3"
+GUIDANCE_PROMPT_VERSION = "groq_applicability_guidance_v4"
 
 GENERAL_SAFE_ALLOWED_ACTIONS = {"donate/reuse", "trash", "check local guidance"}
 _SOURCE_NAMES = (
@@ -505,10 +505,13 @@ def _source_grounded_mobile_policy() -> str:
     return (
         "You are Green Bin's disposal guidance assistant.\n"
         "Your job is to give clear next steps for disposing of the exact scanned item.\n"
-        "Use RAG chunks to ground disposal action and safety limits. Use recognized_item, "
+        "Use RAG chunks to ground disposal action and safety limits. Each chunk has an applicability value: applicable, conditional, or not_applicable. Use recognized_item, "
         "material, broad_category, visual_evidence, visual_observations, and candidates to make advice specific.\n"
         "Treat visual_observations as recognition evidence only. They describe visible packaging use, form factor, condition, contamination, markings, construction, and uncertainty; they are not disposal instructions.\n"
         "When visual_observations contain unknown values or low-confidence conclusions, do not guess beyond them.\n"
+        "Separate confirmed visual facts from unknown properties. Never rewrite an unknown coating, resin, cleanliness, contamination, construction, recycling marking, or local acceptance as a fact.\n"
+        "Use applicable chunks for definite disposal claims. A conditional chunk may be mentioned only as an if-then alternative whose missing conditions are stated. Never use a not_applicable chunk to support an action.\n"
+        "Broad item, material, or category similarity is context, not proof that a recycling, composting, donation, or drop-off route accepts this exact item.\n"
         "Base the disposal_action on the actual recognized physical object, not only the product name, brand, visible text, contents, or generic material category.\n"
         "Use the full item context when choosing the action: packaging/container type, material, condition_flags, cleanliness or residue seen in visual_evidence, reusability, and whether it is a single-use item.\n"
         "Avoid technically possible but unrealistic advice for the specific object. Do not choose donate/reuse for opened, used, dirty, broken, food-soiled, or ordinary single-use packaging unless the context clearly says it is clean and reusable.\n"
@@ -518,7 +521,7 @@ def _source_grounded_mobile_policy() -> str:
         "Do not over-compress steps into two- or three-word fragments. Each step should tell the user what to do next.\n"
         "Write one short but useful summary and three practical, non-duplicate steps when possible. "
         "Each step should be one clear action and specific to the item when possible.\n"
-        "The disposal_action must be in allowed_disposal_actions and supported by retrieved_chunks. "
+        "The disposal_action must be in allowed_disposal_actions. Definite source-backed actions must be supported by an applicable retrieved chunk; conditional chunks cannot authorize the main action. "
         "Do not invent local rules, curbside acceptance, hazardous status, or illegal-disposal claims.\n"
         "Never instruct users to pry open, force open, dismantle, disassemble, remove built-in batteries, "
         "cut or puncture batteries, burn items, or pour contents down a drain. Safe warnings such as "
@@ -546,6 +549,8 @@ def _fallback_mobile_policy() -> str:
         "Do not suggest donation or reuse for ordinary wrappers, food containers with residue, broken items, personal-care items, or low-value single-use packaging.\n"
         "Do not suggest recycling, composting, specialty drop-off, or take-back programs unless they are realistic for the specific item context and present in allowed_disposal_actions. "
         "Do not speculate based only on broad material type.\n"
+        "For edible food, prefer using or sharing it while still edible; if it becomes scraps, compost where available. For leaves and ordinary plant trimmings, prefer composting, mulching, or yard-waste collection where practical. Trash may be a fallback when organics routes are unavailable, but do not make it the automatic first choice.\n"
+        "For clean, intact, durable items with visible reuse value, prefer continued use or donation. Cleanliness by itself does not prove that coated paper, mixed construction, or unknown plastic is recyclable.\n"
         "Reserve check local guidance as the main action only when the item is genuinely ambiguous, locally dependent, potentially hazardous, or missing enough detail to choose trash or reuse safely. "
         "Do not claim curbside recyclability or hazardous status.\n"
         "Keep confidence low.\n"
@@ -1010,17 +1015,44 @@ def try_generate_source_grounded_guidance(
     skip = llm_skip_reason(settings)
     if skip:
         return _llm_result(guidance=None, failure_reason=skip)
-    chunks = [
-        _strip_chunk_for_llm(result.get("chunk", {}))
-        for result in retrieval_results[:MAX_LLM_SOURCE_CHUNKS]
-        if isinstance(result.get("chunk"), dict)
-    ]
+    chunks: list[dict[str, Any]] = []
+    for result in retrieval_results[:MAX_LLM_SOURCE_CHUNKS]:
+        if not isinstance(result.get("chunk"), dict):
+            continue
+        chunk = _strip_chunk_for_llm(result["chunk"])
+        chunk.update(
+            {
+                "applicability": result.get("applicability") or "applicable",
+                "applicability_reason_codes": list(
+                    result.get("applicability_reason_codes") or []
+                ),
+                "source_conditions": result.get("source_conditions")
+                if isinstance(result.get("source_conditions"), dict)
+                else {},
+                "matched_fields": list(result.get("matched_fields") or []),
+            }
+        )
+        chunks.append(chunk)
     if not chunks:
         return _llm_result(guidance=None, failure_reason="no_chunks")
     allowed_actions = {
-        action for chunk in chunks for value in chunk["disposal_actions_supported"]
+        action
+        for chunk in chunks
+        if chunk.get("applicability") == "applicable"
+        for value in chunk["disposal_actions_supported"]
         if (action := _normalize_disposal_action(value)) is not None
     }
+    allowed_actions.update(
+        _general_safe_allowed_actions(
+            recognized_item=recognized_item,
+            material=material,
+            broad_category=broad_category,
+            condition_flags=list(condition_flags or []),
+            special_flags=list(special_flags or []),
+            visual_observations=list(visual_observations or []),
+            low_risk_reason=None,
+        )
+    )
     prompt = _build_source_grounded_prompt(
         recognized_item=recognized_item, normalized_item_label=normalized_item_label,
         material=material, broad_category=broad_category,
@@ -1045,13 +1077,44 @@ def try_generate_source_grounded_guidance(
 
 def _general_safe_allowed_actions(
     *, recognized_item: str | None, material: str | None, broad_category: str | None,
-    condition_flags: list[str], special_flags: list[str], low_risk_reason: str | None,
+    condition_flags: list[str], special_flags: list[str],
+    visual_observations: list[dict[str, Any]] | None = None,
+    low_risk_reason: str | None,
 ) -> set[str]:
     text = " ".join([recognized_item or "", material or "", broad_category or ""]).casefold()
+    observation_text = " ".join(
+        str(observation.get("value") or "")
+        for observation in visual_observations or []
+        if isinstance(observation, dict)
+    ).casefold()
+    context_text = f"{text} {observation_text}"
+    normalized_flags = {str(flag).strip().casefold() for flag in condition_flags}
     if any(flag in special_flags for flag in ("hazardous", "battery", "electronics", "dropoff_recommended")):
         return {"check local guidance"}
     if any(flag in condition_flags for flag in ("food_soiled", "broken", "wet")):
         return {"trash"}
+    if any(term in context_text for term in ("organic", "produce", "food scrap", "plant material", "yard waste", "leaves")):
+        actions = {"compost", "trash"}
+        if "edible" in context_text or "reusable" in normalized_flags:
+            actions.add("donate/reuse")
+        return actions
+    if "single_use" in normalized_flags or any(
+        term in context_text for term in ("single-use", "single use", "wrapper")
+    ):
+        return {"trash"}
+    if any(
+        term in context_text
+        for term in ("personal care container", "cosmetic container", "product container")
+    ) and "reusable" not in normalized_flags:
+        return {"trash"}
+    if (
+        "reusable" in normalized_flags
+        or "intact" in normalized_flags
+        or "appears reusable" in context_text
+    ):
+        return {"donate/reuse", "trash"}
+    if "paper" in text and any(term in text for term in ("plate", "cup", "food tray")):
+        return {"trash", "check local guidance"}
     if low_risk_reason == "allowed_paper_stationery":
         return {"trash", "check local guidance"}
     if any(
@@ -1083,7 +1146,7 @@ def _general_safe_allowed_actions(
         return {"trash"}
     if any(token in text for token in ("drum", "instrument", "mug", "bottle", "backpack", "curtain", "toy")):
         return {"donate/reuse", "trash"}
-    return set(GENERAL_SAFE_ALLOWED_ACTIONS)
+    return {"trash", "check local guidance"}
 
 
 def try_generate_general_safe_guidance(
@@ -1101,6 +1164,7 @@ def try_generate_general_safe_guidance(
     allowed_actions = _general_safe_allowed_actions(
         recognized_item=recognized_item, material=material, broad_category=broad_category,
         condition_flags=list(condition_flags or []), special_flags=list(special_flags or []),
+        visual_observations=list(visual_observations or []),
         low_risk_reason=low_risk_reason,
     )
     prompt = _build_general_safe_prompt(

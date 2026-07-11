@@ -60,7 +60,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["donate/reuse", "compost", "drop-off", "recycle"],
-      "known_failures": ["guidance_action", "prohibited_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "plastic lotion pump bottle",
@@ -100,7 +100,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["drop-off", "recycle", "donate/reuse", "compost"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "opened chocolate wrapper",
@@ -179,7 +179,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["compost", "recycle", "donate/reuse", "drop-off"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "clean disposable paper plate",
@@ -218,7 +218,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["compost", "household hazardous waste"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "stainless steel cup",
@@ -257,7 +257,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["recycle", "drop-off", "household hazardous waste"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "bunch of bananas",
@@ -332,7 +332,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["trash", "compost", "household hazardous waste"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "intact plastic toy",
@@ -369,7 +369,7 @@
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["compost", "household hazardous waste"],
-      "known_failures": ["guidance_action"],
+      "known_failures": [],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "metal cooking utensil with plastic handle",

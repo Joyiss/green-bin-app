@@ -149,6 +149,8 @@ type PredictionResponse = {
   recognition_confidence?: Record<string, unknown>;
   recognitionConfidence?: Record<string, unknown>;
   clarification?: PredictionClarification | null;
+  guidance_confidence?: Record<string, unknown>;
+  guidanceConfidence?: Record<string, unknown>;
   warnings?: string[];
   guidance_metadata?: Record<string, unknown>;
   guidanceMetadata?: Record<string, unknown>;

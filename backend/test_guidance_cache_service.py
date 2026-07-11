@@ -21,6 +21,13 @@ def _retrieval_result(chunk_id="chunk-1", **chunk_overrides):
         "score": 8.25,
         "matched_fields": ["item_label_exact"],
         "requires_location_check": bool(chunk.get("requires_location_check")),
+        "applicability": "applicable",
+        "applicability_reason_codes": ["specific_item_evidence_supports_source"],
+        "source_conditions": {
+            "confirmed": ["battery"],
+            "unknown": [],
+            "contradicted": [],
+        },
     }
 
 
@@ -144,12 +151,80 @@ class GuidanceCacheServiceTests(unittest.TestCase):
 
         self.assertNotEqual(clean["cache_key"], residue["cache_key"])
         self.assertIn("visual_observations", residue["cache_key_input"])
+        self.assertNotIn("visual_observations", residue)
+
+    def test_applicability_changes_source_cache_identity(self):
+        applicable = _retrieval_result()
+        conditional = {
+            **_retrieval_result(),
+            "applicability": "conditional",
+            "applicability_reason_codes": ["local_acceptance_unverified"],
+        }
+        applicable_context = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[applicable],
+            llm_context=_llm_context(),
+        )
+        conditional_context = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[conditional],
+            llm_context=_llm_context(),
+        )
+
+        self.assertNotEqual(applicable_context["cache_key"], conditional_context["cache_key"])
+        self.assertIn("retrieval_applicability", conditional_context["cache_key_input"])
+
+    def test_cache_payload_keeps_visual_observations_inside_json_context(self):
+        llm_context = _llm_context()
+        llm_context["visual_observations"] = [
+            {
+                "aspect": "condition",
+                "value": "appears intact",
+                "confidence": 0.9,
+                "evidence": "No visible damage.",
+            }
+        ]
+        retrieval_results = [_retrieval_result()]
+        cache_context = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=retrieval_results,
+            llm_context=llm_context,
+        )
+        guidance = {
+            "guidance_source": "json_rag_llm_generated",
+            "disposal_action": "drop-off",
+            "summary": "Use battery drop-off.",
+            "steps": ["Tape terminals.", "Use drop-off."],
+            "guidance_metadata": {
+                "applicable_chunk_ids": ["chunk-1"],
+                "retrieved_chunk_ids": ["chunk-1"],
+            },
+        }
+
+        payload = guidance_cache_service.build_cache_payload(
+            classification=_classification(),
+            guidance=guidance,
+            cache_context=cache_context,
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=retrieval_results,
+            llm_context=llm_context,
+        )
+
+        self.assertNotIn("visual_observations", payload)
+        self.assertIn("visual_observations", payload["cache_key_input"])
+        self.assertEqual(
+            payload["retrieval_context"]["llm_context"]["visual_observations"],
+            llm_context["visual_observations"],
+        )
 
     def test_cached_guidance_from_row_preserves_shape_and_cache_markers(self):
         guidance = guidance_cache_service.cached_guidance_from_row(
             {
                 "cache_key": "cache-key",
-                "cache_key_version": "guidance_cache_v1",
+                "cache_key_version": guidance_cache_service.CACHE_KEY_VERSION,
                 "guidance_source": "json_rag_llm_generated",
                 "disposal_action": "drop-off",
                 "material_code": None,
@@ -157,7 +232,10 @@ class GuidanceCacheServiceTests(unittest.TestCase):
                 "summary": "Use a battery drop-off.",
                 "steps": ["Tape exposed terminals.", "Use drop-off."],
                 "warnings": ["Do not use curbside recycling."],
-                "guidance_metadata": {"retrieved_chunk_ids": ["chunk-1"]},
+                "guidance_metadata": {
+                    "retrieved_chunk_ids": ["chunk-1"],
+                    "applicable_chunk_ids": ["chunk-1"],
+                },
             }
         )
 
@@ -180,6 +258,7 @@ class GuidanceCacheServiceTests(unittest.TestCase):
             "disposal_action": "drop-off",
             "summary": "Use battery drop-off.",
             "steps": ["Tape terminals.", "Use drop-off."],
+            "guidance_metadata": {"applicable_chunk_ids": ["chunk-1"]},
         }
 
         self.assertFalse(
@@ -214,6 +293,34 @@ class GuidanceCacheServiceTests(unittest.TestCase):
             guidance_cache_service.source_grounded_guidance_is_cacheable(
                 classification=_classification(),
                 guidance=guidance,
+                cache_context=cache_context,
+            )
+        )
+        self.assertFalse(
+            guidance_cache_service.source_grounded_guidance_is_cacheable(
+                classification=_classification(),
+                guidance={
+                    **guidance,
+                    "disposal_action": "recycle",
+                    "guidance_metadata": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": ["chunk-1"],
+                    },
+                },
+                cache_context=cache_context,
+            )
+        )
+        self.assertTrue(
+            guidance_cache_service.source_grounded_guidance_is_cacheable(
+                classification=_classification(),
+                guidance={
+                    **guidance,
+                    "disposal_action": "trash",
+                    "guidance_metadata": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": ["chunk-1"],
+                    },
+                },
                 cache_context=cache_context,
             )
         )

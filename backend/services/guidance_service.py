@@ -178,6 +178,36 @@ _LOW_RISK_ALLOW_GROUPS = {
         "metal",
         "glass",
     },
+    "allowed_single_use_packaging": {
+        "wrapper",
+        "single use",
+        "single-use",
+        "product container",
+        "personal care container",
+        "cosmetic container",
+        "food packaging",
+    },
+    "allowed_organic_material": {
+        "organic",
+        "organic food",
+        "organic fruit",
+        "organic plant material",
+        "produce",
+        "food scraps",
+        "fruit scraps",
+        "vegetable scraps",
+        "leaves",
+        "leafy material",
+        "yard waste",
+    },
+    "allowed_durable_reusable": {
+        "reusable",
+        "appears reusable",
+        "appears intact",
+        "utensil",
+        "stainless steel",
+        "metal cup",
+    },
 }
 _LOW_RISK_DROP_OFF_ONLY_TERMS = {
     "textile",
@@ -444,6 +474,7 @@ def _log_retrieval_complete(retrieval_results: list[dict[str, Any]]) -> None:
     top_chunks: list[str] = []
     source_names: list[str] = []
     matched_fields: list[str] = []
+    applicability: list[str] = []
 
     for result in retrieval_results[:3]:
         chunk = result.get("chunk", {})
@@ -458,13 +489,17 @@ def _log_retrieval_complete(retrieval_results: list[dict[str, Any]]) -> None:
         result_fields = list(result.get("matched_fields") or [])
         if result_fields:
             matched_fields.append(f"{chunk_id}={'|'.join(str(field) for field in result_fields)}")
+        applicability.append(
+            f"{chunk_id}={result.get('applicability') or 'applicable'}"
+        )
 
     logger.info(
-        "Guidance retrieval complete. count=%s top_chunks=%s sources=%s matched_fields=%s",
+        "Guidance retrieval complete. count=%s top_chunks=%s sources=%s matched_fields=%s applicability=%s",
         len(retrieval_results),
         _format_log_list(top_chunks),
         _format_log_list(source_names),
         _format_log_list(matched_fields),
+        _format_log_list(applicability),
     )
 
 
@@ -577,6 +612,37 @@ def _deterministic_low_risk_group(
             classification.get("category"),
         )
     )
+    normalized_details = _normalized_open_details(classification)
+    condition_flags = {
+        _normalized_phrase(value).replace(" ", "_")
+        for value in normalized_details.get("condition_flags") or []
+        if _normalized_phrase(value)
+    }
+    observation_values = " ".join(
+        _normalized_phrase(observation.get("value"))
+        for observation in _visual_observations(classification)
+        if isinstance(observation, dict)
+    )
+    context_text = " ".join([item_text, material_text, observation_values])
+
+    if any(term in context_text for term in ("organic", "produce", "food scrap", "leaves", "leafy", "yard waste")):
+        return "organic_material"
+    if "paper" in material_text and any(
+        term in item_text for term in ("plate", "cup", "food tray", "takeout")
+    ):
+        return "paper_food_service_item"
+    if (
+        "single_use" in condition_flags
+        or any(term in context_text for term in ("single use", "single-use", "wrapper"))
+        or (
+            any(
+                term in f"{item_text} {observation_values}"
+                for term in ("product container", "personal care", "cosmetic")
+            )
+            and "reusable" not in condition_flags
+        )
+    ):
+        return "single_use_packaging"
 
     if reason == "allowed_paper_stationery":
         return "paper_stationery"
@@ -587,6 +653,8 @@ def _deterministic_low_risk_group(
     if reason == "allowed_simple_household_objects":
         if _contains_any_phrase(item_text, ("toy", "rubik", "duck", "container", "bottle")):
             return "durable_reusable_object"
+    if reason == "allowed_durable_reusable":
+        return "durable_reusable_object"
     if _contains_any_phrase(item_text, ("container", "bin", "basket", "storage", "bottle", "mug", "cup", "bowl", "plate", "lunch box")):
         return "durable_reusable_object"
     if _contains_any_phrase(material_text, ("paper", "cardboard")):
@@ -625,7 +693,65 @@ def _deterministic_low_risk_guidance(
     summary: str
     steps: list[str]
 
-    if group == "paper_stationery":
+    observation_values = " ".join(
+        _normalized_phrase(observation.get("value"))
+        for observation in _visual_observations(classification)
+        if isinstance(observation, dict)
+    )
+    normalized_condition_flags = {
+        _normalized_phrase(value).replace(" ", "_")
+        for value in _normalized_open_details(classification).get("condition_flags") or []
+        if _normalized_phrase(value)
+    }
+    reusable_confirmed = bool(
+        normalized_condition_flags & {"intact", "reusable", "appears_clean"}
+    ) or "appears reusable" in observation_values
+
+    if group == "organic_material":
+        appears_edible = any(
+            term in observation_values for term in ("appears edible", "edible", "loose produce")
+        ) and not any(term in item_text for term in ("scrap", "peel", "spoiled"))
+        if appears_edible:
+            disposal_action = "donate/reuse"
+            summary = (
+                f"Use, eat, or share the {formatted_item.lower()} while it is still edible; compost it if it becomes food scraps."
+            )
+            steps = [
+                f"Use the {formatted_item.lower()} for food, or share it while it is still good to eat.",
+                "If it is no longer edible, remove non-organic packaging and compost the food scraps where accepted.",
+                "Use household trash only when food-scrap or compost options are unavailable.",
+            ]
+        else:
+            disposal_action = "compost"
+            summary = (
+                f"Compost or mulch the {formatted_item.lower()} where that organic route is available."
+            )
+            steps = [
+                "Remove plastic ties, labels, or other non-organic pieces.",
+                f"Compost the {formatted_item.lower()}, use it as mulch when appropriate, or place it in yard-waste collection.",
+                "Use household trash only if no organics or yard-waste route is available.",
+            ]
+    elif group == "single_use_packaging":
+        disposal_action = "trash"
+        summary = (
+            f"Put the {formatted_item.lower()} in household trash unless an eligibility marking and your local program confirm another route."
+        )
+        steps = [
+            "Empty any remaining contents without dismantling the package.",
+            f"Place the {formatted_item.lower()} in household trash.",
+            "Use recycling or film drop-off only when this exact construction is eligible and locally accepted.",
+        ]
+    elif group == "paper_food_service_item":
+        disposal_action = "trash"
+        summary = (
+            f"Put the {formatted_item.lower()} in household trash because its coating and local paper acceptance are not confirmed."
+        )
+        steps = [
+            f"Place the {formatted_item.lower()} in household trash even if it appears clean.",
+            "Do not treat cleanliness alone as proof that coated or mixed paper is recyclable.",
+            "Use paper recycling only if the construction and local program acceptance are confirmed.",
+        ]
+    elif group == "paper_stationery":
         disposal_action = "check local guidance"
         if "pencil" in item_text:
             summary = (
@@ -656,6 +782,27 @@ def _deterministic_low_risk_guidance(
             "Check local textile recycling, donation, or reuse drop-off options before disposal.",
             "If no local textile option is available, follow local trash guidance.",
         ]
+    elif group == "durable_reusable_object":
+        if reusable_confirmed:
+            disposal_action = "donate/reuse"
+            summary = (
+                f"Keep using or donate the {formatted_item.lower()} because it appears intact and reusable."
+            )
+            steps = [
+                f"Keep using the {formatted_item.lower()} if it still works for its intended purpose.",
+                "Clean it if needed, then donate or share it while it remains usable.",
+                "Use household trash only if it is no longer functional and no realistic material recovery option exists.",
+            ]
+        else:
+            disposal_action = "check local guidance"
+            summary = (
+                f"Reuse the {formatted_item.lower()} if it is intact; if it is not reusable, use household trash unless a local program accepts its construction."
+            )
+            steps = [
+                f"Check whether the {formatted_item.lower()} is intact, clean, and still functional before discarding it.",
+                "Reuse or donate it only if another person can realistically use it as-is.",
+                "If it is not reusable, use household trash unless a local program confirms another route.",
+            ]
     elif group == "simple_plastic_object":
         disposal_action = (
             "donate/reuse"
@@ -681,14 +828,14 @@ def _deterministic_low_risk_guidance(
                 "If local reuse, recycling, or drop-off options are not available, follow local trash guidance.",
             ]
     elif group == "simple_metal_glass_ceramic_object":
-        disposal_action = "donate/reuse"
+        disposal_action = "donate/reuse" if reusable_confirmed else "check local guidance"
         summary = (
-            f"If the {formatted_item.lower()} is still usable and unbroken, reuse or donate it first; otherwise check local rules for this material."
+            f"Reuse or donate the {formatted_item.lower()} if it is visibly intact and usable; otherwise use trash or a confirmed local material route."
         )
         steps = [
-            f"Keep using the {formatted_item.lower()} or donate it if it is still functional and unbroken.",
-            f"Check local recycling or drop-off options for {material_text or 'this material'} before relying on them.",
-            "Do not assume curbside acceptance, and follow local trash guidance if no better option exists.",
+            f"Keep using the {formatted_item.lower()} or donate it only if it is functional and unbroken.",
+            f"Use recycling or drop-off for {material_text or 'this material'} only when the construction and local acceptance are confirmed.",
+            "If it is not reusable and no confirmed material route exists, place it in household trash.",
         ]
     elif group == "simple_wood_object":
         disposal_action = "donate/reuse"
@@ -740,7 +887,7 @@ def _deterministic_low_risk_guidance(
         "guidance_source": "llm_general_fallback",
         "guidance_metadata": {
             "llm_mode": "general_safe_fallback",
-            "confidence": "low",
+            "confidence": "medium",
             "sources_used": [],
             "llm_fallback_reason": failure_reason,
             "deterministic_fallback_used": True,
@@ -1095,6 +1242,9 @@ def _build_json_guidance_metadata(
     retrieval_scores: dict[str, float] = {}
     limitations: list[str] = []
     requires_location_check = False
+    applicability_by_chunk: dict[str, str] = {}
+    applicability_reason_codes: dict[str, list[str]] = {}
+    source_conditions: dict[str, dict[str, list[str]]] = {}
 
     for result in retrieval_results[:3]:
         chunk = result.get("chunk", {})
@@ -1118,6 +1268,14 @@ def _build_json_guidance_metadata(
 
         matched_fields[chunk_id] = list(result.get("matched_fields") or [])
         retrieval_scores[chunk_id] = float(result.get("score") or 0.0)
+        applicability_by_chunk[chunk_id] = str(
+            result.get("applicability") or "applicable"
+        )
+        applicability_reason_codes[chunk_id] = list(
+            result.get("applicability_reason_codes") or []
+        )
+        if isinstance(result.get("source_conditions"), dict):
+            source_conditions[chunk_id] = result["source_conditions"]
         for limitation in list(chunk.get("limitations") or []):
             normalized_limitation = str(limitation).strip()
             if normalized_limitation and normalized_limitation not in limitations:
@@ -1133,6 +1291,24 @@ def _build_json_guidance_metadata(
         "claims_used": claims_used,
         "matched_fields": matched_fields,
         "retrieval_scores": retrieval_scores,
+        "applicability_by_chunk": applicability_by_chunk,
+        "applicability_reason_codes": applicability_reason_codes,
+        "source_conditions": source_conditions,
+        "applicable_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "applicable"
+        ],
+        "conditional_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "conditional"
+        ],
+        "not_applicable_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "not_applicable"
+        ],
         "requires_location_check": requires_location_check,
         "limitations": limitations,
         "why_this_action": (
@@ -1143,6 +1319,80 @@ def _build_json_guidance_metadata(
     }
 
     return metadata
+
+
+def _retrieval_applicability(result: dict[str, Any]) -> str:
+    status = str(result.get("applicability") or "applicable")
+    return status if status in {"applicable", "conditional", "not_applicable"} else "conditional"
+
+
+def _build_retrieval_applicability_metadata(
+    retrieval_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    applicability_by_chunk: dict[str, str] = {}
+    applicability_reason_codes: dict[str, list[str]] = {}
+    for result in retrieval_results:
+        chunk = result.get("chunk")
+        chunk = chunk if isinstance(chunk, dict) else {}
+        chunk_id = _first_non_empty_string(result.get("chunk_id"), chunk.get("id"))
+        if chunk_id is None:
+            continue
+        applicability_by_chunk[chunk_id] = _retrieval_applicability(result)
+        applicability_reason_codes[chunk_id] = list(
+            result.get("applicability_reason_codes") or []
+        )
+    return {
+        "applicability_by_chunk": applicability_by_chunk,
+        "applicability_reason_codes": applicability_reason_codes,
+        "applicable_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "applicable"
+        ],
+        "conditional_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "conditional"
+        ],
+        "not_applicable_chunk_ids": [
+            chunk_id
+            for chunk_id, status in applicability_by_chunk.items()
+            if status == "not_applicable"
+        ],
+    }
+
+
+def _attach_retrieval_applicability(
+    guidance: dict[str, Any],
+    retrieval_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not retrieval_results:
+        return guidance
+    guidance["guidance_metadata"] = _merge_guidance_metadata(
+        _build_retrieval_applicability_metadata(retrieval_results),
+        guidance.get("guidance_metadata"),
+    )
+    return guidance
+
+
+def _usable_retrieval_results(
+    retrieval_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        result
+        for result in retrieval_results
+        if _retrieval_applicability(result) != "not_applicable"
+    ]
+
+
+def _applicable_retrieval_results(
+    retrieval_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        result
+        for result in retrieval_results
+        if _retrieval_applicability(result) == "applicable"
+    ]
 
 
 def _guidance_from_json_retrieval(
@@ -1187,7 +1437,7 @@ def _guidance_from_json_retrieval(
         "summary": _build_json_summary(primary_chunk, disposal_action, recognized_item),
         "steps": steps,
         "warnings": warnings,
-        "confidence": "high",
+        "confidence": "medium",
         "sources_used": [
             result.get("chunk_id")
             for result in retrieval_results[:3]
@@ -1238,7 +1488,10 @@ def _guidance_from_json_retrieval(
         "guidance_metadata": _merge_guidance_metadata(
             _build_json_guidance_metadata(retrieval_results),
             guidance_llm_service._contract_metadata_values(),
-            {"final_generation_path": "direct_rag_fallback"},
+            {
+                "final_generation_path": "direct_rag_fallback",
+                "confidence": "medium",
+            },
             extra_metadata,
         ),
     }
@@ -1246,6 +1499,92 @@ def _guidance_from_json_retrieval(
         guidance["warnings"] = validated_payload["warnings"]
 
     return guidance
+
+
+def _build_guidance_confidence(
+    guidance: dict[str, Any],
+    classification: dict[str, Any],
+    clarification_decision: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = guidance.get("guidance_metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    applicable_ids = list(metadata.get("applicable_chunk_ids") or [])
+    conditional_ids = list(metadata.get("conditional_chunk_ids") or [])
+    not_applicable_ids = list(metadata.get("not_applicable_chunk_ids") or [])
+    source = str(guidance.get("guidance_source") or "unknown")
+    action = _normalized_phrase(guidance.get("disposal_action"))
+    reason_codes: list[str] = []
+
+    if clarification_decision.get("required") is True:
+        level = "unknown"
+        score = 0.0
+        reason_codes.append("recognition_clarification_required")
+    elif not action:
+        level = "low"
+        score = 0.25
+        reason_codes.append("no_disposal_action_selected")
+    elif source == "json_rag_llm_generated" and applicable_ids:
+        if metadata.get("requires_location_check") is True:
+            level = "medium"
+            score = 0.72
+            reason_codes.append("local_acceptance_still_varies")
+        elif metadata.get("deterministic_fallback_used") is True:
+            level = "medium"
+            score = 0.68
+            reason_codes.append("deterministic_source_fallback")
+        else:
+            level = "high"
+            score = 0.9
+            reason_codes.append("applicable_source_evidence")
+    elif source == "json_rag_llm_generated":
+        level = "medium" if action in {"trash", "check local guidance"} else "low"
+        score = 0.6 if level == "medium" else 0.4
+        reason_codes.append("conditional_source_practical_fallback")
+    elif source == "json_rag_direct_generated":
+        level = "medium" if applicable_ids else "low"
+        score = 0.66 if applicable_ids else 0.42
+        reason_codes.append(
+            "direct_rag_with_applicable_evidence"
+            if applicable_ids
+            else "direct_rag_without_applicable_evidence"
+        )
+    elif source == "llm_general_fallback":
+        recognition = classification.get("recognition_confidence")
+        recognition_level = (
+            str(recognition.get("level") or "").casefold()
+            if isinstance(recognition, dict)
+            else ""
+        )
+        level = "medium" if recognition_level in {"high", "medium"} else "low"
+        score = 0.64 if level == "medium" else 0.45
+        reason_codes.append("practical_low_risk_fallback")
+    elif source == "legacy_rules_fallback":
+        level = "medium"
+        score = 0.62
+        reason_codes.append("static_category_guidance")
+    else:
+        level = "low"
+        score = 0.35
+        reason_codes.append("limited_guidance_evidence")
+
+    if conditional_ids:
+        reason_codes.append("conditional_retrieval_context")
+    if metadata.get("requires_location_check") is True:
+        reason_codes.append("local_variation")
+    if guidance.get("cache_hit") is True:
+        reason_codes.append("condition_matched_cache_hit")
+
+    return {
+        "level": level,
+        "score": round(score, 3),
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "source": source,
+        "applicability": {
+            "applicable_chunk_ids": applicable_ids,
+            "conditional_chunk_ids": conditional_ids,
+            "not_applicable_chunk_ids": not_applicable_ids,
+        },
+    }
 
 
 def _guidance_from_legacy_rules(
@@ -1333,6 +1672,13 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             "special_flags": special_flags,
             "visual_evidence": visual_evidence,
             "visual_observations": visual_observations,
+            "primary_material": _first_non_empty_string(
+                _normalized_open_value(classification, "primary_material"),
+                material_candidates[0] if material_candidates else None,
+            ),
+            "material_confidence": _first_non_empty_string(
+                _normalized_open_value(classification, "material_confidence")
+            ),
             "specific_context_required": bool(visual_observations),
             "location": classification.get("location"),
         }
@@ -1351,6 +1697,8 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
         "special_flags": [],
         "visual_evidence": None,
         "visual_observations": [],
+        "primary_material": material_candidates[0] if material_candidates else None,
+        "material_confidence": None,
         "specific_context_required": False,
         "location": classification.get("location"),
     }
@@ -1504,11 +1852,18 @@ def _open_condition_flags(classification: dict[str, Any]) -> list[str]:
 
 
 def _find_matching_terms(normalized_text: str, terms: set[str]) -> list[str]:
-    matched_terms = [
-        term
-        for term in sorted(terms)
-        if term in normalized_text
-    ]
+    text_tokens = normalized_text.split()
+    matched_terms: list[str] = []
+    for term in sorted(terms):
+        term_tokens = (_normalized_phrase(term) or "").split()
+        if not term_tokens or len(term_tokens) > len(text_tokens):
+            continue
+        width = len(term_tokens)
+        if any(
+            text_tokens[index : index + width] == term_tokens
+            for index in range(len(text_tokens) - width + 1)
+        ):
+            matched_terms.append(term)
     return matched_terms
 
 
@@ -1678,19 +2033,21 @@ def _resolve_guidance(
     )
     _log_retrieval_complete(retrieval_results)
     llm_context = _build_llm_context(classification)
+    source_results = _usable_retrieval_results(retrieval_results)
+    applicable_results = _applicable_retrieval_results(source_results)
 
-    if retrieval_results:
+    if source_results:
         cache_context_started = perf_counter()
         cache_context = guidance_cache_service.build_source_grounded_cache_context(
             classification=classification,
             retrieval_inputs=retrieval_inputs,
-            retrieval_results=retrieval_results,
+            retrieval_results=source_results,
             llm_context=llm_context,
         )
         _log_guidance_timing(
             "cache_context",
             cache_context_started,
-            retrieved_chunk_count=len(retrieval_results),
+            retrieved_chunk_count=len(source_results),
             cache_key_present=bool(cache_context.get("cache_key")) if cache_context else False,
         )
         cache_lookup_started = perf_counter()
@@ -1720,7 +2077,7 @@ def _resolve_guidance(
         llm_started = perf_counter()
         llm_result = guidance_llm_service.try_generate_source_grounded_guidance(
             **llm_context,
-            retrieval_results=retrieval_results,
+            retrieval_results=source_results,
         )
         _log_guidance_timing(
             "llm_source_grounded",
@@ -1731,8 +2088,9 @@ def _resolve_guidance(
         llm_guidance = llm_result.get("guidance")
         if isinstance(llm_guidance, dict):
             llm_guidance["guidance_metadata"] = _merge_guidance_metadata(
-                _build_json_guidance_metadata(retrieval_results),
+                _build_json_guidance_metadata(source_results),
                 llm_guidance.get("guidance_metadata"),
+                _build_retrieval_applicability_metadata(retrieval_results),
             )
             _log_guidance_selected(
                 llm_guidance,
@@ -1747,7 +2105,7 @@ def _resolve_guidance(
                 guidance=llm_guidance,
                 cache_context=cache_context,
                 retrieval_inputs=retrieval_inputs,
-                retrieval_results=retrieval_results,
+                retrieval_results=source_results,
                 llm_context=llm_context,
             )
             _log_guidance_timing("cache_write", cache_write_started, attempted=True)
@@ -1762,42 +2120,49 @@ def _resolve_guidance(
                 llm_fallback_reason,
                 "json_rag_direct_generated",
             )
-        guidance = _guidance_from_json_retrieval(
-            retrieval_results,
-            extra_metadata=(
-                {"llm_fallback_reason": llm_fallback_reason}
-                if llm_fallback_reason and llm_fallback_reason not in _LLM_SKIP_REASONS
-                else None
-            ),
-            recognized_item=llm_context["recognized_item"],
-            material=llm_context["material"],
-            broad_category=llm_context["broad_category"],
-            condition_flags=llm_context["condition_flags"],
-            special_flags=llm_context["special_flags"],
-            visual_evidence=llm_context["visual_evidence"],
-            visual_observations=llm_context["visual_observations"],
-            candidates=llm_context["candidates"],
-        ) or _default_safe_guidance()
-        _log_guidance_selected(
-            guidance,
-            chunk_ids=guidance.get("guidance_metadata", {}).get("retrieved_chunk_ids"),
-            requires_location_check=bool(
-                guidance.get("guidance_metadata", {}).get("requires_location_check")
-            ),
-        )
-        cache_write_started = perf_counter()
-        guidance_cache_service.write_source_grounded_guidance_if_cacheable(
-            classification=classification,
-            guidance=guidance,
-            cache_context=cache_context,
-            retrieval_inputs=retrieval_inputs,
-            retrieval_results=retrieval_results,
-            llm_context=llm_context,
-        )
-        _log_guidance_timing("cache_write", cache_write_started, attempted=True)
-        return guidance
+        if applicable_results:
+            guidance = _guidance_from_json_retrieval(
+                applicable_results,
+                extra_metadata=(
+                    {"llm_fallback_reason": llm_fallback_reason}
+                    if llm_fallback_reason and llm_fallback_reason not in _LLM_SKIP_REASONS
+                    else None
+                ),
+                recognized_item=llm_context["recognized_item"],
+                material=llm_context["material"],
+                broad_category=llm_context["broad_category"],
+                condition_flags=llm_context["condition_flags"],
+                special_flags=llm_context["special_flags"],
+                visual_evidence=llm_context["visual_evidence"],
+                visual_observations=llm_context["visual_observations"],
+                candidates=llm_context["candidates"],
+            ) or _default_safe_guidance()
+            _attach_retrieval_applicability(guidance, retrieval_results)
+            _log_guidance_selected(
+                guidance,
+                chunk_ids=guidance.get("guidance_metadata", {}).get("retrieved_chunk_ids"),
+                requires_location_check=bool(
+                    guidance.get("guidance_metadata", {}).get("requires_location_check")
+                ),
+            )
+            cache_write_started = perf_counter()
+            guidance_cache_service.write_source_grounded_guidance_if_cacheable(
+                classification=classification,
+                guidance=guidance,
+                cache_context=cache_context,
+                retrieval_inputs=retrieval_inputs,
+                retrieval_results=applicable_results,
+                llm_context=llm_context,
+            )
+            _log_guidance_timing("cache_write", cache_write_started, attempted=True)
+            return guidance
 
-    logger.info("LLM guidance skipped. reason=%s", "no_retrieved_chunks")
+    logger.info(
+        "Source-grounded guidance unavailable. reason=%s conditional_chunks=%s not_applicable_chunks=%s",
+        "no_applicable_chunks",
+        len([result for result in source_results if _retrieval_applicability(result) == "conditional"]),
+        len(retrieval_results) - len(source_results),
+    )
 
     low_risk_evaluation = _evaluate_low_risk_open_item(classification)
     low_risk_eligible = bool(low_risk_evaluation["eligible"])
@@ -1825,6 +2190,7 @@ def _resolve_guidance(
         )
         llm_guidance = llm_result.get("guidance")
         if isinstance(llm_guidance, dict):
+            _attach_retrieval_applicability(llm_guidance, retrieval_results)
             _log_guidance_selected(
                 llm_guidance,
                 item=_first_non_empty_string(classification.get("item")),
@@ -1841,39 +2207,24 @@ def _resolve_guidance(
                 failure_reason,
                 "llm_general_fallback",
             )
-            guidance = _deterministic_low_risk_guidance(
-                classification,
-                low_risk_evaluation=low_risk_evaluation,
-                failure_reason=failure_reason,
-            )
-            logger.info(
-                "Deterministic low-risk fallback used. item=%s group=%s reason=%s low_risk_reason=%s",
-                _first_non_empty_string(classification.get("item")),
-                guidance.get("guidance_metadata", {}).get("fallback_group"),
-                failure_reason,
-                low_risk_evaluation.get("reason"),
-            )
-            _log_guidance_selected(
-                guidance,
-                item=_first_non_empty_string(classification.get("item")),
-                low_risk_eligible=True,
-                reason=f"deterministic_low_risk_fallback:{low_risk_evaluation['reason']}",
-            )
-            return guidance
-
-        guidance = _open_guidance_unavailable(
+        guidance = _deterministic_low_risk_guidance(
             classification,
-            extra_metadata=(
-                {"llm_fallback_reason": failure_reason}
-                if failure_reason and failure_reason not in _LLM_SKIP_REASONS
-                else None
-            ),
+            low_risk_evaluation=low_risk_evaluation,
+            failure_reason=failure_reason or "llm_unavailable",
+        )
+        _attach_retrieval_applicability(guidance, retrieval_results)
+        logger.info(
+            "Deterministic low-risk fallback used. item=%s group=%s reason=%s low_risk_reason=%s",
+            _first_non_empty_string(classification.get("item")),
+            guidance.get("guidance_metadata", {}).get("fallback_group"),
+            failure_reason,
+            low_risk_evaluation.get("reason"),
         )
         _log_guidance_selected(
             guidance,
             item=_first_non_empty_string(classification.get("item")),
             low_risk_eligible=True,
-            reason=f"general_safe_fallback_unavailable:{low_risk_evaluation['reason']}",
+            reason=f"deterministic_low_risk_fallback:{low_risk_evaluation['reason']}",
         )
         return guidance
 
@@ -1953,6 +2304,12 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
 
     if isinstance(guidance_metadata, dict) and guidance_metadata:
         response["guidance_metadata"] = guidance_metadata
+
+    response["guidance_confidence"] = _build_guidance_confidence(
+        guidance,
+        classification,
+        clarification_decision,
+    )
 
     if "cache_hit" in classification or "cache_hit" in guidance:
         response["cache_hit"] = bool(

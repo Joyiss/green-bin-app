@@ -53,6 +53,119 @@ def _chunk(
 
 
 class GuidanceRetrievalServiceTests(unittest.TestCase):
+    def test_specific_confirmed_organic_context_is_applicable(self):
+        results = retrieve_guidance_chunks(
+            item_label="Vegetable scraps",
+            material="Organic",
+            primary_material="Organic",
+            material_confidence="high",
+            category="Organic waste",
+            condition_flags=[],
+            visual_observations=[
+                {
+                    "aspect": "construction",
+                    "value": "organic plant material",
+                    "confidence": 0.95,
+                    "evidence": "Vegetable matter is visible.",
+                }
+            ],
+            chunks=[
+                _chunk(
+                    chunk_id="compost",
+                    item_labels=["vegetable scraps"],
+                    categories=["organic waste"],
+                    disposal_actions_supported=["Compost"],
+                )
+            ],
+        )
+
+        self.assertEqual(results[0]["applicability"], "applicable")
+        self.assertIn(
+            "specific_item_evidence_supports_source",
+            results[0]["applicability_reason_codes"],
+        )
+
+    def test_unknown_container_eligibility_is_conditional(self):
+        results = retrieve_guidance_chunks(
+            item_label="Cosmetic pump container",
+            material="Plastic",
+            primary_material="Plastic",
+            material_confidence="high",
+            category="Plastic containers",
+            condition_flags=[],
+            visual_observations=[
+                {
+                    "aspect": "construction",
+                    "value": "rigid plastic bottle with pump",
+                    "confidence": 0.86,
+                    "evidence": "Rigid body and pump are visible.",
+                },
+                {
+                    "aspect": "recycling_marking",
+                    "value": "unknown",
+                    "confidence": None,
+                    "evidence": "",
+                },
+            ],
+            chunks=[
+                _chunk(
+                    chunk_id="plastic-container",
+                    requires_location_check=True,
+                    categories=["plastic containers"],
+                    condition_flags=["resin_code_present"],
+                    disposal_actions_supported=["Recycle", "Check local guidance"],
+                )
+            ],
+        )
+
+        self.assertEqual(results[0]["applicability"], "conditional")
+        self.assertIn(
+            "eligibility_marking_unknown",
+            results[0]["applicability_reason_codes"],
+        )
+        self.assertIn(
+            "resin_code_present", results[0]["source_conditions"]["unknown"]
+        )
+
+    def test_contradicted_cleanliness_condition_is_not_applicable(self):
+        results = retrieve_guidance_chunks(
+            item_label="Flexible food wrapper",
+            material="Plastic film",
+            primary_material="Plastic",
+            material_confidence="medium",
+            category="Plastic film",
+            condition_flags=["contaminated", "single_use"],
+            visual_observations=[
+                {
+                    "aspect": "contamination",
+                    "value": "food residue visible",
+                    "confidence": 0.9,
+                    "evidence": "Residue is visible.",
+                },
+                {
+                    "aspect": "construction",
+                    "value": "thin plastic film",
+                    "confidence": 0.8,
+                    "evidence": "Flexible film is visible.",
+                },
+            ],
+            chunks=[
+                _chunk(
+                    chunk_id="film-dropoff",
+                    item_labels=["plastic wrap"],
+                    categories=["plastic film"],
+                    condition_flags=["clean_and_dry"],
+                    disposal_actions_supported=["Drop-off"],
+                )
+            ],
+        )
+
+        self.assertEqual(results[0]["applicability"], "not_applicable")
+        self.assertIn(
+            "source_conditions_contradicted",
+            results[0]["applicability_reason_codes"],
+        )
+
     def test_exact_item_label_match_retrieves_correct_chunk(self):
         chunks = [
             _chunk(chunk_id="battery", item_labels=["batteries"]),

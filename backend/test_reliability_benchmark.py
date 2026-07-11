@@ -87,7 +87,8 @@ class ReliabilityBenchmarkTests(unittest.TestCase):
 
         self.assertTrue(report["passed"])
         self.assertEqual(report["unexpected_failure_count"], 0)
-        self.assertGreater(report["expected_failure_count"], 0)
+        self.assertEqual(report["expected_failure_count"], 0)
+        self.assertEqual(report["metrics"]["incorrect_disposal_actions"], 0)
         self.assertEqual(report["metrics"]["case_count"], len(load_cases()))
 
     def test_live_path_uses_real_image_and_forces_open_recognition(self):

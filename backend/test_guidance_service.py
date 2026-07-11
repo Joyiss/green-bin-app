@@ -34,13 +34,27 @@ def _json_chunk(**overrides):
     return chunk
 
 
-def _retrieval_result(chunk: dict, *, score: float = 8.25, matched_fields=None):
+def _retrieval_result(
+    chunk: dict,
+    *,
+    score: float = 8.25,
+    matched_fields=None,
+    applicability: str = "applicable",
+    applicability_reason_codes=None,
+):
     return {
         "chunk": chunk,
         "chunk_id": chunk["id"],
         "score": score,
         "matched_fields": matched_fields or ["item_label_exact"],
         "requires_location_check": bool(chunk.get("requires_location_check")),
+        "applicability": applicability,
+        "applicability_reason_codes": applicability_reason_codes or [],
+        "source_conditions": {
+            "confirmed": [],
+            "unknown": [],
+            "contradicted": [],
+        },
     }
 
 
@@ -285,7 +299,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "requires_location_check": True,
                 "guidance_cache_hit": True,
                 "guidance_cache_key": "cache-key",
-                "cache_key_version": "guidance_cache_v1",
+                "cache_key_version": "guidance_cache_v2",
             },
             "cache_hit": True,
         }
@@ -424,6 +438,85 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("limitations", response["guidance_metadata"])
         self.assertIn("why_this_action", response["guidance_metadata"])
         self.assertIn("retrieved_chunk_ids", response["guidance_metadata"])
+        self.assertEqual(response["guidance_confidence"]["level"], "medium")
+        self.assertIn(
+            "direct_rag_with_applicable_evidence",
+            response["guidance_confidence"]["reason_codes"],
+        )
+
+    def test_conditional_retrieval_does_not_authorize_direct_recycling(self):
+        observations = [
+            {
+                "aspect": "construction",
+                "value": "rigid plastic bottle with pump",
+                "confidence": 0.86,
+                "evidence": "Rigid bottle and pump are visible.",
+            },
+            {
+                "aspect": "recycling_marking",
+                "value": "unknown",
+                "confidence": None,
+                "evidence": "",
+            },
+        ]
+        classification = _open_classification(
+            item="Personal Care Container",
+            category="Plastic",
+            material_category="Plastic",
+            broad_category="plastic",
+            visual_observations=observations,
+        )
+        classification["recognition_confidence"] = {
+            "level": "high",
+            "score": 0.96,
+            "blocking": False,
+            "reason_codes": [],
+        }
+        chunk = _json_chunk(
+            id="plastic-container",
+            applies_to={
+                "item_labels": ["plastic bottles"],
+                "materials": ["rigid plastics"],
+                "categories": ["plastic containers"],
+                "condition_flags": ["resin_code_present"],
+            },
+            disposal_actions_supported=["Recycle", "Check local guidance"],
+        )
+        conditional_result = _retrieval_result(
+            chunk,
+            matched_fields=["material"],
+            applicability="conditional",
+            applicability_reason_codes=[
+                "eligibility_marking_unknown",
+                "local_acceptance_unverified",
+            ],
+        )
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[conditional_result],
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
+            ),
+        ):
+            response = build_prediction_response(classification)
+
+        self.assertEqual(response["disposal_action"], "trash")
+        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertNotEqual(response["disposal_action"], "recycle")
+        self.assertEqual(response["recognition_confidence"]["level"], "high")
+        self.assertEqual(response["guidance_confidence"]["level"], "medium")
 
     def test_direct_json_source_grounded_guidance_is_written_when_cacheable(self):
         classification = {
@@ -821,7 +914,8 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_curtain_is_low_risk_eligible_for_general_safe_fallback(self):
         classification = _open_classification(
@@ -907,7 +1001,7 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "llm_general_fallback")
-        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("rubik", response["summary"].lower())
         self.assertIn("donate", " ".join(response["steps"]).lower())
         self.assertNotIn("curbside recycling is accepted", response["summary"].lower())
@@ -932,10 +1026,10 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "llm_general_fallback")
-        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("container", response["summary"].lower())
         self.assertIn("reuse", response["summary"].lower())
-        self.assertIn("plastic container", " ".join(response["steps"]).lower())
+        self.assertIn("local program", " ".join(response["steps"]).lower())
 
     def test_generic_unknown_item_is_not_low_risk_eligible(self):
         classification = _open_classification(
@@ -1179,7 +1273,8 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         mock_rules.assert_not_called()
 
     def test_supported_label_compatibility_path_can_still_use_legacy_rules(self):

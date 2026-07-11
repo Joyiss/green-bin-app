@@ -182,6 +182,65 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
     @patch("services.guidance_llm_service._groq_request")
+    def test_conditional_chunk_is_prompt_context_not_main_action_authority(self, request):
+        request.return_value = json.dumps(
+            _payload(
+                disposal_action="trash",
+                summary="Put this personal-care container in household trash.",
+                steps=[
+                    "Empty any remaining product.",
+                    "Place the container in household trash.",
+                ],
+                sources_used=[],
+            )
+        )
+        result = try_generate_source_grounded_guidance(
+            recognized_item="Personal care container",
+            normalized_item_label="Plastic lotion pump bottle",
+            material="Plastic",
+            broad_category="Plastic",
+            condition_flags=[],
+            special_flags=[],
+            visual_evidence="Rigid pump container.",
+            visual_observations=[
+                {
+                    "aspect": "packaging_use",
+                    "value": "personal care product container",
+                    "confidence": 0.95,
+                    "evidence": "A product label and pump are visible.",
+                },
+                {
+                    "aspect": "recycling_marking",
+                    "value": "unknown",
+                    "confidence": None,
+                    "evidence": "",
+                },
+            ],
+            candidates=["cosmetic container"],
+            location=None,
+            retrieval_results=[
+                {
+                    **_result(_chunk(action="Recycle")),
+                    "applicability": "conditional",
+                    "applicability_reason_codes": [
+                        "eligibility_marking_unknown",
+                        "local_acceptance_unverified",
+                    ],
+                    "source_conditions": {
+                        "confirmed": [],
+                        "unknown": ["resin_code_present"],
+                        "contradicted": [],
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(result["guidance"]["disposal_action"], "trash")
+        prompt = request.call_args.args[0]
+        self.assertIn('"applicability": "conditional"', prompt)
+        self.assertIn('"allowed_disposal_actions": ["trash"]', prompt)
+
+    @patch("services.guidance_llm_service._groq_request")
     def test_original_safe_output_has_original_path(self, request):
         request.return_value = json.dumps(_payload())
         guidance = self.source_call()["guidance"]
@@ -274,6 +333,12 @@ class GenerationFlowTests(unittest.TestCase):
             "If packaging and contents are both mentioned, guide disposal for the package/container",
             prompt,
         )
+        self.assertIn("Use applicable chunks for definite disposal claims.", prompt)
+        self.assertIn(
+            "A conditional chunk may be mentioned only as an if-then alternative",
+            prompt,
+        )
+        self.assertIn("Separate confirmed visual facts from unknown properties.", prompt)
         self.assertIn('"recognized_item": "Opened single-use chip bag"', prompt)
         self.assertIn('"visual_evidence": "Crinkly snack pouch with crumbs."', prompt)
 
@@ -312,6 +377,10 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIn('"visual_evidence": "Open plastic cup with food residue."', prompt)
         self.assertIn('"visual_observations": [{"aspect": "contamination"', prompt)
         self.assertIn("Treat visual_observations as recognition evidence only.", prompt)
+        self.assertIn(
+            "For edible food, prefer using or sharing it while still edible",
+            prompt,
+        )
 
     def test_general_safe_allowed_actions_use_trash_for_non_reusable_low_risk_items(self):
         self.assertEqual(

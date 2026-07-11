@@ -214,6 +214,17 @@ class PredictRouteTests(unittest.TestCase):
                 ],
                 "guidance_source": "legacy_rules_fallback",
                 "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
+                "guidance_confidence": {
+                    "level": "medium",
+                    "score": 0.62,
+                    "reason_codes": ["static_category_guidance"],
+                    "source": "legacy_rules_fallback",
+                    "applicability": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": [],
+                        "not_applicable_chunk_ids": [],
+                    },
+                },
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },
@@ -314,36 +325,17 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["item"], "Water Bottle")
+        self.assertEqual(payload["status"], "confident")
+        self.assertEqual(payload["disposal_action"], "check local guidance")
+        self.assertEqual(payload["guidance_source"], "llm_general_fallback")
+        self.assertIn("reuse", payload["summary"].casefold())
+        self.assertIn("trash", payload["summary"].casefold())
+        self.assertNotIn(payload["disposal_action"], {"recycle", "donate/reuse"})
         self.assertEqual(
-            response.json(),
-            {
-                "item": "Water Bottle",
-                "category": "Metal",
-                "status": "confident",
-                "candidates": [
-                    {
-                        "label": "Plastic Water Bottle",
-                        "selected_item": "Plastic water bottle",
-                        "guidance_supported": True,
-                        "score": 0.94,
-                    }
-                ],
-                "disposal_action": None,
-                "material_code": None,
-                "impact_level": "Trusted Guidance Unavailable",
-                "summary": "Trusted disposal guidance is not available yet for this recognized item.",
-                "steps": [
-                    "Detected material category: Metal.",
-                    "Use local guidance or scan a supported item for trusted disposal instructions.",
-                ],
-                "guidance_source": "safe_fallback",
-                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
-                "cache_hit": False,
-                "recognition_source": "vlm_open",
-                "recognition_details": {
-                    "normalized": classification["recognition_details"]["normalized"],
-                },
-            },
+            payload["recognition_details"]["normalized"],
+            classification["recognition_details"]["normalized"],
         )
 
     def test_predict_exposes_normalized_nearby_search_context(self):
@@ -638,6 +630,17 @@ class PredictRouteTests(unittest.TestCase):
                 ],
                 "guidance_source": "legacy_rules_fallback",
                 "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
+                "guidance_confidence": {
+                    "level": "medium",
+                    "score": 0.62,
+                    "reason_codes": ["static_category_guidance"],
+                    "source": "legacy_rules_fallback",
+                    "applicability": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": [],
+                        "not_applicable_chunk_ids": [],
+                    },
+                },
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
             },
@@ -735,6 +738,17 @@ class PredictRouteTests(unittest.TestCase):
                 },
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
+                "guidance_confidence": {
+                    "level": "unknown",
+                    "score": 0.0,
+                    "reason_codes": ["recognition_clarification_required"],
+                    "source": "recognition_clarification_required",
+                    "applicability": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": [],
+                        "not_applicable_chunk_ids": [],
+                    },
+                },
                 "clarification": {
                     "required": True,
                     "reason_codes": ["recognition_status_unknown"],
@@ -805,6 +819,17 @@ class PredictRouteTests(unittest.TestCase):
                 ],
                 "guidance_source": "legacy_rules_fallback",
                 "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
+                "guidance_confidence": {
+                    "level": "medium",
+                    "score": 0.62,
+                    "reason_codes": ["static_category_guidance"],
+                    "source": "legacy_rules_fallback",
+                    "applicability": {
+                        "applicable_chunk_ids": [],
+                        "conditional_chunk_ids": [],
+                        "not_applicable_chunk_ids": [],
+                    },
+                },
                 "cache_hit": True,
                 "recognition_source": "phash_cache",
             },

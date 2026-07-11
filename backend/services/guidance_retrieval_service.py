@@ -53,6 +53,13 @@ _ALIAS_CANONICAL_MAP = {
     "electronic e waste": "electronics/e-waste",
     "e waste": "electronics/e-waste",
     "electronic waste": "electronics/e-waste",
+    "organic": "organic waste",
+    "organics": "organic waste",
+    "compostable organic": "organic waste",
+    "food scrap": "organic waste",
+    "food scraps": "organic waste",
+    "yard waste": "organic waste",
+    "garden": "organic waste",
 }
 _EARTH911_SPECIAL_TERMS = {
     "battery",
@@ -115,6 +122,27 @@ _BATTERY_WIRED_NEGATIVE_TERMS = {
     "usb cable",
     "wired",
 }
+_ROUTING_MODIFIER_CONDITIONS = {
+    "acceptance_not_verified",
+    "backyard_compost_pile",
+    "backyard_management",
+    "check_local_rules",
+    "dropoff_recommended",
+    "mechanical_pretreatment",
+    "mixed_curbside_collection",
+    "pre_dropoff_preparation",
+    "requires_dropoff",
+    "single_stream_collection",
+    "special_handling",
+}
+_UNKNOWN_OBSERVATION_VALUES = {
+    "",
+    "not visible",
+    "uncertain",
+    "unknown",
+    "unknown from image",
+}
+_RECYCLING_ACTIONS = {"recycle", "drop off", "drop-off"}
 
 
 def _normalize_string_list(values: Any) -> list[str]:
@@ -162,6 +190,250 @@ def _visual_observation_text_values(values: Any) -> list[str]:
             if candidate:
                 normalized_values.append(candidate)
     return normalized_values
+
+
+def _observation_facts(values: Any) -> dict[str, dict[str, Any]]:
+    facts: dict[str, dict[str, Any]] = {}
+    if not isinstance(values, list):
+        return facts
+
+    for observation in values:
+        if not isinstance(observation, dict):
+            continue
+        aspect = _normalize_text(observation.get("aspect")).replace(" ", "_")
+        if not aspect:
+            continue
+        value = _normalize_text(observation.get("value"))
+        confidence: float | None = None
+        try:
+            if observation.get("confidence") is not None:
+                confidence = float(observation["confidence"])
+        except (TypeError, ValueError):
+            confidence = None
+        facts[aspect] = {
+            "value": value,
+            "confidence": confidence,
+            "known": value not in _UNKNOWN_OBSERVATION_VALUES,
+        }
+    return facts
+
+
+def _condition_applicability_state(
+    condition: str,
+    *,
+    condition_flags: set[str],
+    observations: dict[str, dict[str, Any]],
+) -> str:
+    normalized = condition.replace(" ", "_")
+    if normalized in _ROUTING_MODIFIER_CONDITIONS:
+        return "modifier"
+    if normalized in condition_flags:
+        return "confirmed"
+
+    condition_value = str(observations.get("condition", {}).get("value") or "")
+    contamination_value = str(
+        observations.get("contamination", {}).get("value") or ""
+    )
+    marking_value = str(
+        observations.get("recycling_marking", {}).get("value") or ""
+    )
+    construction_value = str(observations.get("construction", {}).get("value") or "")
+    combined_state = " ".join(
+        [condition_value, contamination_value, construction_value]
+    )
+
+    if normalized in {"clean_and_dry", "clean_and_free_of_food_residue"}:
+        if any(
+            flag in condition_flags
+            for flag in {"contaminated", "food_soiled", "wet"}
+        ) or any(term in contamination_value for term in ("contaminated", "residue", "soiled")):
+            return "contradicted"
+        clean = "appears_clean" in condition_flags or "clean" in contamination_value
+        dry = "dry" in condition_flags or "dry" in combined_state
+        return "confirmed" if clean and dry else "unknown"
+
+    if normalized == "empty_and_rinsed":
+        empty = "empty" in condition_flags or "empty" in combined_state
+        clean = (
+            "appears_clean" in condition_flags
+            or "rinsed" in combined_state
+            or "clean" in contamination_value
+        )
+        if "contaminated" in condition_flags or "food_soiled" in condition_flags:
+            return "contradicted"
+        return "confirmed" if empty and clean else "unknown"
+
+    if normalized == "resin_code_present":
+        if marking_value in _UNKNOWN_OBSERVATION_VALUES:
+            return "unknown"
+        return (
+            "confirmed"
+            if any(term in marking_value for term in ("resin", "code", "number", "symbol"))
+            else "contradicted"
+        )
+
+    if normalized == "coated_or_laminated":
+        if any(term in construction_value for term in ("coated", "coating", "laminated")):
+            return "confirmed"
+        if any(term in construction_value for term in ("uncoated", "plain paper")):
+            return "contradicted"
+        return "unknown"
+
+    if normalized == "broken":
+        if "broken" in condition_flags or "broken" in condition_value:
+            return "confirmed"
+        if "intact" in condition_flags or "intact" in condition_value:
+            return "contradicted"
+        return "unknown"
+
+    return "unknown"
+
+
+def classify_chunk_applicability(
+    chunk: dict[str, Any],
+    *,
+    matched_fields: list[str],
+    item_label: str | None,
+    primary_material: str | None,
+    material_confidence: str | None,
+    condition_flags: list[str],
+    special_flags: list[str],
+    visual_observations: list[dict[str, Any]] | None,
+    location: dict[str, Any] | None,
+) -> dict[str, Any]:
+    observations = _observation_facts(visual_observations)
+    normalized_condition_flags = set(_normalize_condition_flags(condition_flags))
+    normalized_special_flags = set(_normalize_condition_flags(special_flags))
+    source_conditions = _normalize_condition_flags(
+        (chunk.get("applies_to") or {}).get("condition_flags")
+    )
+    confirmed_conditions: list[str] = []
+    unknown_conditions: list[str] = []
+    contradicted_conditions: list[str] = []
+
+    for condition in source_conditions:
+        state = _condition_applicability_state(
+            condition,
+            condition_flags=normalized_condition_flags | normalized_special_flags,
+            observations=observations,
+        )
+        if state == "confirmed":
+            confirmed_conditions.append(condition)
+        elif state == "contradicted":
+            contradicted_conditions.append(condition)
+        elif state == "unknown":
+            unknown_conditions.append(condition)
+
+    actions = {
+        _normalize_text(value)
+        for value in chunk.get("disposal_actions_supported") or []
+        if _normalize_text(value)
+    }
+    route_is_recycling = bool(actions & _RECYCLING_ACTIONS)
+    route_is_compost = "compost" in actions
+    route_is_donation = "donate reuse" in actions
+    safety_route_confirmed = bool(
+        normalized_special_flags
+        & {"battery", "electronics", "hazardous", "requires_dropoff"}
+    )
+    broad_match_only = bool(matched_fields) and not any(
+        field in matched_fields
+        for field in ("item_label_exact", "item_label_normalized", "condition_flags")
+    )
+    reason_codes: list[str] = []
+    item_context = " ".join(
+        [
+            _normalize_text(item_label),
+            str(observations.get("packaging_use", {}).get("value") or ""),
+            str(observations.get("form_factor", {}).get("value") or ""),
+            str(observations.get("construction", {}).get("value") or ""),
+        ]
+    )
+    section = _normalize_text(chunk.get("section"))
+    organic_subtype_mismatch = False
+    if section == "yard waste":
+        organic_subtype_mismatch = not any(
+            term in item_context
+            for term in ("leaf", "leaves", "yard", "grass", "branch", "twig", "plant trimming")
+        )
+    elif section == "food scraps compost":
+        organic_subtype_mismatch = not any(
+            term in item_context
+            for term in ("food", "fruit", "vegetable", "produce", "scrap", "peel", "core")
+        )
+
+    if organic_subtype_mismatch:
+        applicability = "not_applicable"
+        reason_codes.append("organic_subtype_mismatch")
+    elif contradicted_conditions:
+        applicability = "not_applicable"
+        reason_codes.append("source_conditions_contradicted")
+    else:
+        applicability = "applicable"
+        if unknown_conditions:
+            applicability = "conditional"
+            reason_codes.append("source_conditions_unconfirmed")
+        if broad_match_only and not route_is_compost and not safety_route_confirmed:
+            applicability = "conditional"
+            reason_codes.append("broad_similarity_only")
+
+        material_level = _normalize_text(material_confidence)
+        construction = observations.get("construction", {})
+        marking = observations.get("recycling_marking", {})
+        if route_is_recycling and not safety_route_confirmed:
+            if material_level in {"", "low", "unknown"}:
+                applicability = "conditional"
+                reason_codes.append("material_certainty_insufficient")
+            if not construction.get("known", False):
+                applicability = "conditional"
+                reason_codes.append("construction_unknown")
+            if chunk.get("requires_location_check") is True:
+                applicability = "conditional"
+                reason_codes.append("local_acceptance_unverified")
+            if "resin_code_present" in source_conditions and not marking.get("known", False):
+                applicability = "conditional"
+                reason_codes.append("eligibility_marking_unknown")
+
+        if route_is_donation:
+            if normalized_condition_flags & {"single_use", "broken", "contaminated", "food_soiled"}:
+                applicability = "not_applicable"
+                reason_codes.append("item_condition_incompatible_with_reuse")
+            elif not normalized_condition_flags & {"intact", "reusable", "appears_clean"}:
+                applicability = "conditional"
+                reason_codes.append("reusability_unconfirmed")
+
+        if route_is_compost:
+            organic_context = " ".join(
+                [
+                    _normalize_text(primary_material),
+                    str(construction.get("value") or ""),
+                ]
+            )
+            if not any(term in organic_context for term in ("organic", "food", "plant", "yard")):
+                applicability = "conditional"
+                reason_codes.append("organic_construction_unconfirmed")
+
+    if applicability == "applicable":
+        reason_codes.append("specific_item_evidence_supports_source")
+
+    return {
+        "applicability": applicability,
+        "applicability_reason_codes": list(dict.fromkeys(reason_codes)),
+        "source_conditions": {
+            "confirmed": confirmed_conditions,
+            "unknown": unknown_conditions,
+            "contradicted": contradicted_conditions,
+        },
+        "applicability_evidence": {
+            "primary_material": primary_material,
+            "material_confidence": material_confidence,
+            "construction_known": bool(observations.get("construction", {}).get("known")),
+            "recycling_marking_known": bool(
+                observations.get("recycling_marking", {}).get("known")
+            ),
+            "location_supplied": isinstance(location, dict) and bool(location),
+        },
+    }
 
 
 def _candidate_values(primary_value: Any, candidate_values: Any) -> list[str]:
@@ -578,6 +850,8 @@ def retrieve_guidance_chunks(
     special_flags: list[str] | None = None,
     visual_evidence: str | None = None,
     visual_observations: list[dict[str, Any]] | None = None,
+    primary_material: str | None = None,
+    material_confidence: str | None = None,
     specific_context_required: bool = False,
     location: dict[str, Any] | None = None,
     chunks: list[dict[str, Any]] | None = None,
@@ -625,6 +899,18 @@ def retrieve_guidance_chunks(
         if score < min_score:
             continue
 
+        applicability = classify_chunk_applicability(
+            chunk,
+            matched_fields=matched_fields,
+            item_label=item_label,
+            primary_material=primary_material or material,
+            material_confidence=material_confidence,
+            condition_flags=normalized_condition_flags,
+            special_flags=list(special_flags or []),
+            visual_observations=visual_observations,
+            location=location,
+        )
+
         matches.append(
             {
                 "chunk": chunk,
@@ -632,11 +918,15 @@ def retrieve_guidance_chunks(
                 "score": round(score, 4),
                 "matched_fields": matched_fields,
                 "requires_location_check": bool(chunk.get("requires_location_check")),
+                **applicability,
             }
         )
 
     matches.sort(
         key=lambda match: (
+            {"applicable": 0, "conditional": 1, "not_applicable": 2}.get(
+                str(match.get("applicability")), 3
+            ),
             -float(match["score"]),
             0 if bool(match["chunk"].get("human_reviewed")) else 1,
             0 if bool(match["chunk"].get("source_grounded")) else 1,
