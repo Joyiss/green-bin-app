@@ -447,6 +447,130 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["special_handling_flags"], [])
         self.assertEqual(result["normalized"]["matched_supported_label"], None)
 
+    def test_clean_plate_uses_explicit_observation_without_contamination_flags(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "clean disposable paper plate",
+                "likely_material": "paper",
+                "broad_category": "paper",
+                "visual_evidence": "Paper plate normally used for food.",
+                "visual_observations": [
+                    {
+                        "aspect": "condition",
+                        "value": "appears_clean",
+                        "confidence": 0.91,
+                        "evidence": "No food residue visible.",
+                    },
+                    {
+                        "aspect": "contamination",
+                        "value": "no visible contamination",
+                        "confidence": 0.88,
+                        "evidence": "Surface appears empty and clean.",
+                    },
+                ],
+                "candidates": [],
+            }
+        )
+
+        flags = result["normalized"]["condition_flags"]
+        self.assertIn("appears_clean", flags)
+        self.assertIn("single_use", flags)
+        self.assertNotIn("food_soiled", flags)
+        self.assertNotIn("contaminated", flags)
+
+    def test_condition_flags_ignore_unrelated_free_text_evidence(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "stainless steel cup",
+                "likely_material": "metal",
+                "broad_category": "metal",
+                "visual_evidence": "An opened package and pen are visible in the background.",
+                "visual_observations": [
+                    {
+                        "aspect": "construction",
+                        "value": "stainless steel",
+                        "confidence": 0.94,
+                        "evidence": "Reflective metal body without visible staining.",
+                    }
+                ],
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["condition_flags"], [])
+        self.assertEqual(result["normalized"]["material_category"], "Metal")
+
+    def test_bananas_preserve_organic_category_over_household_hint(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "bunch of bananas",
+                "likely_material": "organic food",
+                "broad_category": "household",
+                "visual_observations": [],
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["material_category"], "Organic")
+        self.assertEqual(result["normalized"]["primary_material"], "Organic")
+        self.assertEqual(result["normalized"]["disposal_category"], "Organic")
+        self.assertEqual(result["normalized"]["broad_category"], "garden")
+
+    def test_leafy_material_preserves_organic_context(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "green leaves",
+                "likely_material": "organic plant material",
+                "broad_category": "household",
+                "visual_observations": [],
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["material_category"], "Organic")
+        self.assertEqual(result["normalized"]["disposal_category"], "Organic")
+        self.assertEqual(result["normalized"]["broad_category"], "garden")
+
+    def test_dominant_metal_construction_beats_secondary_plastic_handle(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "metal cooking utensil with plastic handle",
+                "likely_material": "plastic",
+                "broad_category": "household",
+                "visual_observations": [
+                    {
+                        "aspect": "construction",
+                        "value": "primarily stainless steel with plastic handle",
+                        "confidence": 0.94,
+                        "evidence": "Metal forms the working end and most of the object.",
+                    }
+                ],
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["material_category"], "Metal")
+        self.assertEqual(result["normalized"]["primary_material"], "Metal")
+        self.assertEqual(result["normalized"]["secondary_materials"], ["Plastic"])
+        self.assertEqual(
+            result["normalized"]["material_source"], "structured_observation"
+        )
+
+    def test_opened_does_not_trigger_pen_matching(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "opened wrapper",
+                "likely_material": "plastic film",
+                "broad_category": "plastic",
+                "visual_observations": [],
+                "candidates": [],
+            }
+        )
+
+        self.assertEqual(result["normalized"]["item_label"], "Opened Wrapper")
+        self.assertIn("opened", result["normalized"]["condition_flags"])
+        self.assertNotEqual(result["normalized"]["material_source"], "fallback")
+
 
 if __name__ == "__main__":
     unittest.main()

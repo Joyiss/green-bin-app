@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
 DEFAULT_VLM_MAX_TOKENS = 60
-OPEN_VLM_MAX_TOKENS = 220
+OPEN_VLM_MAX_TOKENS = 320
 OPEN_VISUAL_OBSERVATION_ASPECTS = [
     "packaging_use",
     "form_factor",
@@ -81,8 +81,14 @@ OPEN_DETECTION_PROMPT = (
     '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
     "- raw_item_label and likely_material should each be short plain-language strings, or \"\" if unknown.\n"
     "- raw_item_label must name the physical object being disposed of, not just the product, brand, logo, printed text, flavor, or contents.\n"
-    "- Include disposal-relevant physical details in raw_item_label when visible: packaging type, container type, opened/used/empty/food-soiled/broken condition, reusable vs single-use form.\n"
-    "- likely_material is the physical material hint, such as plastic, metal, glass, ceramic, paper, cardboard, fabric, or mixed plastic/foil.\n"
+    "- Inspect physical features before choosing a label: cap, pump, nozzle, handle, opening, lid, seams, printed product label, shape, and material appearance.\n"
+    "- Mention a feature only when it is actually visible. Never invent a handle, opening, lid, cap, pump, nozzle, seam, marking, or material cue to support a guess.\n"
+    "- A ceramic mug needs visible mug form, a cup opening, a handle, and ceramic-looking construction. A pot or pressure cooker needs visible cooking-vessel form plus supporting handles or lid features.\n"
+    "- A visible cap, pump, nozzle, dispensing closure, container seam, or personal-care label supports a bottle or cosmetic/personal-care container rather than a mug or cooking vessel.\n"
+    "- When the exact container type is unclear, use an honest broader physical label such as cosmetic container, metal cup, rigid container, or unknown container.\n"
+    "- Use uncertain when a broader label is supported but a specific label is not. Use unknown when even the broader physical object cannot be supported.\n"
+    "- Include disposal-relevant physical details in raw_item_label only when visible: packaging type, container form, condition, and reusable vs single-use construction.\n"
+    "- likely_material is the primary material of the physical object, such as plastic, metal, glass, ceramic, paper, cardboard, organic, fabric, or mixed material. Do not let a small cap, handle, coating, or label replace the dominant material.\n"
     "- If contents and packaging are both visible, identify the package/container unless loose contents are clearly the item being discarded.\n"
     "- Treat labels and barcode text as clues only after the object shape/material are visible.\n"
     "- visual_observations must describe image-visible disposal context only; do not decide disposal or recommend actions.\n"
@@ -90,15 +96,20 @@ OPEN_DETECTION_PROMPT = (
     "- For each observation, use value \"unknown\" and confidence null when the property cannot be determined from the image.\n"
     "- Observation confidence is the confidence for that specific conclusion, from 0 to 1, not overall item confidence.\n"
     "- Observation evidence must cite visible cues briefly and must be \"\" when the value is unknown.\n"
-    "- broad_category is only for disposal/location-search routing and must be exactly one of: automotive, batteries, construction, electronics, garden, glass, hazardous, household, metal, paint, paper, plastic, unknown, unsupported.\n"
+    "- Condition and contamination must come from visible evidence, not the item's usual use. Use appears_clean only when no residue or staining is visible, contaminated only when contamination is visible, and unknown otherwise.\n"
+    "- Cleanliness does not establish recyclability, coating, resin type, or local acceptance. Keep those properties unknown unless visibly supported.\n"
+    "- For construction, identify the dominant material first and note secondary components without letting them replace the primary material.\n"
+    "- candidates must be meaningful visual alternatives. Include a supported broader label when a specific candidate is uncertain.\n"
+    "- status may be confident only when the chosen label agrees with visible form, construction, and the strongest candidate evidence.\n"
+    "- broad_category is only for disposal/location-search routing and must be exactly one of: automotive, batteries, construction, electronics, garden, glass, hazardous, household, metal, organic, paint, paper, plastic, unknown, unsupported.\n"
     "- Do not use physical material for broad_category when the item routes through a special stream.\n"
-    "- Examples: keyboard -> electronics, not plastic; computer mouse -> electronics, not plastic; calculator -> electronics; phone charger -> electronics; battery -> batteries; paint can -> paint or hazardous, not metal; cardboard box -> paper; plastic water bottle -> plastic; glass bottle -> glass.\n"
+    "- Examples: keyboard -> electronics, not plastic; battery -> batteries; paint can -> paint or hazardous, not metal; loose food or food scraps -> organic; leaves -> garden or organic; cardboard box -> paper.\n"
     "- Product/package examples: branded chips -> opened chip bag, not chips; yogurt -> used plastic yogurt container, not yogurt; greasy pizza box -> food-soiled pizza box; candle jar -> glass candle jar with wax residue.\n"
     "- candidates must contain at most 3 objects.\n"
     "- each candidate object must contain label and confidence.\n"
     "- visual_evidence must be a short string, 12 words or fewer, or \"\" if unknown.\n"
-    "Return shape:\n"
-    '{"status":"confident","raw_item_label":"ceramic mug","likely_material":"ceramic","broad_category":"household","candidates":[{"label":"ceramic mug","confidence":0.91}],"visual_evidence":"Handle, cup opening, glossy rigid body.","visual_observations":[{"aspect":"packaging_use","value":"not packaging","confidence":0.86,"evidence":"Rigid mug body, no wrapper or container seal."},{"aspect":"form_factor","value":"rigid handled cup","confidence":0.91,"evidence":"Handle and cup opening visible."},{"aspect":"condition","value":"appears intact","confidence":0.74,"evidence":"No cracks visible."},{"aspect":"contamination","value":"unknown","confidence":null,"evidence":""},{"aspect":"recycling_marking","value":"unknown","confidence":null,"evidence":""},{"aspect":"construction","value":"glazed ceramic","confidence":0.82,"evidence":"Glossy rigid ceramic-looking body."}]}\n'
+    "Illustrative return shape only; do not copy its object or features unless visible:\n"
+    '{"status":"uncertain","raw_item_label":"rigid cosmetic container","likely_material":"plastic","broad_category":"plastic","candidates":[{"label":"pump bottle","confidence":0.72},{"label":"cosmetic container","confidence":0.68}],"visual_evidence":"Rigid labeled container with dispensing pump.","visual_observations":[{"aspect":"packaging_use","value":"personal-care container","confidence":0.84,"evidence":"Product label and dispensing closure are visible."},{"aspect":"form_factor","value":"rigid container with pump","confidence":0.88,"evidence":"Bottle body and pump nozzle are visible."},{"aspect":"condition","value":"unknown","confidence":null,"evidence":""},{"aspect":"contamination","value":"unknown","confidence":null,"evidence":""},{"aspect":"recycling_marking","value":"unknown","confidence":null,"evidence":""},{"aspect":"construction","value":"rigid plastic with plastic pump","confidence":0.76,"evidence":"Molded body and pump components appear plastic."}]}\n'
 )
 BARCODE_AWARE_PROMPT_SUFFIX = (
     "\n\n"
@@ -165,6 +176,7 @@ OPEN_DETECTION_RESPONSE_SCHEMA = {
                 "hazardous",
                 "household",
                 "metal",
+                "organic",
                 "paint",
                 "paper",
                 "plastic",
@@ -940,6 +952,8 @@ def _unknown_open_detection_result(
     raw_output: str = "",
     *,
     error: str | None = None,
+    failure_type: str | None = None,
+    parse_mode: str = "failed",
 ) -> dict[str, object]:
     result: dict[str, object] = {
         "status": "unknown",
@@ -950,9 +964,12 @@ def _unknown_open_detection_result(
         "visual_evidence": "",
         "visual_observations": [],
         "raw_output": raw_output,
+        "parse_mode": parse_mode,
     }
     if error is not None:
         result["error"] = error
+    if failure_type is not None:
+        result["failure_type"] = failure_type
     return result
 
 
@@ -1073,7 +1090,10 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         parsed_output = _extract_partial_open_detection_fields(raw_output)
         if not parsed_output:
             logger.warning("Open VLM JSON parse failed; returning unknown.")
-            result = _unknown_open_detection_result(raw_output)
+            result = _unknown_open_detection_result(
+                raw_output,
+                failure_type="model_response_error",
+            )
             _log_vlm_timing(
                 "json_parse",
                 parse_started,
@@ -1134,7 +1154,11 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         )
         if not recovered_has_signal:
             logger.warning("Open VLM JSON recovery failed; returning unknown.")
-            result = _unknown_open_detection_result(raw_output)
+            result = _unknown_open_detection_result(
+                raw_output,
+                failure_type="model_response_error",
+                parse_mode="recovery_failed",
+            )
             _log_vlm_timing(
                 "json_parse",
                 parse_started,
@@ -1160,6 +1184,13 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
             len(parsed_candidates),
         )
 
+    if parse_mode == "recovered" and status == "confident":
+        status = "uncertain"
+        logger.info(
+            "Open VLM recovered output downgraded. reason=truncated_structured_output raw_item_label=%s",
+            raw_item_label,
+        )
+
     result = {
         "status": status,
         "raw_item_label": raw_item_label,
@@ -1169,6 +1200,7 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         "visual_evidence": visual_evidence,
         "visual_observations": visual_observations,
         "raw_output": raw_output,
+        "parse_mode": parse_mode,
     }
     _log_vlm_timing(
         "json_parse",
@@ -1497,8 +1529,26 @@ def _detect_object_open(
             candidate_count=len(result.get("candidates", [])),
         )
     except Exception as exc:
+        if isinstance(exc, requests.RequestException):
+            failure_type = "cloudflare_transport_error"
+        elif isinstance(exc, ValueError):
+            failure_type = "cloudflare_response_error"
+        elif isinstance(exc, RuntimeError):
+            failure_type = "cloudflare_configuration_error"
+        else:
+            failure_type = "cloudflare_request_error"
+        logger.warning(
+            "Open VLM request failed. failure_type=%s error_type=%s",
+            failure_type,
+            type(exc).__name__,
+        )
         print(f"Cloudflare Workers AI error: {exc}")
-        return _unknown_open_detection_result("", error=str(exc))
+        return _unknown_open_detection_result(
+            "",
+            error=str(exc),
+            failure_type=failure_type,
+            parse_mode="request_failed",
+        )
 
     print(f"Cloudflare Vision open parsed result: {result!r}")
     return result

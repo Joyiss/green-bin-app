@@ -10,6 +10,8 @@ from PIL import Image
 from services.recognition_router import (
     _build_cached_classification,
     _build_open_vlm_classification,
+    _finalize_vlm_cache_policy,
+    _should_cache_open_vlm_classification,
     recognize_item,
 )
 
@@ -74,7 +76,122 @@ class RecognitionRouterTests(unittest.TestCase):
             result = _run_recognize_item(selected_item="Calculator")
 
         self.assertEqual(result["item"], "Calculator")
+        self.assertEqual(result["recognition_source"], "user_confirmed_selection")
+        self.assertEqual(result["recognition_confidence"]["level"], "high")
+        self.assertIn(
+            "user_confirmed_selection",
+            result["recognition_confidence"]["reason_codes"],
+        )
         mock_phash.assert_not_called()
+
+    def test_contradictory_open_container_is_downgraded_and_broadened(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "ceramic mug",
+                    "likely_material": "ceramic",
+                    "broad_category": "household",
+                    "candidates": [
+                        {"label": "ceramic mug", "confidence": 0.91},
+                        {"label": "cosmetic container", "confidence": 0.38},
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "packaging_use",
+                            "value": "personal care pump bottle",
+                            "confidence": 0.94,
+                            "evidence": "Label and pump visible.",
+                        },
+                        {
+                            "aspect": "form_factor",
+                            "value": "rectangular bottle with pump",
+                            "confidence": 0.96,
+                            "evidence": "No handle visible.",
+                        },
+                        {
+                            "aspect": "construction",
+                            "value": "opaque rigid plastic",
+                            "confidence": 0.82,
+                            "evidence": "Molded bottle body.",
+                        },
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["item"], "Personal care container")
+        self.assertEqual(result["recognition_confidence"]["level"], "low")
+        self.assertFalse(_should_cache_open_vlm_classification(result))
+
+    def test_nonblocking_medium_open_recognition_remains_confident(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "rigid container",
+                    "likely_material": "plastic",
+                    "broad_category": "plastic",
+                    "candidates": [
+                        {"label": "rigid container", "confidence": 0.78}
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "form_factor",
+                            "value": "rigid container",
+                            "confidence": 0.7,
+                            "evidence": "Rigid walls visible.",
+                        }
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recognition_confidence"]["level"], "medium")
+        self.assertFalse(result["recognition_confidence"]["blocking"])
+        self.assertEqual(result["status"], "confident")
+        self.assertFalse(_should_cache_open_vlm_classification(result))
+
+    def test_confident_open_label_gets_accurate_cache_policy_reason(self):
+        classification = {
+            "item": "Novel Rigid Container",
+            "category": "Plastic",
+            "status": "confident",
+            "candidates": [],
+            "recognition_details": {"normalized": {}},
+            "recognition_confidence": {"level": "high", "score": 0.9},
+        }
+
+        policy = _finalize_vlm_cache_policy(
+            classification=classification,
+            barcode_signal={"value": None},
+            clip_embedding=[0.1, 0.2],
+        )
+
+        self.assertTrue(policy["save_clip_embedding"])
+        self.assertEqual(policy["reason"], "normal_product_photo")
+
+    def test_medium_open_label_cache_reason_is_not_unknown_result(self):
+        classification = {
+            "item": "Rigid Container",
+            "category": "Plastic",
+            "status": "confident",
+            "candidates": [],
+            "recognition_details": {"normalized": {}},
+            "recognition_confidence": {"level": "medium", "score": 0.7},
+        }
+
+        policy = _finalize_vlm_cache_policy(
+            classification=classification,
+            barcode_signal={"value": None},
+            clip_embedding=[0.1, 0.2],
+        )
+
+        self.assertFalse(policy["save_clip_embedding"])
+        self.assertEqual(policy["reason"], "recognition_not_high_confidence")
 
     def test_open_calculator_uses_disposal_category_as_final_category(self):
         result = _build_open_vlm_classification(

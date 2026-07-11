@@ -114,6 +114,8 @@ _ROUTING_CATEGORIES = {
 _CONDITION_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     ("food_soiled", ("greasy", "grease", "food-soiled", "food soiled", "food residue", "crumb", "soiled")),
     ("contaminated", ("contaminated", "dirty", "residue", "stained")),
+    ("appears_clean", ("appears clean", "visibly clean", "clean")),
+    ("intact", ("appears intact", "intact")),
     ("empty", ("empty",)),
     ("broken", ("broken", "cracked", "shattered", "damaged")),
     ("wet", ("wet", "soaked", "damp")),
@@ -217,6 +219,44 @@ _GENERIC_BOTTLE_TERMS = (
     "flask",
 )
 _PEN_TERMS = ("pen",)
+_ORGANIC_ITEM_TERMS = (
+    "banana",
+    "bananas",
+    "banana bunch",
+    "leafy green",
+    "leafy greens",
+    "green leaves",
+    "plant leaves",
+    "leaves",
+    "food scrap",
+    "food scraps",
+    "fruit scraps",
+    "vegetable scraps",
+    "spoiled produce",
+    "produce scraps",
+)
+_ORGANIC_MATERIAL_TERMS = (
+    "organic",
+    "organic food",
+    "organic plant material",
+    "plant material",
+    "compostable organic",
+    "food",
+    "food scraps",
+    "fruit",
+    "produce",
+)
+_MATERIAL_TERM_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Metal", _METAL_HINT_TERMS),
+    ("Plastic", _PLASTIC_HINT_TERMS),
+    ("Glass", _GLASS_HINT_TERMS),
+    ("Ceramic", ("ceramic", "glazed ceramic")),
+    ("Paper", ("paper", "paperboard", "coated paper")),
+    ("Cardboard", ("cardboard", "corrugated cardboard")),
+    ("Organic", _ORGANIC_MATERIAL_TERMS),
+    ("Wood", ("wood", "wooden")),
+    ("Fabric/Textile", ("fabric", "textile", "cloth")),
+)
 _OBSERVATION_ASPECTS = {
     "packaging_use",
     "form_factor",
@@ -238,6 +278,27 @@ def _clean_text(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9\s\-]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
+
+
+def _term_tokens(value: Any) -> list[str]:
+    normalized = _clean_text(value).replace("-", " ")
+    return normalized.split() if normalized else []
+
+
+def _contains_term(text: Any, term: Any) -> bool:
+    text_tokens = _term_tokens(text)
+    term_tokens = _term_tokens(term)
+    if not text_tokens or not term_tokens or len(term_tokens) > len(text_tokens):
+        return False
+    width = len(term_tokens)
+    return any(
+        text_tokens[index : index + width] == term_tokens
+        for index in range(len(text_tokens) - width + 1)
+    )
+
+
+def _contains_any_term(text: Any, terms: tuple[str, ...]) -> bool:
+    return any(_contains_term(text, term) for term in terms)
 
 
 def _coerce_confidence(value: Any) -> float | None:
@@ -329,15 +390,78 @@ def _is_vague_hint(value: str) -> bool:
     )
 
 
-def _extract_flags(normalized_text: str) -> tuple[list[str], list[str]]:
-    condition_flags: list[str] = []
+def _positive_observation_value(value: Any) -> str:
+    normalized = _clean_text(value)
+    if _is_vague_hint(normalized):
+        return ""
+    return normalized
+
+
+def _condition_flags_from_value(value: Any) -> list[str]:
+    normalized = _positive_observation_value(value)
+    if not normalized:
+        return []
+
+    clean_or_negative = _contains_any_term(
+        normalized,
+        (
+            "appears clean",
+            "visibly clean",
+            "no visible contamination",
+            "no contamination visible",
+            "no visible food residue",
+            "free of residue",
+        ),
+    )
+    flags: list[str] = []
     for flag, patterns in _CONDITION_FLAG_PATTERNS:
-        if any(pattern in normalized_text for pattern in patterns):
+        if clean_or_negative and flag in {"food_soiled", "contaminated"}:
+            continue
+        if _contains_any_term(normalized, patterns):
+            flags.append(flag)
+    if clean_or_negative and "appears_clean" not in flags:
+        flags.append("appears_clean")
+    return flags
+
+
+def _extract_flags(
+    normalized_text: str,
+    visual_observations: list[dict[str, Any]],
+    *,
+    special_context: str = "",
+) -> tuple[list[str], list[str]]:
+    condition_flags: list[str] = []
+    for flag in _condition_flags_from_value(normalized_text):
+        if flag not in condition_flags:
             condition_flags.append(flag)
 
+    condition_aspects = {
+        "packaging_use",
+        "condition",
+        "contamination",
+        "closure_state",
+        "reusability",
+        "recycling_marking",
+    }
+    observation_values: list[str] = []
+    for observation in visual_observations:
+        aspect = str(observation.get("aspect") or "").strip()
+        value = _positive_observation_value(observation.get("value"))
+        if not value:
+            continue
+        observation_values.append(value)
+        if aspect not in condition_aspects:
+            continue
+        for flag in _condition_flags_from_value(value):
+            if flag not in condition_flags:
+                condition_flags.append(flag)
+
     special_flags: list[str] = []
+    special_text = _clean_text(
+        " ".join([normalized_text, special_context, *observation_values])
+    )
     for flag, patterns in _SPECIAL_FLAG_PATTERNS:
-        if any(pattern in normalized_text for pattern in patterns):
+        if _contains_any_term(special_text, patterns):
             special_flags.append(flag)
 
     if "electronics" in special_flags and "dropoff_recommended" not in special_flags:
@@ -358,73 +482,121 @@ def _normalize_item_label(normalized_text: str) -> tuple[str, str]:
     if exact_alias is not None:
         return exact_alias, "exact_alias"
 
-    if "coffee mug" in normalized_text and "ceramic" in normalized_text:
+    if _contains_term(normalized_text, "coffee mug") and _contains_term(normalized_text, "ceramic"):
         return "Ceramic mug", "keyword_rule"
-    if "mug" in normalized_text:
-        if "ceramic" in normalized_text:
+    if _contains_term(normalized_text, "mug"):
+        if _contains_term(normalized_text, "ceramic"):
             return "Ceramic mug", "keyword_rule"
         return "Mug", "keyword_rule"
 
-    if "charger" in normalized_text:
-        if any(term in normalized_text for term in ("phone", "iphone", "mobile", "usb")):
+    if _contains_term(normalized_text, "charger"):
+        if _contains_any_term(normalized_text, ("phone", "iphone", "mobile", "usb")):
             return "Phone charger", "keyword_rule"
         return "Charger", "keyword_rule"
 
-    if "cable" in normalized_text or "cord" in normalized_text:
-        if any(
-            term in normalized_text
-            for term in ("charging", "charger", "phone", "iphone", "mobile", "usb")
+    if _contains_any_term(normalized_text, ("cable", "cord")):
+        if _contains_any_term(
+            normalized_text,
+            ("charging", "charger", "phone", "iphone", "mobile", "usb"),
         ):
             return "Charging cable", "keyword_rule"
         return "Cable", "keyword_rule"
 
-    if "yogurt" in normalized_text and (
-        "cup" in normalized_text or "container" in normalized_text
+    if _contains_term(normalized_text, "yogurt") and (
+        _contains_term(normalized_text, "cup")
+        or _contains_term(normalized_text, "container")
     ):
         return "Yogurt cup", "keyword_rule"
 
-    if "pizza" in normalized_text and "box" in normalized_text:
+    if _contains_term(normalized_text, "pizza") and _contains_term(normalized_text, "box"):
         return "Pizza box", "keyword_rule"
 
-    if "water" in normalized_text and "bottle" in normalized_text:
+    if _contains_term(normalized_text, "water") and _contains_term(normalized_text, "bottle"):
         return "Water bottle", "keyword_rule"
 
     return _title_case_label(normalized_text), "clean_fallback"
+
+
+def _is_organic_item(*values: Any) -> bool:
+    return any(
+        _contains_any_term(value, _ORGANIC_ITEM_TERMS)
+        for value in values
+        if value is not None
+    )
 
 
 def _map_material_hint(value: str) -> str:
     normalized_value = _clean_text(value)
     if _is_vague_hint(normalized_value):
         return UNKNOWN_VALUE
-    if any(term in normalized_value for term in _METAL_HINT_TERMS):
+    if _contains_any_term(normalized_value, _METAL_HINT_TERMS):
         return _MATERIAL_CATEGORIES["metal"]
-    if "ceramic" in normalized_value:
+    if _contains_term(normalized_value, "ceramic"):
         return _MATERIAL_CATEGORIES["ceramic"]
-    if "glass" in normalized_value:
+    if _contains_term(normalized_value, "glass"):
         return _MATERIAL_CATEGORIES["glass"]
-    if any(term in normalized_value for term in _PLASTIC_HINT_TERMS):
+    if _contains_any_term(normalized_value, _PLASTIC_HINT_TERMS):
         return _MATERIAL_CATEGORIES["plastic"]
-    if "cardboard" in normalized_value:
+    if _contains_term(normalized_value, "cardboard"):
         return _MATERIAL_CATEGORIES["cardboard"]
-    if "paper" in normalized_value:
+    if _contains_term(normalized_value, "paper"):
         return _MATERIAL_CATEGORIES["paper"]
-    if "electronic" in normalized_value:
+    if _contains_any_term(normalized_value, ("electronic", "electronics")):
         return _MATERIAL_CATEGORIES["electronics"]
-    if "battery" in normalized_value:
+    if _contains_any_term(normalized_value, ("battery", "batteries")):
         return _MATERIAL_CATEGORIES["battery"]
-    if "hazard" in normalized_value:
+    if _contains_any_term(normalized_value, ("hazard", "hazardous")):
         return _MATERIAL_CATEGORIES["hazardous"]
-    if "organic" in normalized_value:
+    if _contains_any_term(normalized_value, _ORGANIC_MATERIAL_TERMS):
         return _MATERIAL_CATEGORIES["organic"]
-    if "wood" in normalized_value:
+    if _contains_any_term(normalized_value, ("wood", "wooden")):
         return _MATERIAL_CATEGORIES["wood"]
-    if any(term in normalized_value for term in ("fabric", "textile", "cloth")):
+    if _contains_any_term(normalized_value, ("fabric", "textile", "cloth")):
         return _MATERIAL_CATEGORIES["fabric/textile"]
     return _title_case_label(normalized_value)
 
 
-def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
+def _structured_materials(
+    visual_observations: list[dict[str, Any]],
+) -> tuple[str, list[str], float | None]:
+    construction = next(
+        (
+            observation
+            for observation in visual_observations
+            if observation.get("aspect") == "construction"
+            and _positive_observation_value(observation.get("value"))
+        ),
+        None,
+    )
+    if construction is None:
+        return UNKNOWN_VALUE, [], None
+
+    value = _positive_observation_value(construction.get("value"))
+    mentions: list[tuple[int, str]] = []
+    value_tokens = _term_tokens(value)
+    for material, terms in _MATERIAL_TERM_GROUPS:
+        best_index: int | None = None
+        for term in terms:
+            term_tokens = _term_tokens(term)
+            width = len(term_tokens)
+            for index in range(max(0, len(value_tokens) - width + 1)):
+                if value_tokens[index : index + width] == term_tokens:
+                    best_index = index if best_index is None else min(best_index, index)
+        if best_index is not None:
+            mentions.append((best_index, material))
+
+    mentions.sort(key=lambda item: item[0])
+    ordered_materials: list[str] = []
+    for _, material in mentions:
+        if material not in ordered_materials:
+            ordered_materials.append(material)
+    if not ordered_materials:
+        return UNKNOWN_VALUE, [], _coerce_confidence(construction.get("confidence"))
+    return (
+        ordered_materials[0],
+        ordered_materials[1:],
+        _coerce_confidence(construction.get("confidence")),
+    )
 
 
 def _candidate_has_term_evidence(
@@ -443,7 +615,9 @@ def _candidate_has_term_evidence(
         candidate_label = _clean_text(candidate.get("label"))
         if not candidate_label:
             continue
-        if required_terms and not all(term in candidate_label for term in required_terms):
+        if required_terms and not all(
+            _contains_term(candidate_label, term) for term in required_terms
+        ):
             continue
         if not _contains_any_term(candidate_label, terms):
             continue
@@ -483,6 +657,8 @@ def _infer_material_details(
     candidates: Any,
     condition_flags: list[str],
     special_flags: list[str],
+    structured_primary_material: str = UNKNOWN_VALUE,
+    structured_material_confidence: float | None = None,
 ) -> tuple[str, str, str]:
     hinted_material = _map_material_hint(likely_material)
     normalized_visual_evidence = _clean_text(visual_evidence)
@@ -498,6 +674,26 @@ def _infer_material_details(
     raw_has_glass = _contains_any_term(normalized_text, _GLASS_HINT_TERMS)
     visual_has_glass = _contains_any_term(normalized_visual_evidence, _GLASS_HINT_TERMS)
     candidate_has_glass = _candidate_has_term_evidence(candidates, _GLASS_HINT_TERMS)
+
+    if _is_organic_item(item_label, normalized_text):
+        return _MATERIAL_CATEGORIES["organic"], "high", "item_identity"
+
+    if "battery" in special_flags:
+        source = (
+            "keyword"
+            if _contains_any_term(normalized_text, ("battery", "batteries"))
+            else "structured_power_source"
+        )
+        return _MATERIAL_CATEGORIES["battery"], "high", source
+
+    if structured_primary_material != UNKNOWN_VALUE:
+        confidence = (
+            "high"
+            if structured_material_confidence is not None
+            and structured_material_confidence >= 0.85
+            else "medium"
+        )
+        return structured_primary_material, confidence, "structured_observation"
 
     if item_label == "Pizza box" and "food_soiled" in condition_flags:
         return _MATERIAL_CATEGORIES["food-soiled cardboard"], "high", "keyword"
@@ -546,13 +742,12 @@ def _infer_material_details(
         if _clean_text(normalized_text) in _EXACT_LABEL_ALIASES:
             return _MATERIAL_CATEGORIES["ceramic"], "high", "alias"
         return _MATERIAL_CATEGORIES["ceramic"], "high", "keyword"
-    if item_label == "Mug" and "ceramic" in normalized_text:
+    if item_label == "Mug" and _contains_term(normalized_text, "ceramic"):
         return _MATERIAL_CATEGORIES["ceramic"], "high", "keyword"
-    if item_label == "Wooden picture frame" or "wood" in normalized_text:
+    if item_label == "Wooden picture frame" or _contains_any_term(
+        normalized_text, ("wood", "wooden")
+    ):
         return _MATERIAL_CATEGORIES["wood"], "high", "keyword"
-    if "battery" in special_flags:
-        return _MATERIAL_CATEGORIES["battery"], "high", "keyword"
-
     if raw_has_plastic:
         return _MATERIAL_CATEGORIES["plastic"], "high", "keyword"
     if visual_has_plastic or candidate_has_plastic:
@@ -601,27 +796,27 @@ def _map_routing_category_hint(value: str) -> str:
         return _ROUTING_CATEGORIES[normalized_value]
     if normalized_value in {"battery", "batteries"}:
         return _ROUTING_CATEGORIES["batteries"]
-    if any(term in normalized_value for term in ("electronics", "electronic", "e waste", "e-waste", "ewaste")):
+    if _contains_any_term(normalized_value, ("electronics", "electronic", "e waste", "e-waste", "ewaste")):
         return _ROUTING_CATEGORIES["electronics"]
-    if "automotive" in normalized_value or "vehicle" in normalized_value or "car " in f"{normalized_value} ":
+    if _contains_any_term(normalized_value, ("automotive", "vehicle", "car")):
         return _ROUTING_CATEGORIES["automotive"]
-    if "construction" in normalized_value or "demolition" in normalized_value or "building material" in normalized_value:
+    if _contains_any_term(normalized_value, ("construction", "demolition", "building material")):
         return _ROUTING_CATEGORIES["construction"]
-    if any(term in normalized_value for term in ("garden", "yard", "lawn", "organic", "compost")):
+    if _contains_any_term(normalized_value, ("garden", "yard", "lawn", "organic", "compost")):
         return _ROUTING_CATEGORIES["garden"]
-    if "glass" in normalized_value:
+    if _contains_term(normalized_value, "glass"):
         return _ROUTING_CATEGORIES["glass"]
-    if "paint" in normalized_value:
+    if _contains_term(normalized_value, "paint"):
         return _ROUTING_CATEGORIES["paint"]
-    if any(term in normalized_value for term in ("hazard", "chemical", "medical", "medicine")):
+    if _contains_any_term(normalized_value, ("hazard", "hazardous", "chemical", "medical", "medicine")):
         return _ROUTING_CATEGORIES["hazardous"]
-    if "cardboard" in normalized_value or "paper" in normalized_value:
+    if _contains_any_term(normalized_value, ("cardboard", "paper")):
         return _ROUTING_CATEGORIES["paper"]
-    if "metal" in normalized_value or "aluminum" in normalized_value or "steel" in normalized_value:
+    if _contains_any_term(normalized_value, ("metal", "aluminum", "steel")):
         return _ROUTING_CATEGORIES["metal"]
-    if "plastic" in normalized_value:
+    if _contains_term(normalized_value, "plastic"):
         return _ROUTING_CATEGORIES["plastic"]
-    if "household" in normalized_value:
+    if _contains_term(normalized_value, "household"):
         return _ROUTING_CATEGORIES["household"]
     if normalized_value in {"appliance", "appliances", "textile", "textiles", "fabric", "fabrics", "clothing", "clothes", "apparel"}:
         return _ROUTING_CATEGORIES["household"]
@@ -641,38 +836,41 @@ def _infer_routing_category_from_item(
     item_text = _clean_text(f"{item_label} {normalized_text}")
     material_text = _clean_text(likely_material)
 
-    if any(term in item_text for term in ("keyboard", "computer mouse", "calculator", "phone charger", "charger", "charging cable", "cable", "cord", "usb", "laptop", "computer", "monitor", "printer", "television", "tv", "tablet", "smartphone", "cell phone", "phone", "remote", "headphone", "earbud")):
+    if _contains_any_term(item_text, ("keyboard", "computer mouse", "calculator", "phone charger", "charger", "charging cable", "cable", "cord", "usb", "laptop", "computer", "monitor", "printer", "television", "tv", "tablet", "smartphone", "cell phone", "phone", "remote", "headphone", "earbud")):
         return _ROUTING_CATEGORIES["electronics"]
-    if any(term in item_text for term in ("battery", "batteries", "lithium", "alkaline", "rechargeable", "vape")):
+    if _contains_any_term(item_text, ("battery", "batteries", "lithium", "alkaline", "rechargeable", "vape")):
         return _ROUTING_CATEGORIES["batteries"]
-    if "paint" in item_text:
+    if _contains_term(item_text, "paint"):
         return _ROUTING_CATEGORIES["paint"]
-    if any(term in item_text for term in ("propane", "motor oil", "medication", "medicine", "chemical", "aerosol", "cleaning spray", "light bulb")):
+    if _contains_any_term(item_text, ("propane", "motor oil", "medication", "medicine", "chemical", "aerosol", "cleaning spray", "light bulb")):
         return _ROUTING_CATEGORIES["hazardous"]
-    if any(term in item_text for term in ("cardboard", "pizza box", "paper", "newspaper", "magazine", "book", "envelope")):
+    if _contains_any_term(item_text, ("cardboard", "pizza box", "paper", "newspaper", "magazine", "book", "envelope")):
         return _ROUTING_CATEGORIES["paper"]
-    if "glass" in item_text:
+    if _contains_term(item_text, "glass"):
         return _ROUTING_CATEGORIES["glass"]
-    if any(term in item_text for term in ("plastic", "pet", "pete")):
+    if _contains_any_term(item_text, ("plastic", "pet", "pete")):
         return _ROUTING_CATEGORIES["plastic"]
-    if any(term in item_text for term in ("metal", "aluminum", "aluminium", "steel")):
+    if _contains_any_term(item_text, ("metal", "aluminum", "aluminium", "steel")):
         return _ROUTING_CATEGORIES["metal"]
-    if any(term in item_text for term in ("automotive", "tire", "car ", "vehicle")):
+    if _contains_any_term(item_text, ("automotive", "tire", "car", "vehicle")):
         return _ROUTING_CATEGORIES["automotive"]
-    if any(term in item_text for term in ("construction", "demolition", "drywall", "asphalt", "concrete")):
+    if _contains_any_term(item_text, ("construction", "demolition", "drywall", "asphalt", "concrete")):
         return _ROUTING_CATEGORIES["construction"]
-    if any(term in item_text for term in ("leaves", "branches", "grass", "garden", "yard")):
+    if _is_organic_item(item_label, normalized_text) or _contains_any_term(
+        item_text,
+        ("leaves", "branches", "grass", "garden", "yard", "food scraps"),
+    ):
         return _ROUTING_CATEGORIES["garden"]
 
     if material_text in _ROUTING_CATEGORIES and material_text not in {"unknown", "unsupported"}:
         return _ROUTING_CATEGORIES[material_text]
     if material_text == "cardboard":
         return _ROUTING_CATEGORIES["paper"]
-    if any(term in material_text for term in ("plastic", "pet", "pete")):
+    if _contains_any_term(material_text, ("plastic", "pet", "pete")):
         return _ROUTING_CATEGORIES["plastic"]
-    if any(term in material_text for term in ("metal", "aluminum", "aluminium", "steel")):
+    if _contains_any_term(material_text, ("metal", "aluminum", "aluminium", "steel")):
         return _ROUTING_CATEGORIES["metal"]
-    if "glass" in material_text:
+    if _contains_term(material_text, "glass"):
         return _ROUTING_CATEGORIES["glass"]
     return _ROUTING_CATEGORIES["unknown"]
 
@@ -705,9 +903,16 @@ def _infer_broad_category(
 
 def _infer_disposal_category(
     item_label: str,
+    normalized_text: str,
     raw_broad_category: str,
+    material_category: str,
     special_flags: list[str],
 ) -> str:
+    if material_category == _MATERIAL_CATEGORIES["organic"] or _is_organic_item(
+        item_label, normalized_text
+    ):
+        return _APPROVED_DISPOSAL_CATEGORIES["organic"]
+
     hinted_category = _map_disposal_category_hint(raw_broad_category)
     if hinted_category != UNKNOWN_VALUE:
         return hinted_category
@@ -735,7 +940,7 @@ def _labels_are_consistent(primary_label: str, candidate_label: str) -> bool:
         return False
     if primary == candidate:
         return True
-    if primary in candidate or candidate in primary:
+    if _contains_term(primary, candidate) or _contains_term(candidate, primary):
         return True
 
     primary_terms = {term for term in primary.split() if term}
@@ -801,11 +1006,13 @@ def _supported_label_matches_material(
 ) -> bool:
     normalized_supported_label = _normalize_candidate_label(supported_label)
     if material_category == "Metal":
-        return not any(term in normalized_supported_label for term in ("plastic",))
+        return not _contains_term(normalized_supported_label, "plastic")
     if material_category == "Plastic":
-        return "plastic" in normalized_supported_label or "yogurt container" in normalized_supported_label
+        return _contains_term(normalized_supported_label, "plastic") or _contains_term(
+            normalized_supported_label, "yogurt container"
+        )
     if material_category in {"Mixed Material", "Unknown"}:
-        return "plastic" not in normalized_supported_label
+        return not _contains_term(normalized_supported_label, "plastic")
     return True
 
 
@@ -826,12 +1033,12 @@ def _resolve_supported_label_from_primary(
     normalized_visual_evidence = _clean_text(visual_evidence)
 
     if item_label == "Water bottle":
-        raw_has_plastic = any(term in normalized_raw_item for term in _PLASTIC_HINT_TERMS)
-        visual_has_plastic = any(
-            term in normalized_visual_evidence for term in _PLASTIC_HINT_TERMS
+        raw_has_plastic = _contains_any_term(normalized_raw_item, _PLASTIC_HINT_TERMS)
+        visual_has_plastic = _contains_any_term(
+            normalized_visual_evidence, _PLASTIC_HINT_TERMS
         )
-        likely_material_has_plastic = any(
-            term in normalized_likely_material for term in _PLASTIC_HINT_TERMS
+        likely_material_has_plastic = _contains_any_term(
+            normalized_likely_material, _PLASTIC_HINT_TERMS
         )
         plastic_evidence_is_strong = raw_has_plastic or visual_has_plastic
         if material_category != "Plastic" or not plastic_evidence_is_strong:
@@ -866,26 +1073,39 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     visual_observation_text = _visual_observation_text(visual_observations)
 
     normalized_text = _clean_text(raw_item_label)
-    combined_visual_text = _clean_text(
-        " ".join(
-            [
-                normalized_text,
-                str(visual_evidence or ""),
-                visual_observation_text,
-            ]
-        )
+    condition_flags, special_flags = _extract_flags(
+        normalized_text,
+        visual_observations,
+        special_context=" ".join(
+            [str(likely_material or ""), str(raw_broad_category or "")]
+        ),
     )
-    condition_flags, special_flags = _extract_flags(combined_visual_text)
     item_label, normalization_source = _normalize_item_label(normalized_text)
+    primary_material, secondary_materials, structured_material_confidence = (
+        _structured_materials(visual_observations)
+    )
     material_category, material_confidence, material_source = _infer_material_details(
         item_label,
         normalized_text,
         str(likely_material or ""),
-        " ".join([str(visual_evidence or ""), visual_observation_text]),
+        str(visual_evidence or ""),
         candidates,
         condition_flags,
         special_flags,
+        structured_primary_material=primary_material,
+        structured_material_confidence=structured_material_confidence,
     )
+    if "battery" in special_flags:
+        if primary_material not in {UNKNOWN_VALUE, _MATERIAL_CATEGORIES["battery"]}:
+            secondary_materials = [primary_material, *secondary_materials]
+        primary_material = _MATERIAL_CATEGORIES["battery"]
+    if primary_material == UNKNOWN_VALUE:
+        primary_material = material_category
+    secondary_materials = [
+        material
+        for material in secondary_materials
+        if material != primary_material
+    ]
     broad_category = _infer_broad_category(
         item_label,
         normalized_text,
@@ -895,7 +1115,9 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     )
     disposal_category = _infer_disposal_category(
         item_label,
+        normalized_text,
         str(raw_broad_category or ""),
+        material_category,
         special_flags,
     )
 
@@ -922,6 +1144,8 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         "disposal_category": disposal_category,
         "item_label": item_label,
         "material_category": material_category,
+        "primary_material": primary_material,
+        "secondary_materials": secondary_materials,
         "original_vlm_broad_category": raw_broad_category,
         "original_vlm_likely_material": likely_material,
         "material_confidence": material_confidence,

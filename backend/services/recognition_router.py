@@ -25,6 +25,10 @@ try:
     )
     from . import request_context
     from . import vlm_service
+    from .recognition_reliability_service import (
+        evaluate_open_recognition,
+        user_confirmed_recognition_confidence,
+    )
     from .confidence_router import TOP_K, evaluate_clip_candidates
 except ImportError:
     from classifier import build_selected_item_prediction, classify
@@ -40,6 +44,10 @@ except ImportError:
     )
     from services import request_context
     from services import vlm_service
+    from services.recognition_reliability_service import (
+        evaluate_open_recognition,
+        user_confirmed_recognition_confidence,
+    )
     from services.confidence_router import TOP_K, evaluate_clip_candidates
 
 
@@ -219,6 +227,12 @@ def _normalize_cached_classification(value: Any) -> dict[str, Any] | None:
             recognized_broad_category
         )
 
+    recognition_confidence = value.get("recognition_confidence")
+    if isinstance(recognition_confidence, dict):
+        normalized_classification["recognition_confidence"] = dict(
+            recognition_confidence
+        )
+
     return normalized_classification
 
 
@@ -308,6 +322,15 @@ def _build_cached_classification(record: dict[str, Any]) -> dict[str, Any] | Non
 
 
 def _classification_confidence(classification: dict[str, Any]) -> float | None:
+    recognition_confidence = classification.get("recognition_confidence")
+    if isinstance(recognition_confidence, dict):
+        try:
+            score = recognition_confidence.get("score")
+            if score is not None:
+                return float(score)
+        except (TypeError, ValueError):
+            pass
+
     candidates = classification.get("candidates", [])
     if classification.get("status") not in {"confident", "uncertain"}:
         return None
@@ -344,6 +367,7 @@ def _classification_snapshot(classification: dict[str, Any]) -> dict[str, Any]:
         "recognition_details",
         "recognized_material_category",
         "recognized_broad_category",
+        "recognition_confidence",
     ):
         if key in classification:
             snapshot[key] = classification.get(key)
@@ -446,14 +470,23 @@ def _build_open_vlm_classification(
     if not isinstance(normalized, dict):
         return None
 
-    if recognition_details.get("status") != "confident":
-        return None
-
     normalized_item_label = str(
         normalized.get("normalized_item") or normalized.get("item_label") or ""
     ).strip()
-    if not _is_real_item_label(normalized_item_label):
-        return None
+    reliability = evaluate_open_recognition(recognition_details)
+    suggested_label = reliability.get("suggested_label")
+    final_item_label = (
+        str(suggested_label).strip()
+        if isinstance(suggested_label, str) and suggested_label.strip()
+        else normalized_item_label
+    )
+    model_status = str(recognition_details.get("status") or "unknown").strip().casefold()
+    if model_status == "unknown" or not _is_real_item_label(final_item_label):
+        final_status = "unknown"
+    elif reliability.get("blocking") is True or model_status == "uncertain":
+        final_status = "uncertain"
+    else:
+        final_status = "confident"
 
     matched_supported_label = normalized.get("matched_supported_label")
     disposal_category = str(
@@ -465,11 +498,15 @@ def _build_open_vlm_classification(
     broad_category = str(
         normalized.get("broad_category") or ""
     ).strip() or "Unknown"
-    if isinstance(matched_supported_label, str) and matched_supported_label.strip():
+    if (
+        final_status == "confident"
+        and isinstance(matched_supported_label, str)
+        and matched_supported_label.strip()
+    ):
         trusted_classification = build_selected_item_prediction(matched_supported_label)
         if trusted_classification.get("status") == "confident":
             return {
-                "item": normalized_item_label,
+                "item": final_item_label,
                 "category": disposal_category,
                 "status": "confident",
                 "candidates": [],
@@ -477,17 +514,19 @@ def _build_open_vlm_classification(
                 "trusted_guidance_label": matched_supported_label,
                 "recognized_material_category": material_category,
                 "recognized_broad_category": broad_category,
+                "recognition_confidence": reliability,
             }
 
     return {
-        "item": normalized_item_label,
+        "item": final_item_label,
         "category": disposal_category,
-        "status": "confident",
+        "status": final_status,
         "candidates": [],
         "trusted_guidance_available": False,
         "trusted_guidance_label": None,
         "recognized_material_category": material_category,
         "recognized_broad_category": broad_category,
+        "recognition_confidence": reliability,
     }
 
 
@@ -504,6 +543,12 @@ def _should_cache_open_vlm_classification(
 ) -> bool:
     if classification.get("status") != "confident":
         return False
+    recognition_confidence = classification.get("recognition_confidence")
+    if (
+        isinstance(recognition_confidence, dict)
+        and recognition_confidence.get("level") != "high"
+    ):
+        return False
     if not _is_real_item_label(classification.get("item")):
         return False
     return True
@@ -514,13 +559,16 @@ def _log_final_classification(classification: dict[str, Any]) -> None:
         classification.get("status") == "confident"
         and classification.get("trusted_guidance_available") is False
     )
+    recognition_confidence = classification.get("recognition_confidence")
     logger.info(
-        "Final classification built. item=%s status=%s category=%s material_category=%s recognition_source=%s safe_fallback_guidance=%s",
+        "Final classification built. item=%s status=%s category=%s material_category=%s recognition_source=%s recognition_level=%s recognition_reasons=%s safe_fallback_guidance=%s",
         classification.get("item"),
         classification.get("status"),
         classification.get("category"),
         classification.get("recognized_material_category"),
         classification.get("recognition_source"),
+        recognition_confidence.get("level") if isinstance(recognition_confidence, dict) else None,
+        recognition_confidence.get("reason_codes") if isinstance(recognition_confidence, dict) else None,
         safe_fallback_guidance_used,
     )
 
@@ -717,11 +765,37 @@ def _finalize_vlm_cache_policy(
             reason="clip_embedding_unavailable",
         )
 
-    if final_status != "confident" or not _is_cacheable_item_label(final_label):
+    if final_status != "confident":
         return _build_cache_policy(
             save_record=True,
             save_clip_embedding=False,
             reason="unknown_or_uncertain_result",
+        )
+
+    if not _is_real_item_label(final_label):
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="confident_result_missing_item_label",
+        )
+
+    recognition_confidence = classification.get("recognition_confidence")
+    if (
+        isinstance(recognition_confidence, dict)
+        and recognition_confidence.get("level") != "high"
+    ):
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="recognition_not_high_confidence",
+        )
+
+    is_open_classification = isinstance(classification.get("recognition_details"), dict)
+    if not _is_cacheable_item_label(final_label) and not is_open_classification:
+        return _build_cache_policy(
+            save_record=True,
+            save_clip_embedding=False,
+            reason="confident_label_not_cacheable",
         )
 
     return _build_cache_policy(
@@ -805,6 +879,10 @@ def _save_recognition_record_if_possible(
     is_open_confident_cacheable = (
         trusted_guidance_available is False
         and classification.get("status") == "confident"
+        and (
+            not isinstance(classification.get("recognition_confidence"), dict)
+            or classification["recognition_confidence"].get("level") == "high"
+        )
         and _is_real_item_label(item_label)
     )
 
@@ -845,7 +923,14 @@ async def recognize_item(
 ) -> dict[str, Any]:
     try:
         if isinstance(selected_item, str) and selected_item:
-            return build_selected_item_prediction(selected_item)
+            selected_classification = build_selected_item_prediction(selected_item)
+            if selected_classification.get("status") == "confident":
+                return {
+                    **selected_classification,
+                    "recognition_confidence": user_confirmed_recognition_confidence(),
+                    "recognition_source": "user_confirmed_selection",
+                }
+            return selected_classification
 
         if file is None:
             raise HTTPException(status_code=400, detail={"error": "Image file is required."})

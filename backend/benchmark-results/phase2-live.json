@@ -1,0 +1,1281 @@
+{
+  "schema_version": 1,
+  "mode": "live",
+  "cases_path": "C:\\Users\\mraja\\CursorApps\\green-bin-app\\backend\\benchmarks\\reliability_cases.json",
+  "metrics": {
+    "case_count": 8,
+    "recognition_correct": 7,
+    "recognition_accuracy": 0.875,
+    "confidently_wrong": 1,
+    "confidently_wrong_rate": 0.125,
+    "clarification_requests": 0,
+    "clarification_rate": 0.0,
+    "incorrect_disposal_actions": 7,
+    "incorrect_disposal_action_rate": 0.875,
+    "confidently_wrong_disposal_instructions": 1,
+    "confidently_wrong_disposal_instruction_rate": 0.125
+  },
+  "expected_failure_count": 5,
+  "unexpected_failure_count": 12,
+  "passed": false,
+  "outcomes": [
+    {
+      "case_id": "face-cleanser-container-not-mug",
+      "mode": "live",
+      "image": "benchmark_images/face-cleanser-container.jpg",
+      "predicted_item": "Personal care container",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "Rigid bottle with pump and label.",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "personal-care container",
+            "confidence": 0.84,
+            "evidence": "Product label and dispensing closure are visible."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "rigid container with pump",
+            "confidence": 0.88,
+            "evidence": "Bottle body and pump nozzle are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "rigid plastic with plastic pump",
+            "confidence": 0.76,
+            "evidence": "Molded body and pump components appear plastic."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "cosmetic container",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Cetaphil Gentle Skin Cleanser Bottle",
+        "disposal_category": "Plastic",
+        "item_label": "Cetaphil Gentle Skin Cleanser Bottle",
+        "material_category": "Plastic",
+        "primary_material": "Plastic",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "plastic",
+        "original_vlm_likely_material": "plastic",
+        "material_confidence": "medium",
+        "material_source": "structured_observation",
+        "broad_category": "plastic",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "personal-care container",
+            "confidence": 0.84,
+            "evidence": "Product label and dispensing closure are visible."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "rigid container with pump",
+            "confidence": 0.88,
+            "evidence": "Bottle body and pump nozzle are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "rigid plastic with plastic pump",
+            "confidence": 0.76,
+            "evidence": "Molded body and pump components appear plastic."
+          }
+        ],
+        "visual_observation_text": "personal-care container product label and dispensing closure are visible rigid container with pump bottle body and pump nozzle are visible rigid plastic with plastic pump molded body and pump components appear plastic",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 0.975,
+        "reason_codes": [],
+        "evidence_quality": "strong",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "supported",
+        "suggested_label": "Personal care container",
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": true,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": false
+      },
+      "expected_failures": [],
+      "unexpected_failures": [
+        "clarification",
+        "guidance_action"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "lotion-bottle-unknown-resin",
+      "mode": "live",
+      "image": "benchmark_images/lotion-bottle.jpg",
+      "predicted_item": "Personal care container",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "Rigid container with pump closure and product label.",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "personal-care container",
+            "confidence": 0.84,
+            "evidence": "Product label and pump closure are visible."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "rigid container with pump",
+            "confidence": 0.88,
+            "evidence": "Container body and pump nozzle are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "rigid plastic with plastic pump",
+            "confidence": 0.76,
+            "evidence": "Molded body and pump components appear plastic."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "cosmetic container",
+            "confidence": 0.92
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Daily Moisture Lotion Container",
+        "disposal_category": "Plastic",
+        "item_label": "Daily Moisture Lotion Container",
+        "material_category": "Plastic",
+        "primary_material": "Plastic",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "plastic",
+        "original_vlm_likely_material": "plastic",
+        "material_confidence": "medium",
+        "material_source": "structured_observation",
+        "broad_category": "plastic",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "personal-care container",
+            "confidence": 0.84,
+            "evidence": "Product label and pump closure are visible."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "rigid container with pump",
+            "confidence": 0.88,
+            "evidence": "Container body and pump nozzle are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "rigid plastic with plastic pump",
+            "confidence": 0.76,
+            "evidence": "Molded body and pump components appear plastic."
+          }
+        ],
+        "visual_observation_text": "personal-care container product label and pump closure are visible rigid container with pump container body and pump nozzle are visible rigid plastic with plastic pump molded body and pump components appear plastic",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 0.955,
+        "reason_codes": [],
+        "evidence_quality": "strong",
+        "candidate_margin": null,
+        "model_confidence": 0.92,
+        "label_observation_agreement": "supported",
+        "suggested_label": "Personal care container",
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": true,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": true
+      },
+      "expected_failures": [
+        "guidance_action"
+      ],
+      "unexpected_failures": [],
+      "resolved_expected_failures": [
+        "prohibited_action"
+      ],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "chocolate-wrapper-no-film-eligibility",
+      "mode": "live",
+      "image": "benchmark_images/chocolate-wrapper.jpg",
+      "predicted_item": "Clear Plastic Wrapper",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "Clear plastic wrapper with crumpled edges and visible seams.",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "flat wrapper",
+            "confidence": 0.92,
+            "evidence": "Flat rectangular shape with visible edges."
+          },
+          {
+            "aspect": "condition",
+            "value": "crumpled",
+            "confidence": 0.98,
+            "evidence": "Edges are crumpled and folded."
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "single-use plastic",
+            "confidence": 0.96,
+            "evidence": "Seams and edges appear plastic."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "plastic wrapper",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Clear Plastic Wrapper",
+        "disposal_category": "Plastic",
+        "item_label": "Clear Plastic Wrapper",
+        "material_category": "Plastic",
+        "primary_material": "Plastic",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "plastic",
+        "original_vlm_likely_material": "plastic",
+        "material_confidence": "high",
+        "material_source": "structured_observation",
+        "broad_category": "plastic",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "flat wrapper",
+            "confidence": 0.92,
+            "evidence": "Flat rectangular shape with visible edges."
+          },
+          {
+            "aspect": "condition",
+            "value": "crumpled",
+            "confidence": 0.98,
+            "evidence": "Edges are crumpled and folded."
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "single-use plastic",
+            "confidence": 0.96,
+            "evidence": "Seams and edges appear plastic."
+          }
+        ],
+        "visual_observation_text": "flat wrapper flat rectangular shape with visible edges crumpled edges are crumpled and folded single-use plastic seams and edges appear plastic",
+        "matched_supported_label": "Plastic film",
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 1.0,
+        "reason_codes": [],
+        "evidence_quality": "strong",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "supported",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [
+        {
+          "chunk_id": "plastic_film_01",
+          "score": 3.35,
+          "matched_fields": [
+            "category"
+          ],
+          "applicability": "not_evaluated",
+          "requires_location_check": true,
+          "source_name": "EPA",
+          "limitations": []
+        },
+        {
+          "chunk_id": "plastic_film_02",
+          "score": 3.35,
+          "matched_fields": [
+            "category"
+          ],
+          "applicability": "not_evaluated",
+          "requires_location_check": true,
+          "source_name": "EPA",
+          "limitations": []
+        }
+      ],
+      "final_disposal_action": "drop-off",
+      "guidance_source": "json_rag_direct_generated",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": false,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": false,
+        "prohibited_action": false,
+        "clarification": true
+      },
+      "expected_failures": [
+        "guidance_action"
+      ],
+      "unexpected_failures": [
+        "condition",
+        "label",
+        "prohibited_action"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": false,
+      "confidently_wrong": true,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": true
+    },
+    {
+      "case_id": "battery-not-ordinary-metal-object",
+      "mode": "live",
+      "image": "benchmark_images/battery.jpg",
+      "predicted_item": "Battery",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "Small cylindrical object with ridged top and bottom, and metal construction.",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "cylindrical",
+            "confidence": 0.96,
+            "evidence": "Object is short and round."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "metal",
+            "confidence": 0.92,
+            "evidence": "Object appears to be made of metal."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "battery",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Battery",
+        "disposal_category": "Battery",
+        "item_label": "Battery",
+        "material_category": "Battery",
+        "primary_material": "Battery",
+        "secondary_materials": [
+          "Metal"
+        ],
+        "original_vlm_broad_category": "batteries",
+        "original_vlm_likely_material": "metal",
+        "material_confidence": "high",
+        "material_source": "keyword",
+        "broad_category": "batteries",
+        "condition_flags": [],
+        "special_handling_flags": [
+          "battery",
+          "dropoff_recommended"
+        ],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "cylindrical",
+            "confidence": 0.96,
+            "evidence": "Object is short and round."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "metal",
+            "confidence": 0.92,
+            "evidence": "Object appears to be made of metal."
+          }
+        ],
+        "visual_observation_text": "cylindrical object is short and round metal object appears to be made of metal",
+        "matched_supported_label": "Battery",
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 0.93,
+        "reason_codes": [],
+        "evidence_quality": "partial",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "insufficient",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [
+        {
+          "chunk_id": "batteries_01",
+          "score": 21.35,
+          "matched_fields": [
+            "item_label_exact",
+            "material",
+            "category",
+            "condition_flags"
+          ],
+          "applicability": "not_evaluated",
+          "requires_location_check": true,
+          "source_name": "EPA",
+          "limitations": []
+        },
+        {
+          "chunk_id": "batteries_02",
+          "score": 19.85,
+          "matched_fields": [
+            "item_label_exact",
+            "material",
+            "category",
+            "condition_flags"
+          ],
+          "applicability": "not_evaluated",
+          "requires_location_check": true,
+          "source_name": "EPA",
+          "limitations": []
+        }
+      ],
+      "final_disposal_action": "drop-off",
+      "guidance_source": "json_rag_direct_generated",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": true,
+        "prohibited_action": true,
+        "clarification": false
+      },
+      "expected_failures": [],
+      "unexpected_failures": [
+        "clarification",
+        "condition"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": false,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "clean-paper-plate-not-assumed-contaminated",
+      "mode": "live",
+      "image": "benchmark_images/clean-paper-plate.jpg",
+      "predicted_item": "Paper Plate",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "single-use",
+            "confidence": 0.92,
+            "evidence": "Plate is not sealed or wrapped."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "flat plate",
+            "confidence": 0.98,
+            "evidence": "Plate is flat and round."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "single-use paper plate",
+            "confidence": 0.96,
+            "evidence": "Plate is thin and appears to be made of paper."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "paper plate",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Paper Plate",
+        "disposal_category": "Paper",
+        "item_label": "Paper Plate",
+        "material_category": "Paper",
+        "primary_material": "Paper",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "paper",
+        "original_vlm_likely_material": "paper",
+        "material_confidence": "high",
+        "material_source": "structured_observation",
+        "broad_category": "paper",
+        "condition_flags": [
+          "single_use"
+        ],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "single-use",
+            "confidence": 0.92,
+            "evidence": "Plate is not sealed or wrapped."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "flat plate",
+            "confidence": 0.98,
+            "evidence": "Plate is flat and round."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "single-use paper plate",
+            "confidence": 0.96,
+            "evidence": "Plate is thin and appears to be made of paper."
+          }
+        ],
+        "visual_observation_text": "single-use plate is not sealed or wrapped flat plate plate is flat and round single-use paper plate plate is thin and appears to be made of paper",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 1.0,
+        "reason_codes": [],
+        "evidence_quality": "strong",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "supported",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": true
+      },
+      "expected_failures": [
+        "guidance_action"
+      ],
+      "unexpected_failures": [
+        "condition"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "stainless-steel-cup-not-pot",
+      "mode": "live",
+      "image": "benchmark_images/stainless-steel-cup.jpg",
+      "predicted_item": "Metal Cup",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "cup",
+            "confidence": 1.0,
+            "evidence": "Cup shape is visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "metal cup",
+            "confidence": 1.0,
+            "evidence": "Metal construction is visible."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "metal cup",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Metal Cup",
+        "disposal_category": "Metal",
+        "item_label": "Metal Cup",
+        "material_category": "Metal",
+        "primary_material": "Metal",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "metal",
+        "original_vlm_likely_material": "metal",
+        "material_confidence": "high",
+        "material_source": "structured_observation",
+        "broad_category": "metal",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "cup",
+            "confidence": 1.0,
+            "evidence": "Cup shape is visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "metal cup",
+            "confidence": 1.0,
+            "evidence": "Metal construction is visible."
+          }
+        ],
+        "visual_observation_text": "cup cup shape is visible metal cup metal construction is visible",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 0.93,
+        "reason_codes": [],
+        "evidence_quality": "partial",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "insufficient",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": true
+      },
+      "expected_failures": [
+        "guidance_action"
+      ],
+      "unexpected_failures": [
+        "condition"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "banana-bunch-preserves-food-context",
+      "mode": "live",
+      "image": "benchmark_images/banana-bunch.jpg",
+      "predicted_item": "Banana Bunch",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "A bunch of ripe yellow bananas with green stems and brown spots.",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "loose",
+            "confidence": 1.0,
+            "evidence": "Bananas are not in a container."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "banana bunch",
+            "confidence": 1.0,
+            "evidence": "Multiple bananas are attached at the stem."
+          },
+          {
+            "aspect": "condition",
+            "value": "ripe",
+            "confidence": 1.0,
+            "evidence": "Bananas are yellow and soft."
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "organic fruit",
+            "confidence": 1.0,
+            "evidence": "Bananas appear to be natural fruit."
+          }
+        ],
+        "candidates": [
+          {
+            "label": "banana bunch",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Banana Bunch",
+        "disposal_category": "Organic",
+        "item_label": "Banana Bunch",
+        "material_category": "Organic",
+        "primary_material": "Organic",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "organic",
+        "original_vlm_likely_material": "organic",
+        "material_confidence": "high",
+        "material_source": "item_identity",
+        "broad_category": "garden",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "loose",
+            "confidence": 1.0,
+            "evidence": "Bananas are not in a container."
+          },
+          {
+            "aspect": "form_factor",
+            "value": "banana bunch",
+            "confidence": 1.0,
+            "evidence": "Multiple bananas are attached at the stem."
+          },
+          {
+            "aspect": "condition",
+            "value": "ripe",
+            "confidence": 1.0,
+            "evidence": "Bananas are yellow and soft."
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "organic fruit",
+            "confidence": 1.0,
+            "evidence": "Bananas appear to be natural fruit."
+          }
+        ],
+        "visual_observation_text": "loose bananas are not in a container banana bunch multiple bananas are attached at the stem ripe bananas are yellow and soft organic fruit bananas appear to be natural fruit",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 1.0,
+        "reason_codes": [],
+        "evidence_quality": "strong",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "supported",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": true
+      },
+      "expected_failures": [
+        "guidance_action"
+      ],
+      "unexpected_failures": [
+        "condition"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    },
+    {
+      "case_id": "green-leaves-preserve-organic-context",
+      "mode": "live",
+      "image": "benchmark_images/green-leaves.jpg",
+      "predicted_item": "Leafy Greens",
+      "classification_status": "confident",
+      "vlm_evidence": {
+        "visual_evidence": "",
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "leafy greens",
+            "confidence": 1.0,
+            "evidence": "Leafy greens are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          }
+        ],
+        "candidates": [
+          {
+            "label": "leafy greens",
+            "confidence": 1.0
+          }
+        ]
+      },
+      "normalized_result": {
+        "normalized_item": "Leafy Greens",
+        "disposal_category": "Organic",
+        "item_label": "Leafy Greens",
+        "material_category": "Organic",
+        "primary_material": "Organic",
+        "secondary_materials": [],
+        "original_vlm_broad_category": "unknown",
+        "original_vlm_likely_material": "unknown",
+        "material_confidence": "high",
+        "material_source": "item_identity",
+        "broad_category": "garden",
+        "condition_flags": [],
+        "special_handling_flags": [],
+        "visual_observations": [
+          {
+            "aspect": "packaging_use",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "form_factor",
+            "value": "leafy greens",
+            "confidence": 1.0,
+            "evidence": "Leafy greens are visible."
+          },
+          {
+            "aspect": "condition",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "contamination",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "recycling_marking",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          },
+          {
+            "aspect": "construction",
+            "value": "Unknown",
+            "confidence": null,
+            "evidence": ""
+          }
+        ],
+        "visual_observation_text": "leafy greens leafy greens are visible",
+        "matched_supported_label": null,
+        "normalization_source": "clean_fallback"
+      },
+      "recognition_confidence": {
+        "level": "high",
+        "score": 0.93,
+        "reason_codes": [],
+        "evidence_quality": "partial",
+        "candidate_margin": null,
+        "model_confidence": 1.0,
+        "label_observation_agreement": "insufficient",
+        "suggested_label": null,
+        "blocking": false
+      },
+      "retrieved_chunks": [],
+      "final_disposal_action": null,
+      "guidance_source": "safe_fallback",
+      "guidance_confidence": {
+        "level": "unknown",
+        "source": "legacy_guidance_metadata"
+      },
+      "clarification_requested": false,
+      "checks": {
+        "label": true,
+        "prohibited_label": true,
+        "material": true,
+        "category": true,
+        "condition": false,
+        "guidance_action": false,
+        "prohibited_action": true,
+        "clarification": true
+      },
+      "expected_failures": [],
+      "unexpected_failures": [
+        "condition",
+        "guidance_action"
+      ],
+      "resolved_expected_failures": [],
+      "recognition_correct": true,
+      "confidently_wrong": false,
+      "incorrect_disposal_action": true,
+      "confidently_wrong_disposal_instruction": false
+    }
+  ]
+}

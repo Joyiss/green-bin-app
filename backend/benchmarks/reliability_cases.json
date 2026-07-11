@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "face-cleanser-container-not-mug",
+      "image": "benchmark_images/face-cleanser-container.jpg",
+      "expected_labels": ["face cleanser bottle", "face cleanser container", "pump bottle"],
+      "acceptable_broader_labels": ["cosmetic container", "personal care container", "rigid container", "unknown container"],
+      "prohibited_labels": ["ceramic mug", "mug", "pot", "pressure cooker"],
+      "expected_materials": ["plastic", "rigid plastic"],
+      "expected_categories": ["plastic", "household item"],
+      "visible_condition": {
+        "value": "unknown",
+        "evidence": "The pump and bottle are visible, but emptiness, cleanliness, and residue are not established."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["trash"],
+        "fallback_actions": ["check local guidance"],
+        "required_terms_any": [],
+        "clarification": "required_when_label_conflicts_with_visible_container_features"
+      },
+      "prohibited_disposal_actions": ["donate/reuse", "compost", "drop-off", "recycle"],
+      "known_failures": [],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "ceramic mug",
+        "likely_material": "ceramic",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "ceramic mug", "confidence": 0.91},
+          {"label": "cosmetic pump bottle", "confidence": 0.38}
+        ],
+        "visual_evidence": "Pump dispenser and labeled rectangular bottle visible.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "personal care pump bottle", "confidence": 0.94, "evidence": "Product label and dispensing pump are visible."},
+          {"aspect": "form_factor", "value": "rectangular bottle with pump", "confidence": 0.96, "evidence": "No handle or open drinking rim is visible."},
+          {"aspect": "condition", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "recycling_marking", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "opaque rigid plastic", "confidence": 0.82, "evidence": "Bottle has molded plastic appearance."}
+        ]
+      }
+    },
+    {
+      "id": "lotion-bottle-unknown-resin",
+      "image": "benchmark_images/lotion-bottle.jpg",
+      "expected_labels": ["lotion bottle", "lotion container", "pump bottle"],
+      "acceptable_broader_labels": ["cosmetic container", "personal care container", "rigid container"],
+      "prohibited_labels": ["ceramic mug", "mug", "pot", "pressure cooker"],
+      "expected_materials": ["plastic", "rigid plastic"],
+      "expected_categories": ["plastic", "household item"],
+      "visible_condition": {
+        "value": "unknown",
+        "evidence": "The pump bottle is visible, but contents, residue, and resin type are not."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["trash"],
+        "fallback_actions": ["check local guidance"],
+        "required_terms_any": [],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["donate/reuse", "compost", "drop-off", "recycle"],
+      "known_failures": ["guidance_action", "prohibited_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "plastic lotion pump bottle",
+        "likely_material": "rigid plastic",
+        "broad_category": "plastic",
+        "candidates": [
+          {"label": "lotion pump bottle", "confidence": 0.94},
+          {"label": "cosmetic container", "confidence": 0.72}
+        ],
+        "visual_evidence": "Labeled rigid bottle with dispensing pump.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "personal care product container", "confidence": 0.95, "evidence": "Lotion label and dispensing pump are visible."},
+          {"aspect": "form_factor", "value": "rigid rectangular pump bottle", "confidence": 0.96, "evidence": "Bottle body and pump nozzle are visible."},
+          {"aspect": "condition", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "recycling_marking", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "rigid plastic bottle with plastic pump", "confidence": 0.86, "evidence": "Opaque molded body and pump components are visible."}
+        ]
+      }
+    },
+    {
+      "id": "chocolate-wrapper-no-film-eligibility",
+      "image": "benchmark_images/chocolate-wrapper.jpg",
+      "expected_labels": ["chocolate wrapper", "candy wrapper", "food wrapper"],
+      "acceptable_broader_labels": ["flexible wrapper", "plastic film", "flexible plastic packaging"],
+      "prohibited_labels": ["plastic bag"],
+      "expected_materials": ["plastic film", "flexible plastic", "mixed plastic film", "plastic"],
+      "expected_categories": ["plastic", "mixed material"],
+      "visible_condition": {
+        "value": "opened",
+        "evidence": "The wrapper is torn open; contamination is not visually established."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["trash"],
+        "fallback_actions": ["check local guidance"],
+        "required_terms_any": [],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["drop-off", "recycle", "donate/reuse", "compost"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "opened chocolate wrapper",
+        "likely_material": "plastic film",
+        "broad_category": "plastic",
+        "candidates": [
+          {"label": "chocolate wrapper", "confidence": 0.88},
+          {"label": "plastic film", "confidence": 0.74}
+        ],
+        "visual_evidence": "Small torn transparent flexible wrapper.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "single-use food wrapper", "confidence": 0.88, "evidence": "Small sealed-wrapper shape with torn end."},
+          {"aspect": "form_factor", "value": "thin flexible wrapper", "confidence": 0.94, "evidence": "Crinkled transparent film is visible."},
+          {"aspect": "condition", "value": "opened", "confidence": 0.96, "evidence": "One end is torn open."},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "recycling_marking", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "unknown", "confidence": null, "evidence": ""}
+        ]
+      }
+    },
+    {
+      "id": "battery-not-ordinary-metal-object",
+      "image": "benchmark_images/battery.jpg",
+      "expected_labels": ["battery", "aa battery", "cylindrical battery"],
+      "acceptable_broader_labels": ["household battery", "unknown battery"],
+      "prohibited_labels": ["metal cylinder", "ordinary household object", "flashlight handle"],
+      "expected_materials": ["battery", "mixed material"],
+      "expected_categories": ["batteries", "battery"],
+      "visible_condition": {
+        "value": "appears_intact",
+        "evidence": "The cylindrical casing and terminal appear intact; chemistry and charge are unknown."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["drop-off", "check local guidance"],
+        "fallback_actions": [],
+        "required_terms_any": ["battery", "drop-off", "special handling"],
+        "clarification": "required_when_battery_identity_is_not_reliable"
+      },
+      "prohibited_disposal_actions": ["trash", "recycle", "donate/reuse", "compost"],
+      "known_failures": [],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "metal cylinder",
+        "likely_material": "metal",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "metal cylinder", "confidence": 0.61},
+          {"label": "AA battery", "confidence": 0.52}
+        ],
+        "visual_evidence": "Cylindrical object with raised terminal and battery branding.",
+        "visual_observations": [
+          {"aspect": "form_factor", "value": "small cylindrical cell", "confidence": 0.82, "evidence": "Raised terminal and cylindrical casing are visible."},
+          {"aspect": "condition", "value": "appears intact", "confidence": 0.74, "evidence": "No leakage or major casing damage is visible."},
+          {"aspect": "power_source", "value": "battery-like cell", "confidence": 0.66, "evidence": "Terminal shape and battery branding are visible."},
+          {"aspect": "construction", "value": "metal-ended wrapped cylinder", "confidence": 0.78, "evidence": "Metal terminal and wrapped casing are visible."}
+        ]
+      }
+    },
+    {
+      "id": "clean-paper-plate-not-assumed-contaminated",
+      "image": "benchmark_images/clean-paper-plate.jpg",
+      "expected_labels": ["paper plate", "disposable paper plate"],
+      "acceptable_broader_labels": ["paper food-service item", "coated paper plate"],
+      "prohibited_labels": ["ceramic plate", "food scraps", "dirty paper plate"],
+      "expected_materials": ["paper", "coated paper", "paperboard"],
+      "expected_categories": ["paper", "paper/cardboard"],
+      "visible_condition": {
+        "value": "appears_clean",
+        "evidence": "No food residue or visible staining appears on the plate."
+      },
+      "prohibited_condition_flags": ["food_soiled", "contaminated"],
+      "expected_guidance_behavior": {
+        "preferred_actions": ["trash", "check local guidance"],
+        "fallback_actions": [],
+        "required_terms_any": [],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["compost", "recycle", "donate/reuse", "drop-off"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "clean disposable paper plate",
+        "likely_material": "coated paper",
+        "broad_category": "paper",
+        "candidates": [
+          {"label": "paper plate", "confidence": 0.95}
+        ],
+        "visual_evidence": "Clean patterned disposable plate with shallow rim.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "single-use food-service plate", "confidence": 0.91, "evidence": "Thin disposable plate form is visible."},
+          {"aspect": "form_factor", "value": "shallow round plate", "confidence": 0.98, "evidence": "Round base and raised rim are visible."},
+          {"aspect": "condition", "value": "appears_clean", "confidence": 0.91, "evidence": "No visible food residue or staining."},
+          {"aspect": "contamination", "value": "no visible contamination", "confidence": 0.88, "evidence": "Plate surface appears empty and clean."},
+          {"aspect": "recycling_marking", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "paper plate; coating unknown", "confidence": 0.72, "evidence": "Printed pressed-paper appearance; coating cannot be confirmed."}
+        ]
+      }
+    },
+    {
+      "id": "stainless-steel-cup-not-pot",
+      "image": "benchmark_images/stainless-steel-cup.jpg",
+      "expected_labels": ["stainless steel cup", "metal cup", "steel tumbler"],
+      "acceptable_broader_labels": ["metal drinking vessel", "rigid metal container"],
+      "prohibited_labels": ["ceramic mug", "mug", "pot", "pressure cooker"],
+      "expected_materials": ["metal", "stainless steel", "steel"],
+      "expected_categories": ["metal", "household item"],
+      "visible_condition": {
+        "value": "appears_intact",
+        "evidence": "The open metal cup has no visible breakage; usability beyond the image is unknown."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["donate/reuse"],
+        "fallback_actions": ["trash", "check local guidance"],
+        "required_terms_any": [],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["compost", "household hazardous waste"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "stainless steel cup",
+        "likely_material": "stainless steel",
+        "broad_category": "metal",
+        "candidates": [
+          {"label": "stainless steel cup", "confidence": 0.92},
+          {"label": "metal tumbler", "confidence": 0.79}
+        ],
+        "visual_evidence": "Handleless open cup with reflective metal walls.",
+        "visual_observations": [
+          {"aspect": "form_factor", "value": "handleless open drinking cup", "confidence": 0.91, "evidence": "Open rim and cup-sized body are visible; no cooking handles or lid."},
+          {"aspect": "condition", "value": "appears intact", "confidence": 0.81, "evidence": "No cracks, holes, or major deformation are visible."},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "stainless steel", "confidence": 0.94, "evidence": "Reflective brushed metal body is visible."},
+          {"aspect": "reusability", "value": "appears reusable", "confidence": 0.72, "evidence": "Rigid intact drinking-cup form."}
+        ]
+      }
+    },
+    {
+      "id": "banana-bunch-preserves-food-context",
+      "image": "benchmark_images/banana-bunch.jpg",
+      "expected_labels": ["bananas", "banana bunch", "edible bananas"],
+      "acceptable_broader_labels": ["edible fruit", "food", "produce"],
+      "prohibited_labels": ["banana packaging", "household item"],
+      "expected_materials": ["organic", "food", "compostable organic"],
+      "expected_categories": ["food", "food scraps", "organic", "compostable organic"],
+      "visible_condition": {
+        "value": "appears_edible",
+        "evidence": "The bananas appear intact, though food safety and internal condition cannot be confirmed visually."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["donate/reuse", "compost"],
+        "fallback_actions": ["trash", "check local guidance"],
+        "required_terms_any": ["eat", "use", "share", "compost", "food scraps"],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["recycle", "drop-off", "household hazardous waste"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "bunch of bananas",
+        "likely_material": "organic food",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "bananas", "confidence": 0.96}
+        ],
+        "visual_evidence": "Intact yellow banana bunch with produce band.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "loose produce with paper band", "confidence": 0.89, "evidence": "Bananas are visible with a narrow produce band."},
+          {"aspect": "condition", "value": "appears edible", "confidence": 0.72, "evidence": "Fruit appears intact with ordinary surface spotting."},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "organic fruit", "confidence": 0.97, "evidence": "A bunch of whole bananas is visible."}
+        ]
+      }
+    },
+    {
+      "id": "green-leaves-preserve-organic-context",
+      "image": "benchmark_images/green-leaves.jpg",
+      "expected_labels": ["green leaves", "leafy greens", "plant leaves"],
+      "acceptable_broader_labels": ["plant material", "yard waste", "organic material", "food scraps"],
+      "prohibited_labels": ["household item", "plastic leaves"],
+      "expected_materials": ["organic", "plant material", "compostable organic"],
+      "expected_categories": ["yard waste", "organic", "compostable organic", "food scraps"],
+      "visible_condition": {
+        "value": "damaged_leaves",
+        "evidence": "Leaves and stems are visible with holes and wear; edibility and contamination are unknown."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["compost", "yard waste"],
+        "fallback_actions": ["trash", "check local guidance"],
+        "required_terms_any": ["compost", "mulch", "yard waste"],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["recycle", "drop-off", "donate/reuse", "household hazardous waste"],
+      "known_failures": [],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "pile of green leaves",
+        "likely_material": "organic plant material",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "green leaves", "confidence": 0.89},
+          {"label": "leafy greens", "confidence": 0.63}
+        ],
+        "visual_evidence": "Loose green leaves and stems with visible holes.",
+        "visual_observations": [
+          {"aspect": "form_factor", "value": "loose leaves and stems", "confidence": 0.96, "evidence": "A pile of detached leafy plant material is visible."},
+          {"aspect": "condition", "value": "damaged leaves", "confidence": 0.84, "evidence": "Multiple leaves have holes and edge damage."},
+          {"aspect": "contamination", "value": "unknown", "confidence": null, "evidence": ""},
+          {"aspect": "construction", "value": "organic plant material", "confidence": 0.96, "evidence": "Natural leaves and stems are visible."}
+        ]
+      }
+    },
+    {
+      "id": "intact-reusable-toy-control",
+      "image": null,
+      "expected_labels": ["plastic toy", "toy"],
+      "acceptable_broader_labels": ["reusable toy", "durable household item"],
+      "prohibited_labels": ["single-use packaging", "plastic wrapper"],
+      "expected_materials": ["plastic", "mixed material"],
+      "expected_categories": ["toy", "household item", "plastic"],
+      "visible_condition": {
+        "value": "appears_intact",
+        "evidence": "The fixture records an intact, clean, reusable toy."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["donate/reuse"],
+        "fallback_actions": [],
+        "required_terms_any": ["reuse", "donate"],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["trash", "compost", "household hazardous waste"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "intact plastic toy",
+        "likely_material": "plastic",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "plastic toy", "confidence": 0.92}
+        ],
+        "visual_evidence": "Clean intact toy body with no visible damage.",
+        "visual_observations": [
+          {"aspect": "packaging_use", "value": "not packaging", "confidence": 0.94, "evidence": "Durable toy form is visible."},
+          {"aspect": "condition", "value": "appears intact", "confidence": 0.9, "evidence": "No cracks or missing pieces are visible."},
+          {"aspect": "contamination", "value": "appears clean", "confidence": 0.82, "evidence": "No visible residue or staining."},
+          {"aspect": "reusability", "value": "reusable", "confidence": 0.91, "evidence": "The toy appears usable as-is."}
+        ]
+      }
+    },
+    {
+      "id": "primary-metal-secondary-plastic-control",
+      "image": null,
+      "expected_labels": ["metal cooking utensil", "metal utensil"],
+      "acceptable_broader_labels": ["cooking utensil", "mainly metal household item"],
+      "prohibited_labels": ["plastic utensil", "plastic household item"],
+      "expected_materials": ["metal", "stainless steel", "mixed material"],
+      "expected_categories": ["metal", "household item"],
+      "visible_condition": {
+        "value": "appears_intact",
+        "evidence": "The fixture records an intact metal utensil with a secondary plastic handle."
+      },
+      "expected_guidance_behavior": {
+        "preferred_actions": ["donate/reuse"],
+        "fallback_actions": ["trash", "check local guidance"],
+        "required_terms_any": [],
+        "clarification": "not_required"
+      },
+      "prohibited_disposal_actions": ["compost", "household hazardous waste"],
+      "known_failures": ["guidance_action"],
+      "recorded_vlm_response": {
+        "status": "confident",
+        "raw_item_label": "metal cooking utensil with plastic handle",
+        "likely_material": "plastic",
+        "broad_category": "household",
+        "candidates": [
+          {"label": "metal cooking utensil", "confidence": 0.86},
+          {"label": "plastic utensil", "confidence": 0.41}
+        ],
+        "visual_evidence": "Large metal working end with smaller plastic handle.",
+        "visual_observations": [
+          {"aspect": "form_factor", "value": "cooking utensil", "confidence": 0.9, "evidence": "A utensil working end and handle are visible."},
+          {"aspect": "condition", "value": "appears intact", "confidence": 0.83, "evidence": "No breakage is visible."},
+          {"aspect": "construction", "value": "primarily stainless steel with plastic handle", "confidence": 0.94, "evidence": "Metal makes up the working end and most of the object; plastic is limited to the grip."},
+          {"aspect": "reusability", "value": "appears reusable", "confidence": 0.8, "evidence": "The utensil appears intact."}
+        ]
+      }
+    }
+  ]
+}

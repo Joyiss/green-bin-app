@@ -1,4 +1,5 @@
 import unittest
+import requests
 from unittest.mock import Mock, patch
 
 from classifier import classify
@@ -224,7 +225,7 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertNotIn("disposal_action", result)
         self.assertNotIn("steps", result)
         request_payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(request_payload["max_tokens"], 220)
+        self.assertEqual(request_payload["max_tokens"], 320)
         self.assertIn("visual_observations", request_payload["response_format"]["json_schema"]["required"])
 
     @patch("model.requests.post")
@@ -270,7 +271,7 @@ class DetectObjectApiTests(unittest.TestCase):
         with patch("model.VLM_RECOGNITION_MODE", "open"):
             result = detect_object(self.image)
 
-        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["status"], "uncertain")
         self.assertEqual(result["raw_item_label"], "Water bottle")
         self.assertEqual(result["likely_material"], "Plastic")
         self.assertEqual(result["broad_category"], "Bottle")
@@ -284,6 +285,16 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(result["visual_evidence"], "")
         self.assertEqual(result["visual_observations"], [])
         self.assertTrue(result["raw_output"].startswith('{"status":"confident"'))
+        self.assertEqual(result["parse_mode"], "recovered")
+
+    @patch("model.requests.post", side_effect=requests.ConnectionError("network down"))
+    def test_open_mode_records_transport_failure_separately(self, _mock_post):
+        with patch("model.VLM_RECOGNITION_MODE", "open"):
+            result = detect_object(self.image)
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["failure_type"], "cloudflare_transport_error")
+        self.assertEqual(result["parse_mode"], "request_failed")
 
     @patch("model.requests.post")
     def test_get_top_predictions_open_mode_preserves_recognition_details(self, mock_post):
@@ -540,7 +551,7 @@ class BarcodeAwarePromptTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "packaging type, container type, opened/used/empty/food-soiled/broken condition",
+            "packaging type, container form, condition, and reusable vs single-use construction",
             prompt,
         )
         self.assertIn(
@@ -605,12 +616,16 @@ class BarcodeAwarePromptTests(unittest.TestCase):
         self.assertIn("Recognition only.", prompt)
         self.assertIn("Do not provide disposal_action.", prompt)
         self.assertIn("Do not provide steps.", prompt)
-        self.assertIn('"candidates":[{"label":"ceramic mug","confidence":0.91}', prompt)
+        self.assertIn('"candidates":[{"label":"pump bottle","confidence":0.72}', prompt)
         self.assertIn('"visual_observations":[{"aspect":"packaging_use"', prompt)
-        self.assertIn('"visual_evidence":"Handle, cup opening, glossy rigid body."', prompt)
+        self.assertIn('"visual_evidence":"Rigid labeled container with dispensing pump."', prompt)
         self.assertIn("visual_evidence must be a short string, 12 words or fewer", prompt)
         self.assertIn("For each observation, use value \"unknown\" and confidence null", prompt)
         self.assertIn("visual_observations must describe image-visible disposal context only", prompt)
+        self.assertIn("Never invent a handle, opening, lid, cap, pump, nozzle", prompt)
+        self.assertIn("use an honest broader physical label", prompt)
+        self.assertIn("Condition and contamination must come from visible evidence", prompt)
+        self.assertIn("Do not let a small cap, handle, coating, or label replace the dominant material", prompt)
         self.assertIn("Barcode lookup found product metadata, but this metadata is only context.", prompt)
         self.assertIn(
             "Use visible packaging type, material, and condition in raw_item_label and visual_evidence.",

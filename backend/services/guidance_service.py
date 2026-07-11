@@ -1926,6 +1926,10 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
         )
     if "recognition_source" in classification:
         response["recognition_source"] = classification["recognition_source"]
+    if isinstance(classification.get("recognition_confidence"), dict):
+        response["recognition_confidence"] = classification[
+            "recognition_confidence"
+        ]
 
     logger.info(
         "Guidance resolution finished. source=%s item=%s disposal_action=%s steps_count=%s",
