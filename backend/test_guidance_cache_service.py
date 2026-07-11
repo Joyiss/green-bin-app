@@ -60,6 +60,7 @@ def _llm_context(condition_flags=None, special_flags=None):
         "broad_category": "Battery",
         "condition_flags": condition_flags or ["requires_dropoff", "hazardous"],
         "special_flags": special_flags or ["battery"],
+        "visual_observations": [],
     }
 
 
@@ -107,6 +108,42 @@ class GuidanceCacheServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(base["cache_key"], changed_text["cache_key"])
+
+    def test_visual_observations_are_part_of_source_cache_key(self):
+        clean_context = _llm_context()
+        clean_context["visual_observations"] = [
+            {
+                "aspect": "contamination",
+                "value": "unknown",
+                "confidence": None,
+                "evidence": "",
+            }
+        ]
+        residue_context = _llm_context()
+        residue_context["visual_observations"] = [
+            {
+                "aspect": "contamination",
+                "value": "food residue visible",
+                "confidence": 0.8,
+                "evidence": "Residue visible.",
+            }
+        ]
+
+        clean = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[_retrieval_result()],
+            llm_context=clean_context,
+        )
+        residue = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[_retrieval_result()],
+            llm_context=residue_context,
+        )
+
+        self.assertNotEqual(clean["cache_key"], residue["cache_key"])
+        self.assertIn("visual_observations", residue["cache_key_input"])
 
     def test_cached_guidance_from_row_preserves_shape_and_cache_markers(self):
         guidance = guidance_cache_service.cached_guidance_from_row(

@@ -7,7 +7,9 @@ import requests
 
 from services.guidance_llm_service import (
     DEFAULT_GUIDANCE_LLM_MODEL,
+    _build_general_safe_prompt,
     _build_source_grounded_prompt,
+    _general_safe_allowed_actions,
     _groq_request,
     try_generate_general_safe_guidance,
     try_generate_source_grounded_guidance,
@@ -241,6 +243,113 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIn('"steps":[]', prompt)
         self.assertNotIn('"intent"', prompt)
 
+    def test_source_prompt_requires_realistic_object_specific_action(self):
+        prompt = _build_source_grounded_prompt(
+            recognized_item="Opened single-use chip bag",
+            normalized_item_label="Chip bag",
+            material="Mixed Material",
+            broad_category="plastic",
+            condition_flags=["opened"],
+            special_flags=[],
+            visual_evidence="Crinkly snack pouch with crumbs.",
+            candidates=["chip bag", "food wrapper"],
+            location=None,
+            chunks=[_chunk(action="Trash", claim="Flexible snack packaging is handled as trash.")],
+            allowed_disposal_actions=["trash"],
+        )
+
+        self.assertIn(
+            "Base the disposal_action on the actual recognized physical object",
+            prompt,
+        )
+        self.assertIn(
+            "packaging/container type, material, condition_flags, cleanliness or residue",
+            prompt,
+        )
+        self.assertIn(
+            "Do not choose donate/reuse for opened, used, dirty, broken, food-soiled, or ordinary single-use packaging",
+            prompt,
+        )
+        self.assertIn(
+            "If packaging and contents are both mentioned, guide disposal for the package/container",
+            prompt,
+        )
+        self.assertIn('"recognized_item": "Opened single-use chip bag"', prompt)
+        self.assertIn('"visual_evidence": "Crinkly snack pouch with crumbs."', prompt)
+
+    def test_general_safe_prompt_excludes_reuse_for_single_use_packaging(self):
+        observations = [
+            {
+                "aspect": "contamination",
+                "value": "food residue visible",
+                "confidence": 0.81,
+                "evidence": "Residue inside cup.",
+            }
+        ]
+        prompt = _build_general_safe_prompt(
+            recognized_item="Used plastic yogurt container",
+            normalized_item_label="Yogurt container",
+            material="Plastic",
+            broad_category="plastic",
+            condition_flags=["empty"],
+            special_flags=[],
+            visual_evidence="Open plastic cup with food residue.",
+            visual_observations=observations,
+            candidates=["yogurt container", "plastic cup"],
+            allowed_actions={"trash"},
+            low_risk_reason="allowed_reusable_household",
+            matched_terms=["yogurt container"],
+        )
+
+        self.assertIn(
+            "Avoid technically possible but unrealistic advice for the specific object.",
+            prompt,
+        )
+        self.assertIn("use household trash as the main action when trash is allowed", prompt)
+        self.assertIn("Reserve check local guidance as the main action only when", prompt)
+        self.assertIn('"allowed_disposal_actions": ["trash"]', prompt)
+        self.assertIn('"recognized_item": "Used plastic yogurt container"', prompt)
+        self.assertIn('"visual_evidence": "Open plastic cup with food residue."', prompt)
+        self.assertIn('"visual_observations": [{"aspect": "contamination"', prompt)
+        self.assertIn("Treat visual_observations as recognition evidence only.", prompt)
+
+    def test_general_safe_allowed_actions_use_trash_for_non_reusable_low_risk_items(self):
+        self.assertEqual(
+            _general_safe_allowed_actions(
+                recognized_item="Used plastic yogurt container",
+                material="Plastic",
+                broad_category="plastic",
+                condition_flags=["empty"],
+                special_flags=[],
+                low_risk_reason="allowed_reusable_household",
+            ),
+            {"trash"},
+        )
+        self.assertEqual(
+            _general_safe_allowed_actions(
+                recognized_item="Wet cardboard sleeve",
+                material="Paper",
+                broad_category="paper",
+                condition_flags=["wet"],
+                special_flags=[],
+                low_risk_reason="allowed_paper_stationery",
+            ),
+            {"trash"},
+        )
+
+    def test_general_safe_allowed_actions_reserve_local_check_for_special_handling(self):
+        self.assertEqual(
+            _general_safe_allowed_actions(
+                recognized_item="Unknown battery powered device",
+                material="Mixed material",
+                broad_category="household",
+                condition_flags=[],
+                special_flags=["battery", "dropoff_recommended"],
+                low_risk_reason="allowed_reusable_household",
+            ),
+            {"check local guidance"},
+        )
+
     @patch("services.guidance_llm_service.requests.post")
     def test_groq_request_uses_configured_model_and_json_mode(self, post):
         response = Mock()
@@ -271,6 +380,38 @@ class GenerationFlowTests(unittest.TestCase):
             {"disposal_action", "material_code", "impact_level", "summary", "steps", "guidance_source", "guidance_metadata"},
             set(guidance),
         )
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_general_safe_generation_uses_trash_for_single_use_packaging(self, request):
+        request.return_value = json.dumps({
+            "disposal_action": "trash",
+            "summary": "Put this used yogurt container in household trash if it has residue.",
+            "steps": ["Empty loose residue first.", "Place the used container in household trash."],
+            "warnings": [],
+            "confidence": "low",
+            "sources_used": [],
+        })
+
+        result = try_generate_general_safe_guidance(
+            recognized_item="Used plastic yogurt container",
+            normalized_item_label="Yogurt container",
+            material="Plastic",
+            broad_category="plastic",
+            condition_flags=["empty"],
+            special_flags=[],
+            visual_evidence="Open plastic cup with food residue.",
+            candidates=["yogurt container", "plastic cup"],
+            low_risk_reason="allowed_reusable_household",
+            matched_terms=["yogurt container"],
+        )
+
+        guidance = result["guidance"]
+        self.assertEqual(guidance["disposal_action"], "trash")
+        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
+        sent_prompt = request.call_args.args[0]
+        self.assertIn('"allowed_disposal_actions": ["trash"]', sent_prompt)
+        self.assertIn("household trash as the main action", sent_prompt)
+        self.assertIn("ordinary single-use packaging", sent_prompt)
 
 
 if __name__ == "__main__":

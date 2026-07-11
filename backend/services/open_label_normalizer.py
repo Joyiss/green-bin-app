@@ -112,10 +112,15 @@ _ROUTING_CATEGORIES = {
 }
 
 _CONDITION_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
-    ("food_soiled", ("greasy", "grease", "food-soiled", "food soiled", "soiled")),
+    ("food_soiled", ("greasy", "grease", "food-soiled", "food soiled", "food residue", "crumb", "soiled")),
+    ("contaminated", ("contaminated", "dirty", "residue", "stained")),
     ("empty", ("empty",)),
     ("broken", ("broken", "cracked", "shattered", "damaged")),
     ("wet", ("wet", "soaked", "damp")),
+    ("opened", ("opened", "open", "unsealed")),
+    ("single_use", ("single-use", "single use", "disposable")),
+    ("reusable", ("reusable", "durable", "refillable")),
+    ("recycling_mark_visible", ("recycling mark", "recycling symbol", "recycle symbol", "resin code")),
 ]
 
 _SPECIAL_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
@@ -212,6 +217,19 @@ _GENERIC_BOTTLE_TERMS = (
     "flask",
 )
 _PEN_TERMS = ("pen",)
+_OBSERVATION_ASPECTS = {
+    "packaging_use",
+    "form_factor",
+    "condition",
+    "contamination",
+    "recycling_marking",
+    "construction",
+    "contents",
+    "closure_state",
+    "power_source",
+    "reusability",
+    "other",
+}
 
 
 def _clean_text(value: Any) -> str:
@@ -220,6 +238,70 @@ def _clean_text(value: Any) -> str:
     normalized = re.sub(r"[^a-z0-9\s\-]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
+
+
+def _coerce_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if confidence < 0:
+        return 0.0
+    if confidence > 1:
+        return 1.0
+    return confidence
+
+
+def _normalize_visual_observations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    observations: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_observation in value:
+        if not isinstance(raw_observation, dict):
+            continue
+        aspect = _clean_text(raw_observation.get("aspect")).replace(" ", "_").replace("-", "_")
+        if aspect not in _OBSERVATION_ASPECTS:
+            continue
+        observation_value = str(raw_observation.get("value") or "").strip()
+        if not observation_value or _is_vague_hint(observation_value):
+            observation_value = UNKNOWN_VALUE
+        evidence = str(raw_observation.get("evidence") or "").strip()
+        confidence = _coerce_confidence(raw_observation.get("confidence"))
+        if observation_value == UNKNOWN_VALUE:
+            confidence = None
+            evidence = ""
+
+        dedupe_key = (aspect, _clean_text(observation_value))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        observations.append(
+            {
+                "aspect": aspect,
+                "value": observation_value,
+                "confidence": confidence,
+                "evidence": evidence,
+            }
+        )
+        if len(observations) == 8:
+            break
+    return observations
+
+
+def _visual_observation_text(observations: list[dict[str, Any]]) -> str:
+    values: list[str] = []
+    for observation in observations:
+        value = str(observation.get("value") or "").strip()
+        evidence = str(observation.get("evidence") or "").strip()
+        if value and not _is_vague_hint(value):
+            values.append(value)
+        if evidence:
+            values.append(evidence)
+    return _clean_text(" ".join(values))
 
 
 def _title_case_label(value: str) -> str:
@@ -778,15 +860,28 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     raw_broad_category = recognition_details.get("broad_category", "")
     candidates = recognition_details.get("candidates", [])
     visual_evidence = recognition_details.get("visual_evidence", "")
+    visual_observations = _normalize_visual_observations(
+        recognition_details.get("visual_observations", [])
+    )
+    visual_observation_text = _visual_observation_text(visual_observations)
 
     normalized_text = _clean_text(raw_item_label)
-    condition_flags, special_flags = _extract_flags(normalized_text)
+    combined_visual_text = _clean_text(
+        " ".join(
+            [
+                normalized_text,
+                str(visual_evidence or ""),
+                visual_observation_text,
+            ]
+        )
+    )
+    condition_flags, special_flags = _extract_flags(combined_visual_text)
     item_label, normalization_source = _normalize_item_label(normalized_text)
     material_category, material_confidence, material_source = _infer_material_details(
         item_label,
         normalized_text,
         str(likely_material or ""),
-        str(visual_evidence or ""),
+        " ".join([str(visual_evidence or ""), visual_observation_text]),
         candidates,
         condition_flags,
         special_flags,
@@ -834,17 +929,20 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         "broad_category": broad_category,
         "condition_flags": condition_flags,
         "special_handling_flags": special_flags,
+        "visual_observations": visual_observations,
+        "visual_observation_text": visual_observation_text,
         "matched_supported_label": matched_supported_label,
         "normalization_source": normalization_source,
     }
 
     enriched_details = {
         **recognition_details,
+        "visual_observations": visual_observations,
         "normalized": normalized_payload,
     }
 
     logger.info(
-        "Open recognition normalized. raw_label=%s normalized_item=%s disposal_category=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s matched_supported_label=%s",
+        "Open recognition normalized. raw_label=%s normalized_item=%s disposal_category=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s observation_count=%s matched_supported_label=%s",
         raw_item_label,
         normalized_payload["normalized_item"],
         normalized_payload["disposal_category"],
@@ -854,6 +952,7 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         normalized_payload["broad_category"],
         normalized_payload["condition_flags"],
         normalized_payload["special_handling_flags"],
+        len(visual_observations),
         normalized_payload["matched_supported_label"],
     )
 

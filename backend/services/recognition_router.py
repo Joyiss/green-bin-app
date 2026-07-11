@@ -378,6 +378,7 @@ def _get_normalized_open_recognition_details(
         and "disposal_category" in normalized
         and "original_vlm_broad_category" in normalized
         and "original_vlm_likely_material" in normalized
+        and "visual_observations" in normalized
     ):
         if "vlm_mode" in recognition_details:
             return recognition_details

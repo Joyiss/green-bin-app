@@ -57,6 +57,34 @@ def _stable_sorted_strings(values: Any) -> list[str]:
     return sorted(normalized_values, key=str.casefold)
 
 
+def _stable_visual_observation_keys(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+
+    observation_keys: list[str] = []
+    seen: set[str] = set()
+    for observation in values:
+        if not isinstance(observation, dict):
+            continue
+        aspect = _normalize_optional_string(observation.get("aspect"))
+        value = _normalize_optional_string(observation.get("value"))
+        if aspect is None or value is None:
+            continue
+        confidence = observation.get("confidence")
+        confidence_key = "unknown"
+        try:
+            if confidence is not None:
+                confidence_key = f"{float(confidence):.1f}"
+        except (TypeError, ValueError):
+            confidence_key = "unknown"
+        key = f"{aspect.casefold()}:{value.casefold()}:{confidence_key}"
+        if key in seen:
+            continue
+        seen.add(key)
+        observation_keys.append(key)
+    return sorted(observation_keys)
+
+
 def _first_non_empty(*values: Any) -> str | None:
     for value in values:
         normalized = _normalize_optional_string(value)
@@ -158,6 +186,9 @@ def build_source_grounded_cache_context(
     )
     condition_flags = _stable_sorted_strings(llm_context.get("condition_flags"))
     special_handling_flags = _stable_sorted_strings(llm_context.get("special_flags"))
+    visual_observations = _stable_visual_observation_keys(
+        llm_context.get("visual_observations")
+    )
     source_fingerprint = _source_fingerprint(retrieved_chunk_ids)
     location_scope = _retrieval_location_scope(retrieval_results)
 
@@ -169,6 +200,7 @@ def build_source_grounded_cache_context(
         "broad_category_key": normalize_guidance_key(broad_category),
         "condition_flags": condition_flags,
         "special_handling_flags": special_handling_flags,
+        "visual_observations": visual_observations,
         "location_scope": location_scope,
         "retrieved_chunk_ids": retrieved_chunk_ids,
         "source_corpus_version": SOURCE_CORPUS_VERSION,
@@ -192,6 +224,7 @@ def build_source_grounded_cache_context(
         "broad_category_key": cache_key_input["broad_category_key"],
         "condition_flags": condition_flags,
         "special_handling_flags": special_handling_flags,
+        "visual_observations": visual_observations,
         "location_scope": location_scope,
         "retrieved_chunk_ids": retrieved_chunk_ids,
         "source_corpus_version": SOURCE_CORPUS_VERSION,

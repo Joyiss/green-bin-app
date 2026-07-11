@@ -370,6 +370,81 @@ class GuidanceRetrievalServiceTests(unittest.TestCase):
         chunk_ids = [result["chunk_id"] for result in results]
         self.assertIn("batteries_01", chunk_ids)
 
+    def test_visual_observations_can_make_battery_chunk_relevant(self):
+        chunks = [
+            _chunk(
+                chunk_id="electronics_01",
+                title="Electronics drop-off",
+                section="electronics",
+                item_labels=["computer mouse", "electronics"],
+                categories=["electronics/e-waste"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+            _chunk(
+                chunk_id="batteries_01",
+                title="Battery recycling",
+                section="batteries",
+                item_labels=["battery", "rechargeable batteries"],
+                materials=["battery"],
+                categories=["electronics/e-waste"],
+                condition_flags=["battery"],
+                disposal_actions_supported=["Drop-off"],
+            ),
+        ]
+
+        results = retrieve_guidance_chunks(
+            item_label="Computer Mouse",
+            material="Electronics",
+            category="Electronics",
+            item_candidates=["Computer Mouse"],
+            material_candidates=["Electronics"],
+            category_candidates=["Electronics"],
+            condition_flags=["electronics", "requires_dropoff"],
+            visual_observations=[
+                {
+                    "aspect": "power_source",
+                    "value": "battery compartment visible",
+                    "confidence": 0.86,
+                    "evidence": "Small removable cover on underside.",
+                }
+            ],
+            chunks=chunks,
+        )
+
+        chunk_ids = [result["chunk_id"] for result in results]
+        self.assertIn("batteries_01", chunk_ids)
+
+    def test_specific_visual_context_blocks_generic_category_only_match(self):
+        chunks = [
+            _chunk(
+                chunk_id="generic-plastic",
+                categories=["plastic"],
+                disposal_actions_supported=["Recycle"],
+            )
+        ]
+
+        results = retrieve_guidance_chunks(
+            item_label="Used snack wrapper",
+            material="Mixed Material",
+            category="Plastic",
+            item_candidates=["Used snack wrapper"],
+            material_candidates=["Mixed Material"],
+            category_candidates=["Plastic"],
+            condition_flags=["single_use", "contaminated"],
+            visual_observations=[
+                {
+                    "aspect": "form_factor",
+                    "value": "flexible crinkly wrapper",
+                    "confidence": 0.9,
+                    "evidence": "Thin pouch-like packaging.",
+                }
+            ],
+            specific_context_required=True,
+            chunks=chunks,
+        )
+
+        self.assertEqual(results, [])
+
     def test_textile_retrieval_includes_earth911_chunk(self):
         results = retrieve_guidance_chunks(
             item_label="clothing",

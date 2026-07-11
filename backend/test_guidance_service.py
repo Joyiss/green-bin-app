@@ -54,6 +54,8 @@ def _open_classification(
     likely_material: str | None = None,
     condition_flags=None,
     special_handling_flags=None,
+    visual_observations=None,
+    visual_evidence: str | None = None,
 ):
     return {
         "item": item,
@@ -67,12 +69,15 @@ def _open_classification(
             "raw_item_label": raw_item_label or item.lower(),
             "likely_material": likely_material or material_category.lower(),
             "broad_category": broad_category.lower(),
+            "visual_evidence": visual_evidence or "",
+            "visual_observations": visual_observations or [],
             "normalized": {
                 "item_label": item,
                 "material_category": material_category,
                 "broad_category": broad_category,
                 "condition_flags": condition_flags or [],
                 "special_handling_flags": special_handling_flags or [],
+                "visual_observations": visual_observations or [],
                 "matched_supported_label": None,
             },
         },
@@ -109,6 +114,40 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(retrieval_inputs["category_candidates"][0], "Electronics")
         self.assertEqual(retrieval_inputs["material"], "Plastic")
         self.assertEqual(retrieval_inputs["material_candidates"][0], "Plastic")
+
+    def test_retrieval_inputs_include_visual_observations_and_derived_flags(self):
+        observations = [
+            {
+                "aspect": "contamination",
+                "value": "food residue visible",
+                "confidence": 0.82,
+                "evidence": "Residue on inside wall.",
+            },
+            {
+                "aspect": "packaging_use",
+                "value": "single-use food container",
+                "confidence": 0.88,
+                "evidence": "Small disposable cup shape.",
+            },
+        ]
+        classification = _open_classification(
+            item="Yogurt Cup",
+            category="Plastic",
+            material_category="Plastic",
+            broad_category="plastic",
+            raw_item_label="used yogurt cup",
+            likely_material="plastic",
+            visual_evidence="Open plastic cup.",
+            visual_observations=observations,
+        )
+
+        retrieval_inputs = _build_retrieval_inputs(classification)
+
+        self.assertEqual(retrieval_inputs["visual_observations"], observations)
+        self.assertTrue(retrieval_inputs["specific_context_required"])
+        self.assertIn("food_soiled", retrieval_inputs["condition_flags"])
+        self.assertIn("single_use", retrieval_inputs["condition_flags"])
+        self.assertIn("food residue visible", retrieval_inputs["visual_evidence"])
 
     def test_groq_grounded_response_wins_before_direct_json(self):
         classification = {
@@ -158,6 +197,73 @@ class GuidanceServiceTests(unittest.TestCase):
             ["chunk-1"],
         )
         mock_rules.assert_not_called()
+
+    def test_visual_observations_are_passed_to_source_grounded_llm(self):
+        observations = [
+            {
+                "aspect": "form_factor",
+                "value": "flexible pouch",
+                "confidence": 0.9,
+                "evidence": "Crinkly bag shape.",
+            }
+        ]
+        classification = _open_classification(
+            item="Snack Wrapper",
+            category="Plastic",
+            material_category="Mixed Material",
+            broad_category="plastic",
+            raw_item_label="opened snack wrapper",
+            likely_material="mixed material",
+            visual_evidence="Crinkly opened pouch.",
+            visual_observations=observations,
+        )
+        retrieval_results = [
+            _retrieval_result(
+                _json_chunk(
+                    id="wrapper-trash",
+                    applies_to={
+                        "item_labels": ["snack wrapper"],
+                        "materials": ["mixed material"],
+                        "categories": ["plastic"],
+                        "condition_flags": ["single_use"],
+                    },
+                    content="Flexible snack wrappers are handled as trash.",
+                    disposal_actions_supported=["Trash"],
+                )
+            )
+        ]
+        llm_guidance = {
+            "disposal_action": "trash",
+            "material_code": None,
+            "impact_level": "Source-Grounded Guidance",
+            "summary": "Put this opened snack wrapper in trash.",
+            "steps": ["Empty loose crumbs.", "Place the wrapper in trash."],
+            "guidance_source": "json_rag_llm_generated",
+            "guidance_metadata": {"sources_used": ["wrapper-trash"]},
+        }
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=retrieval_results,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
+                return_value={"guidance": llm_guidance, "failure_reason": None},
+            ) as mock_llm,
+        ):
+            response = build_prediction_response(classification)
+
+        self.assertEqual(response["disposal_action"], "trash")
+        self.assertEqual(mock_llm.call_args.kwargs["visual_observations"], observations)
+        self.assertIn("flexible pouch", mock_llm.call_args.kwargs["visual_evidence"])
 
     def test_source_grounded_cache_hit_skips_llm_generation(self):
         classification = {

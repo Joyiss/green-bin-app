@@ -29,6 +29,17 @@ _GENERIC_LOOKUP_TERMS = {
     "general",
     "other",
 }
+_GENERIC_CATEGORY_ONLY_TERMS = {
+    "plastic",
+    "paper",
+    "metal",
+    "glass",
+    "cardboard",
+    "mixed material",
+    "household item",
+    "general",
+    "other",
+}
 _ALIAS_CANONICAL_MAP = {
     "battery": "battery",
     "batteries": "battery",
@@ -134,6 +145,23 @@ def _normalize_condition_flags(values: Any) -> list[str]:
 
 def _normalize_text(value: Any) -> str:
     return normalize_guidance_phrase(value) or ""
+
+
+def _visual_observation_text_values(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+
+    normalized_values: list[str] = []
+    for observation in values:
+        if not isinstance(observation, dict):
+            continue
+        aspect = _normalize_text(observation.get("aspect"))
+        value = _normalize_text(observation.get("value"))
+        evidence = _normalize_text(observation.get("evidence"))
+        for candidate in (aspect, value, evidence):
+            if candidate:
+                normalized_values.append(candidate)
+    return normalized_values
 
 
 def _candidate_values(primary_value: Any, candidate_values: Any) -> list[str]:
@@ -310,6 +338,7 @@ def battery_chunk_relevant_for_context(
     condition_flags: list[str] | None = None,
     special_flags: list[str] | None = None,
     visual_evidence: str | None = None,
+    visual_observations: list[dict[str, Any]] | None = None,
 ) -> bool:
     normalized_condition_flags = _normalize_condition_flags(condition_flags or [])
     normalized_special_flags = _normalize_condition_flags(special_flags or [])
@@ -325,6 +354,7 @@ def battery_chunk_relevant_for_context(
         category,
         visual_evidence,
         *(item_candidates or []),
+        *_visual_observation_text_values(visual_observations),
     ]
     normalized_text = " ".join(filter(None, (_normalize_text(value) for value in text_values)))
     if any(term in normalized_text for term in _BATTERY_POSITIVE_TERMS):
@@ -378,6 +408,7 @@ def _score_chunk(
     material_candidates: list[str],
     category_candidates: list[str],
     condition_flags: list[str],
+    specific_context_required: bool = False,
 ) -> tuple[float, list[str]]:
     applies_to = chunk.get("applies_to") or {}
     matched_fields: list[str] = []
@@ -519,6 +550,19 @@ def _score_chunk(
             score = 0.0
             matched_fields = []
 
+    if (
+        specific_context_required
+        and matched_fields == ["category"]
+        and effective_category_candidates
+        and all(
+            normalize_guidance_phrase(candidate) in _GENERIC_CATEGORY_ONLY_TERMS
+            for candidate in effective_category_candidates
+            if normalize_guidance_phrase(candidate)
+        )
+    ):
+        score = 0.0
+        matched_fields = []
+
     return score, matched_fields
 
 
@@ -533,6 +577,8 @@ def retrieve_guidance_chunks(
     condition_flags: list[str] | None = None,
     special_flags: list[str] | None = None,
     visual_evidence: str | None = None,
+    visual_observations: list[dict[str, Any]] | None = None,
+    specific_context_required: bool = False,
     location: dict[str, Any] | None = None,
     chunks: list[dict[str, Any]] | None = None,
     min_score: float = MIN_RETRIEVAL_SCORE,
@@ -552,6 +598,7 @@ def retrieve_guidance_chunks(
         condition_flags=normalized_condition_flags,
         special_flags=special_flags or [],
         visual_evidence=visual_evidence,
+        visual_observations=visual_observations,
     )
 
     matches: list[dict[str, Any]] = []
@@ -563,8 +610,8 @@ def retrieve_guidance_chunks(
                 "Guidance retrieval skipped battery chunk. chunk_id=%s item_label=%s visual_evidence=%s",
                 chunk.get("id"),
                 item_label,
-                visual_evidence,
-            )
+            visual_evidence,
+        )
             continue
 
         score, matched_fields = _score_chunk(
@@ -573,6 +620,7 @@ def retrieve_guidance_chunks(
             material_candidates=effective_material_candidates,
             category_candidates=effective_category_candidates,
             condition_flags=normalized_condition_flags,
+            specific_context_required=specific_context_required,
         )
         if score < min_score:
             continue

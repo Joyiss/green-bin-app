@@ -40,7 +40,20 @@ logger = logging.getLogger(__name__)
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
 DEFAULT_VLM_MAX_TOKENS = 60
-OPEN_VLM_MAX_TOKENS = 120
+OPEN_VLM_MAX_TOKENS = 220
+OPEN_VISUAL_OBSERVATION_ASPECTS = [
+    "packaging_use",
+    "form_factor",
+    "condition",
+    "contamination",
+    "recycling_marking",
+    "construction",
+    "contents",
+    "closure_state",
+    "power_source",
+    "reusability",
+    "other",
+]
 
 CLOUDFLARE_API_BASE_URL = os.getenv(
     "CLOUDFLARE_API_BASE_URL",
@@ -58,7 +71,7 @@ OPEN_DETECTION_PROMPT = (
     "You are a visual recognition model for a disposal app.\n"
     "Return exactly one JSON object and nothing else.\n"
     "No explanation, markdown, or extra text.\n"
-    "Identify the single main visible item.\n"
+    "Identify the single main visible disposal item.\n"
     "Ignore background objects unless they create genuine ambiguity.\n"
     "Recognition only.\n"
     "Do not provide disposal_action.\n"
@@ -67,15 +80,25 @@ OPEN_DETECTION_PROMPT = (
     "Rules:\n"
     '- status must be exactly one of: "confident", "uncertain", "unknown"\n'
     "- raw_item_label and likely_material should each be short plain-language strings, or \"\" if unknown.\n"
-    "- likely_material is the physical material hint, such as plastic, metal, glass, ceramic, paper, or fabric.\n"
+    "- raw_item_label must name the physical object being disposed of, not just the product, brand, logo, printed text, flavor, or contents.\n"
+    "- Include disposal-relevant physical details in raw_item_label when visible: packaging type, container type, opened/used/empty/food-soiled/broken condition, reusable vs single-use form.\n"
+    "- likely_material is the physical material hint, such as plastic, metal, glass, ceramic, paper, cardboard, fabric, or mixed plastic/foil.\n"
+    "- If contents and packaging are both visible, identify the package/container unless loose contents are clearly the item being discarded.\n"
+    "- Treat labels and barcode text as clues only after the object shape/material are visible.\n"
+    "- visual_observations must describe image-visible disposal context only; do not decide disposal or recommend actions.\n"
+    "- Include observations for these aspects when possible: packaging_use, form_factor, condition, contamination, recycling_marking, construction.\n"
+    "- For each observation, use value \"unknown\" and confidence null when the property cannot be determined from the image.\n"
+    "- Observation confidence is the confidence for that specific conclusion, from 0 to 1, not overall item confidence.\n"
+    "- Observation evidence must cite visible cues briefly and must be \"\" when the value is unknown.\n"
     "- broad_category is only for disposal/location-search routing and must be exactly one of: automotive, batteries, construction, electronics, garden, glass, hazardous, household, metal, paint, paper, plastic, unknown, unsupported.\n"
     "- Do not use physical material for broad_category when the item routes through a special stream.\n"
     "- Examples: keyboard -> electronics, not plastic; computer mouse -> electronics, not plastic; calculator -> electronics; phone charger -> electronics; battery -> batteries; paint can -> paint or hazardous, not metal; cardboard box -> paper; plastic water bottle -> plastic; glass bottle -> glass.\n"
+    "- Product/package examples: branded chips -> opened chip bag, not chips; yogurt -> used plastic yogurt container, not yogurt; greasy pizza box -> food-soiled pizza box; candle jar -> glass candle jar with wax residue.\n"
     "- candidates must contain at most 3 objects.\n"
     "- each candidate object must contain label and confidence.\n"
     "- visual_evidence must be a short string, 12 words or fewer, or \"\" if unknown.\n"
     "Return shape:\n"
-    '{"status":"confident","raw_item_label":"keyboard","likely_material":"plastic","broad_category":"electronics","candidates":[{"label":"keyboard","confidence":0.91}],"visual_evidence":"Keys and USB cable visible."}\n'
+    '{"status":"confident","raw_item_label":"ceramic mug","likely_material":"ceramic","broad_category":"household","candidates":[{"label":"ceramic mug","confidence":0.91}],"visual_evidence":"Handle, cup opening, glossy rigid body.","visual_observations":[{"aspect":"packaging_use","value":"not packaging","confidence":0.86,"evidence":"Rigid mug body, no wrapper or container seal."},{"aspect":"form_factor","value":"rigid handled cup","confidence":0.91,"evidence":"Handle and cup opening visible."},{"aspect":"condition","value":"appears intact","confidence":0.74,"evidence":"No cracks visible."},{"aspect":"contamination","value":"unknown","confidence":null,"evidence":""},{"aspect":"recycling_marking","value":"unknown","confidence":null,"evidence":""},{"aspect":"construction","value":"glazed ceramic","confidence":0.82,"evidence":"Glossy rigid ceramic-looking body."}]}\n'
 )
 BARCODE_AWARE_PROMPT_SUFFIX = (
     "\n\n"
@@ -166,6 +189,27 @@ OPEN_DETECTION_RESPONSE_SCHEMA = {
             "maxItems": 3,
         },
         "visual_evidence": {"type": "string"},
+        "visual_observations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "aspect": {
+                        "type": "string",
+                        "enum": OPEN_VISUAL_OBSERVATION_ASPECTS,
+                    },
+                    "value": {"type": "string"},
+                    "confidence": {
+                        "type": ["number", "null"],
+                    },
+                    "evidence": {"type": "string"},
+                },
+                "required": ["aspect", "value", "confidence", "evidence"],
+            },
+            "minItems": 0,
+            "maxItems": 8,
+        },
     },
     "required": [
         "status",
@@ -174,6 +218,7 @@ OPEN_DETECTION_RESPONSE_SCHEMA = {
         "broad_category",
         "candidates",
         "visual_evidence",
+        "visual_observations",
     ],
 }
 VERIFICATION_RESPONSE_SCHEMA = DETECTION_RESPONSE_SCHEMA
@@ -446,9 +491,64 @@ def _coerce_candidate_confidence(value: object) -> float | None:
         return None
 
     try:
-        return float(value)
+        confidence = float(value)
     except (TypeError, ValueError):
         return None
+    if confidence < 0:
+        return 0.0
+    if confidence > 1:
+        return 1.0
+    return confidence
+
+
+def _clean_observation_value(value: object) -> str:
+    cleaned_value = _clean_free_text_field(value)
+    if not cleaned_value:
+        return "unknown"
+    if cleaned_value.strip().casefold() in {"none", "null", "n/a", "not applicable", "unknown"}:
+        return "unknown"
+    return cleaned_value
+
+
+def _normalize_visual_observations(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+
+    observations: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    allowed_aspects = set(OPEN_VISUAL_OBSERVATION_ASPECTS)
+    for raw_observation in value:
+        if not isinstance(raw_observation, dict):
+            continue
+
+        aspect = _clean_free_text_field(raw_observation.get("aspect", "")).casefold()
+        aspect = aspect.replace(" ", "_").replace("-", "_")
+        if aspect not in allowed_aspects:
+            continue
+
+        observation_value = _clean_observation_value(raw_observation.get("value", ""))
+        evidence = _clean_free_text_field(raw_observation.get("evidence", ""))
+        confidence = _coerce_candidate_confidence(raw_observation.get("confidence"))
+        if observation_value == "unknown":
+            confidence = None
+            evidence = ""
+
+        dedupe_key = (aspect, observation_value.casefold())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        observations.append(
+            {
+                "aspect": aspect,
+                "value": observation_value,
+                "confidence": confidence,
+                "evidence": evidence,
+            }
+        )
+        if len(observations) == 8:
+            break
+
+    return observations
 
 
 def _dedupe_open_candidates(
@@ -522,6 +622,8 @@ def _build_barcode_context_suffix(barcode_context: dict[str, object] | None) -> 
         "Barcode lookup found product metadata, but packaging could not be mapped.\n"
         "This metadata is product context only, not answer labels.\n"
         "Use the image and this product context to identify the visible disposal item/package/container.\n"
+        "Prefer the actual disposable packaging, container, or household item over the product name, brand, flavor, printed text, or contents.\n"
+        "Use visible packaging type, material, and condition when selecting the nearest supported label.\n"
         "The answer must identify the packaging or physical item that should be disposed of, such as wrapper, plastic bag, cardboard box, glass jar, plastic bottle, soda can, drink carton, or another supported disposal label.\n"
         "Do not answer with the food or product identity unless that exact label is already a supported disposal item in the allowed inventory.\n"
         "Do not output product names like Frozen dairy dessert cone, Ice cream cone, Nutella, Coca-Cola, Chips, or Candy unless that exact label is a supported Green Bin disposal item.\n"
@@ -551,6 +653,8 @@ def _build_open_barcode_context_suffix(barcode_context: dict[str, object] | None
         "\n\n"
         "Barcode lookup found product metadata, but this metadata is only context.\n"
         "Use the image first to recognize the visible physical item or packaging.\n"
+        "Prefer the actual disposable packaging, container, or household item over the product name, brand, flavor, printed text, or contents.\n"
+        "Use visible packaging type, material, and condition in raw_item_label and visual_evidence.\n"
         "Do not infer the visible item from barcode text alone when the object shape/material is unclear.\n"
         "If the visible item is unclear, return unknown.\n"
         "Product context:\n"
@@ -844,6 +948,7 @@ def _unknown_open_detection_result(
         "broad_category": "",
         "candidates": [],
         "visual_evidence": "",
+        "visual_observations": [],
         "raw_output": raw_output,
     }
     if error is not None:
@@ -926,6 +1031,36 @@ def _extract_partial_open_detection_fields(raw_text: str) -> dict[str, object]:
     if candidates:
         parsed["candidates"] = _dedupe_open_candidates(candidates)
 
+    observation_matches = re.finditer(
+        (
+            r'\{\s*"aspect"\s*:\s*"([^"]+)"\s*,\s*"value"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"confidence"\s*:\s*(null|-?\d+(?:\.\d+)?)\s*,\s*"evidence"\s*:\s*"([^"]*)"'
+        ),
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    visual_observations: list[dict[str, object]] = []
+    for match in observation_matches:
+        confidence_value = match.group(3)
+        confidence: float | None = None
+        if confidence_value.strip().casefold() != "null":
+            confidence = _coerce_candidate_confidence(confidence_value)
+        visual_observations.append(
+            {
+                "aspect": match.group(1),
+                "value": match.group(2),
+                "confidence": confidence,
+                "evidence": match.group(4),
+            }
+        )
+        if len(visual_observations) == 8:
+            break
+
+    if visual_observations:
+        parsed["visual_observations"] = _normalize_visual_observations(
+            visual_observations
+        )
+
     return parsed
 
 
@@ -983,6 +1118,9 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         )
 
     visual_evidence = _clean_free_text_field(parsed_output.get("visual_evidence", ""))
+    visual_observations = _normalize_visual_observations(
+        parsed_output.get("visual_observations", [])
+    )
 
     if parse_mode == "recovered":
         recovered_has_signal = any(
@@ -991,6 +1129,7 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
                 likely_material,
                 broad_category,
                 parsed_candidates,
+                visual_observations,
             )
         )
         if not recovered_has_signal:
@@ -1028,6 +1167,7 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         "broad_category": broad_category,
         "candidates": _dedupe_open_candidates(parsed_candidates),
         "visual_evidence": visual_evidence,
+        "visual_observations": visual_observations,
         "raw_output": raw_output,
     }
     _log_vlm_timing(
@@ -1039,6 +1179,7 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         parse_mode=parse_mode,
         status=status,
         candidate_count=len(result["candidates"]),
+        observation_count=len(visual_observations),
         raw_output_chars=len(raw_output),
     )
     return result

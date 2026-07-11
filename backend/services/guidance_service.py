@@ -287,6 +287,86 @@ def _normalized_string_list(value: Any) -> list[str]:
     return normalized_values
 
 
+def _visual_observations(classification: dict[str, Any]) -> list[dict[str, Any]]:
+    recognition_details = classification.get("recognition_details")
+    normalized_details = _normalized_open_details(classification)
+    raw_observations = normalized_details.get("visual_observations")
+    if not isinstance(raw_observations, list) and isinstance(recognition_details, dict):
+        raw_observations = recognition_details.get("visual_observations")
+    if not isinstance(raw_observations, list):
+        return []
+
+    observations: list[dict[str, Any]] = []
+    for raw_observation in raw_observations:
+        if not isinstance(raw_observation, dict):
+            continue
+        aspect = _first_non_empty_string(raw_observation.get("aspect"))
+        value = _first_non_empty_string(raw_observation.get("value"))
+        if aspect is None or value is None:
+            continue
+        evidence = _first_non_empty_string(raw_observation.get("evidence")) or ""
+        confidence_value = raw_observation.get("confidence")
+        confidence: float | None = None
+        try:
+            if confidence_value is not None:
+                confidence = max(0.0, min(1.0, float(confidence_value)))
+        except (TypeError, ValueError):
+            confidence = None
+        observations.append(
+            {
+                "aspect": aspect,
+                "value": value,
+                "confidence": confidence,
+                "evidence": evidence,
+            }
+        )
+    return observations
+
+
+def _visual_observation_text_values(observations: list[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for observation in observations:
+        for key in ("aspect", "value", "evidence"):
+            normalized = _first_non_empty_string(observation.get(key))
+            if normalized and normalized.casefold() != UNKNOWN_CATEGORY.casefold():
+                values.append(normalized)
+    return values
+
+
+def _visual_observation_flags(observations: list[dict[str, Any]]) -> list[str]:
+    normalized_text = " ".join(
+        normalize_guidance_phrase(value) or ""
+        for value in _visual_observation_text_values(observations)
+    )
+    flags: list[str] = []
+    flag_patterns = (
+        ("food_soiled", ("food residue", "crumb", "greasy", "soiled", "food soiled")),
+        ("contaminated", ("contaminated", "dirty", "residue", "stained")),
+        ("empty", ("empty",)),
+        ("opened", ("open", "opened", "unsealed")),
+        ("broken", ("broken", "cracked", "shattered", "damaged")),
+        ("wet", ("wet", "damp", "soaked")),
+        ("single_use", ("single use", "single-use", "disposable")),
+        ("reusable", ("reusable", "durable", "refillable")),
+        ("battery", ("battery compartment", "battery powered", "battery visible")),
+        ("recycling_mark_visible", ("recycling mark", "recycling symbol", "resin code")),
+    )
+    for flag, patterns in flag_patterns:
+        if any(pattern in normalized_text for pattern in patterns):
+            flags.append(flag)
+    return _candidate_values(flags)
+
+
+def _combined_visual_evidence(classification: dict[str, Any]) -> str | None:
+    recognition_details = classification.get("recognition_details")
+    observations = _visual_observations(classification)
+    values = _candidate_values(
+        recognition_details.get("visual_evidence") if isinstance(recognition_details, dict) else None,
+        _visual_observation_text_values(observations),
+    )
+    return "; ".join(values) if values else None
+
+
 def _candidate_values(*values: Any) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
@@ -326,7 +406,7 @@ def _log_resolution_started(
     retrieval_inputs: dict[str, Any],
 ) -> None:
     logger.info(
-        "Guidance resolution started. item=%s category=%s material=%s recognition_source=%s open_normalized=%s lookup_item=%s lookup_material=%s lookup_category=%s",
+        "Guidance resolution started. item=%s category=%s material=%s recognition_source=%s open_normalized=%s lookup_item=%s lookup_material=%s lookup_category=%s observation_count=%s",
         classification.get("item"),
         classification.get("category"),
         _first_non_empty_string(
@@ -339,6 +419,7 @@ def _log_resolution_started(
         retrieval_inputs.get("item_label"),
         retrieval_inputs.get("material"),
         retrieval_inputs.get("category"),
+        len(retrieval_inputs.get("visual_observations") or []),
     )
 
 
@@ -1054,6 +1135,7 @@ def _guidance_from_json_retrieval(
     condition_flags: list[str] | None = None,
     special_flags: list[str] | None = None,
     visual_evidence: str | None = None,
+    visual_observations: list[dict[str, Any]] | None = None,
     candidates: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if not retrieval_results:
@@ -1102,6 +1184,7 @@ def _guidance_from_json_retrieval(
         condition_flags=list(condition_flags or []),
         special_flags=list(special_flags or []),
         visual_evidence=visual_evidence,
+        visual_observations=list(visual_observations or []),
         candidates=list(candidates or []),
         allowed_actions={
             action
@@ -1175,6 +1258,7 @@ def _guidance_from_legacy_rules(
 def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
     if _is_open_recognition_classification(classification):
         recognition_details = classification.get("recognition_details")
+        visual_observations = _visual_observations(classification)
         recognition_candidates = []
         if isinstance(recognition_details, dict):
             recognition_candidates = [
@@ -1208,6 +1292,7 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             _normalized_open_details(classification).get("condition_flags", []),
             _normalized_open_details(classification).get("special_handling_flags", []),
             _normalized_open_details(classification).get("special_flags", []),
+            _visual_observation_flags(visual_observations),
         )
         special_flags = _candidate_values(
             _normalized_open_details(classification).get("special_handling_flags", []),
@@ -1215,6 +1300,7 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
         )
         condition_flags.extend(_derived_guidance_context_flags(classification))
         condition_flags = _candidate_values(condition_flags)
+        visual_evidence = _combined_visual_evidence(classification)
 
         return {
             "item_label": item_candidates[0] if item_candidates else None,
@@ -1225,9 +1311,9 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
             "category_candidates": category_candidates,
             "condition_flags": condition_flags,
             "special_flags": special_flags,
-            "visual_evidence": _first_non_empty_string(
-                recognition_details.get("visual_evidence") if isinstance(recognition_details, dict) else None
-            ),
+            "visual_evidence": visual_evidence,
+            "visual_observations": visual_observations,
+            "specific_context_required": bool(visual_observations),
             "location": classification.get("location"),
         }
 
@@ -1244,6 +1330,8 @@ def _build_retrieval_inputs(classification: dict[str, Any]) -> dict[str, Any]:
         "condition_flags": [],
         "special_flags": [],
         "visual_evidence": None,
+        "visual_observations": [],
+        "specific_context_required": False,
         "location": classification.get("location"),
     }
 
@@ -1282,6 +1370,7 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
         ]
 
     normalized_details = _normalized_open_details(classification)
+    visual_observations = _visual_observations(classification)
     return {
         "recognized_item": _first_non_empty_string(classification.get("item")),
         "normalized_item_label": _first_non_empty_string(
@@ -1305,10 +1394,10 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
         "special_flags": _candidate_values(
             _normalized_string_list(normalized_details.get("special_handling_flags")),
             _normalized_string_list(normalized_details.get("special_flags")),
+            _visual_observation_flags(visual_observations),
         ),
-        "visual_evidence": _first_non_empty_string(
-            recognition_details.get("visual_evidence") if isinstance(recognition_details, dict) else None
-        ),
+        "visual_evidence": _combined_visual_evidence(classification),
+        "visual_observations": visual_observations,
         "candidates": _candidate_values(
             candidate_labels,
             classification.get("trusted_guidance_label"),
@@ -1329,6 +1418,7 @@ def _normalize_open_text_fields(classification: dict[str, Any]) -> list[str]:
         normalized_details.get("broad_category"),
         classification.get("recognized_material_category"),
         classification.get("recognized_broad_category"),
+        *_visual_observation_text_values(_visual_observations(classification)),
     ]
 
     normalized_values: list[str] = []
@@ -1383,10 +1473,12 @@ def _open_special_handling_flags(classification: dict[str, Any]) -> list[str]:
 
 
 def _open_condition_flags(classification: dict[str, Any]) -> list[str]:
+    visual_observations = _visual_observations(classification)
     return _candidate_values(
         _normalized_open_details(classification).get("condition_flags", []),
         _normalized_open_details(classification).get("special_handling_flags", []),
         _normalized_open_details(classification).get("special_flags", []),
+        _visual_observation_flags(visual_observations),
         _derived_guidance_context_flags(classification),
     )
 
@@ -1403,6 +1495,7 @@ def _find_matching_terms(normalized_text: str, terms: set[str]) -> list[str]:
 def _build_low_risk_decision_context(classification: dict[str, Any]) -> dict[str, Any]:
     recognition_details = classification.get("recognition_details")
     normalized_details = _normalized_open_details(classification)
+    visual_observations = _visual_observations(classification)
     values = _candidate_values(
         classification.get("item"),
         classification.get("category"),
@@ -1414,6 +1507,7 @@ def _build_low_risk_decision_context(classification: dict[str, Any]) -> dict[str
         normalized_details.get("broad_category"),
         recognition_details.get("raw_item_label") if isinstance(recognition_details, dict) else None,
         recognition_details.get("broad_category") if isinstance(recognition_details, dict) else None,
+        _visual_observation_text_values(visual_observations),
     )
     flags = _open_condition_flags(classification)
     normalized_values = [
@@ -1655,6 +1749,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             condition_flags=llm_context["condition_flags"],
             special_flags=llm_context["special_flags"],
             visual_evidence=llm_context["visual_evidence"],
+            visual_observations=llm_context["visual_observations"],
             candidates=llm_context["candidates"],
         ) or _default_safe_guidance()
         _log_guidance_selected(
@@ -1690,6 +1785,7 @@ def _resolve_guidance(classification: dict[str, Any]) -> dict[str, Any]:
             condition_flags=llm_context["condition_flags"],
             special_flags=llm_context["special_flags"],
             visual_evidence=llm_context["visual_evidence"],
+            visual_observations=llm_context["visual_observations"],
             candidates=llm_context["candidates"],
             low_risk_reason=_first_non_empty_string(low_risk_evaluation.get("reason")),
             matched_terms=list(low_risk_evaluation.get("matched_terms") or []),

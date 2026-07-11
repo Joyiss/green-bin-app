@@ -176,6 +176,9 @@ class DetectObjectApiTests(unittest.TestCase):
                     '{"status":"confident","raw_item_label":"Ceramic mug","likely_material":"Ceramic",'
                     '"broad_category":"Drinkware","candidates":[{"label":"Ceramic mug","confidence":0.93},'
                     '{"label":"Coffee mug","confidence":0.72}],"visual_evidence":"Handle and glossy cup body are visible.",'
+                    '"visual_observations":[{"aspect":"packaging_use","value":"not packaging","confidence":0.86,'
+                    '"evidence":"Rigid mug body with no wrapper."},{"aspect":"contamination","value":"unknown",'
+                    '"confidence":null,"evidence":""}],'
                     '"disposal_action":"trash","steps":["do not trust this"]}'
                 ),
             },
@@ -201,10 +204,28 @@ class DetectObjectApiTests(unittest.TestCase):
             result["visual_evidence"],
             "Handle and glossy cup body are visible.",
         )
+        self.assertEqual(
+            result["visual_observations"],
+            [
+                {
+                    "aspect": "packaging_use",
+                    "value": "not packaging",
+                    "confidence": 0.86,
+                    "evidence": "Rigid mug body with no wrapper.",
+                },
+                {
+                    "aspect": "contamination",
+                    "value": "unknown",
+                    "confidence": None,
+                    "evidence": "",
+                },
+            ],
+        )
         self.assertNotIn("disposal_action", result)
         self.assertNotIn("steps", result)
         request_payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(request_payload["max_tokens"], 120)
+        self.assertEqual(request_payload["max_tokens"], 220)
+        self.assertIn("visual_observations", request_payload["response_format"]["json_schema"]["required"])
 
     @patch("model.requests.post")
     def test_detect_object_open_mode_handles_non_json_safely(self, mock_post):
@@ -227,6 +248,7 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(result["broad_category"], "")
         self.assertEqual(result["candidates"], [])
         self.assertEqual(result["visual_evidence"], "")
+        self.assertEqual(result["visual_observations"], [])
         self.assertEqual(result["raw_output"], "Looks like a ceramic mug with a handle.")
 
     @patch("model.requests.post")
@@ -260,6 +282,7 @@ class DetectObjectApiTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["visual_evidence"], "")
+        self.assertEqual(result["visual_observations"], [])
         self.assertTrue(result["raw_output"].startswith('{"status":"confident"'))
 
     @patch("model.requests.post")
@@ -271,7 +294,9 @@ class DetectObjectApiTests(unittest.TestCase):
                 "response": (
                     '{"status":"uncertain","raw_item_label":"Ceramic mug","likely_material":"Ceramic",'
                     '"broad_category":"Drinkware","candidates":[{"label":"Ceramic mug","confidence":null}],'
-                    '"visual_evidence":"Cup silhouette with a handle."}'
+                    '"visual_evidence":"Cup silhouette with a handle.",'
+                    '"visual_observations":[{"aspect":"form_factor","value":"handled cup","confidence":0.82,'
+                    '"evidence":"Handle visible."}]}'
                 ),
             },
         }
@@ -286,6 +311,10 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(
             prediction["recognition_details"]["candidates"],
             [{"label": "Ceramic mug", "confidence": None}],
+        )
+        self.assertEqual(
+            prediction["recognition_details"]["visual_observations"][0]["aspect"],
+            "form_factor",
         )
 
     @patch("model.requests.post", side_effect=Exception("network down"))
@@ -484,6 +513,45 @@ class DetectObjectApiTests(unittest.TestCase):
 
 
 class BarcodeAwarePromptTests(unittest.TestCase):
+    def test_constrained_prompt_prioritizes_physical_disposal_item(self):
+        prompt = _build_detection_prompt(barcode_aware=False)
+
+        self.assertIn(
+            "Identify the actual physical object the user would dispose of",
+            prompt,
+        )
+        self.assertIn(
+            "Use visible packaging form and material when choosing a label",
+            prompt,
+        )
+        self.assertIn("opened, used, empty, food-soiled, wet, broken", prompt)
+        self.assertIn("chips in a crinkly pouch -> Chip bag", prompt)
+        self.assertIn("yogurt in a plastic tub -> Yogurt container", prompt)
+
+    def test_open_prompt_prioritizes_object_over_product_text_and_contents(self):
+        prompt = _build_open_detection_prompt(barcode_aware=False)
+
+        self.assertIn(
+            "raw_item_label must name the physical object being disposed of",
+            prompt,
+        )
+        self.assertIn(
+            "not just the product, brand, logo, printed text, flavor, or contents",
+            prompt,
+        )
+        self.assertIn(
+            "packaging type, container type, opened/used/empty/food-soiled/broken condition",
+            prompt,
+        )
+        self.assertIn(
+            "branded chips -> opened chip bag, not chips",
+            prompt,
+        )
+        self.assertIn(
+            "candle jar -> glass candle jar with wax residue",
+            prompt,
+        )
+
     def test_barcode_product_context_prompt_forbids_product_name_answers(self):
         prompt = _build_detection_prompt(
             barcode_aware=True,
@@ -510,6 +578,11 @@ class BarcodeAwarePromptTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
+            "Prefer the actual disposable packaging, container, or household item over the product name",
+            prompt,
+        )
+        self.assertIn("Use visible packaging type, material, and condition", prompt)
+        self.assertIn(
             '{"status":"unknown","primary_label":"","candidate_labels":[]}',
             prompt,
         )
@@ -533,9 +606,16 @@ class BarcodeAwarePromptTests(unittest.TestCase):
         self.assertIn("Do not provide disposal_action.", prompt)
         self.assertIn("Do not provide steps.", prompt)
         self.assertIn('"candidates":[{"label":"ceramic mug","confidence":0.91}', prompt)
+        self.assertIn('"visual_observations":[{"aspect":"packaging_use"', prompt)
         self.assertIn('"visual_evidence":"Handle, cup opening, glossy rigid body."', prompt)
         self.assertIn("visual_evidence must be a short string, 12 words or fewer", prompt)
+        self.assertIn("For each observation, use value \"unknown\" and confidence null", prompt)
+        self.assertIn("visual_observations must describe image-visible disposal context only", prompt)
         self.assertIn("Barcode lookup found product metadata, but this metadata is only context.", prompt)
+        self.assertIn(
+            "Use visible packaging type, material, and condition in raw_item_label and visual_evidence.",
+            prompt,
+        )
         self.assertIn("- product_name: Frozen dairy dessert cone", prompt)
 
 

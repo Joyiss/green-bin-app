@@ -349,6 +349,50 @@ class OpenLabelNormalizerTests(unittest.TestCase):
             "Yogurt container",
         )
 
+    def test_visual_observations_survive_and_derive_disposal_relevant_flags(self):
+        result = normalize_open_recognition(
+            {
+                "status": "confident",
+                "raw_item_label": "yogurt cup",
+                "likely_material": "unknown",
+                "broad_category": "plastic",
+                "visual_evidence": "Open plastic cup with residue.",
+                "visual_observations": [
+                    {
+                        "aspect": "packaging_use",
+                        "value": "single-use food container",
+                        "confidence": 0.89,
+                        "evidence": "Small branded yogurt cup.",
+                    },
+                    {
+                        "aspect": "contamination",
+                        "value": "food residue visible",
+                        "confidence": 0.81,
+                        "evidence": "White residue inside cup.",
+                    },
+                    {
+                        "aspect": "recycling_marking",
+                        "value": "unknown",
+                        "confidence": 0.2,
+                        "evidence": "mark guessed from brand text",
+                    },
+                ],
+                "candidates": [],
+            }
+        )
+
+        observations = result["normalized"]["visual_observations"]
+        self.assertEqual(observations[0]["aspect"], "packaging_use")
+        self.assertEqual(observations[0]["value"], "single-use food container")
+        self.assertEqual(observations[1]["confidence"], 0.81)
+        self.assertEqual(observations[2]["value"], "Unknown")
+        self.assertIsNone(observations[2]["confidence"])
+        self.assertEqual(observations[2]["evidence"], "")
+        self.assertIn("single_use", result["normalized"]["condition_flags"])
+        self.assertIn("food_soiled", result["normalized"]["condition_flags"])
+        self.assertIn("contaminated", result["normalized"]["condition_flags"])
+        self.assertEqual(result["normalized"]["material_category"], "Plastic")
+
     def test_weak_or_conflicting_candidates_do_not_override_primary_label(self):
         result = normalize_open_recognition(
             {
