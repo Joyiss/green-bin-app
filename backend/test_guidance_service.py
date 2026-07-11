@@ -296,6 +296,7 @@ class GuidanceServiceTests(unittest.TestCase):
             "guidance_source": "json_rag_llm_generated",
             "guidance_metadata": {
                 "retrieved_chunk_ids": ["chunk-1"],
+                "applicable_chunk_ids": ["chunk-1"],
                 "requires_location_check": True,
                 "guidance_cache_hit": True,
                 "guidance_cache_key": "cache-key",

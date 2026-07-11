@@ -8,13 +8,13 @@ from typing import Any
 try:
     from ..materials import resolve_material_label
     from ..rules import get_rules
-    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
+    from . import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, request_context
     from .guidance_key_service import normalize_guidance_phrase
     from .recognition_clarification_service import evaluate_clarification
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
-    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context
+    from services import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, request_context
     from services.guidance_key_service import normalize_guidance_phrase
     from services.recognition_clarification_service import evaluate_clarification
 
@@ -266,6 +266,42 @@ def _clarification_guidance(decision: dict[str, Any]) -> dict[str, Any]:
             "final_generation_path": "recognition_clarification",
             "clarification_reason_codes": list(decision.get("reason_codes") or []),
         },
+    }
+
+
+def _consistency_guard_metadata(
+    validation: dict[str, Any], guidance: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "consistency_guard_triggered": True,
+        "consistency_contradiction_codes": list(
+            validation.get("contradiction_codes") or []
+        ),
+        "consistency_resolution": validation.get("resolution"),
+        "rejected_disposal_action": guidance.get("disposal_action"),
+        "rejected_guidance_source": guidance.get("guidance_source"),
+        "rejected_cache_hit": guidance.get("cache_hit") is True,
+    }
+
+
+def _consistency_clarification_decision(
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    reason_codes = [
+        "guidance_consistency_guard",
+        *list(validation.get("contradiction_codes") or []),
+    ]
+    return {
+        "required": True,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+        "retake_recommended": True,
+        "retake_guidance": (
+            "Retake the photo with the whole item visible in brighter light, with labels and safety-relevant features in focus."
+        ),
+        "message": (
+            "Confirm this item before disposal guidance because battery, electronic, chemical, or hazardous evidence conflicts with ordinary trash guidance."
+        ),
+        "safety_relevant": True,
     }
 
 
@@ -2231,6 +2267,7 @@ def _resolve_guidance(
     if _legacy_rules_allowed(classification):
         legacy_guidance = _guidance_from_legacy_rules(classification)
         if legacy_guidance is not None:
+            _attach_retrieval_applicability(legacy_guidance, retrieval_results)
             _log_guidance_selected(
                 legacy_guidance,
                 item=_first_non_empty_string(classification.get("item")),
@@ -2258,11 +2295,113 @@ def _resolve_guidance(
     return guidance
 
 
+def _apply_final_consistency_guard(
+    classification: dict[str, Any],
+    guidance: dict[str, Any],
+    clarification_decision: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    validation = guidance_consistency_service.validate_guidance_consistency(
+        classification,
+        guidance,
+    )
+    if validation.get("valid") is True:
+        return guidance, clarification_decision
+
+    contradiction_codes = list(validation.get("contradiction_codes") or [])
+    logger.warning(
+        "Guidance consistency contradiction prevented. item=%s action=%s source=%s cache_hit=%s contradictions=%s resolution=%s",
+        classification.get("item"),
+        guidance.get("disposal_action"),
+        guidance.get("guidance_source"),
+        guidance.get("cache_hit") is True,
+        _format_log_list(contradiction_codes),
+        validation.get("resolution"),
+    )
+    guard_metadata = _consistency_guard_metadata(validation, guidance)
+
+    if validation.get("resolution") == "clarification":
+        decision = _consistency_clarification_decision(validation)
+        replacement = _clarification_guidance(decision)
+        replacement["guidance_metadata"] = _merge_guidance_metadata(
+            replacement.get("guidance_metadata"),
+            guard_metadata,
+        )
+        return replacement, decision
+
+    if "strong_action_without_applicable_evidence" in contradiction_codes:
+        replacement = (
+            _open_guidance_unavailable(classification)
+            if _is_open_recognition_classification(classification)
+            else _default_safe_guidance()
+        )
+    else:
+        low_risk_evaluation = _evaluate_low_risk_open_item(classification)
+        if low_risk_evaluation.get("eligible") is True:
+            replacement = _deterministic_low_risk_guidance(
+                classification,
+                low_risk_evaluation=low_risk_evaluation,
+                failure_reason="consistency_guard",
+            )
+        else:
+            replacement = (
+                _open_guidance_unavailable(classification)
+                if _is_open_recognition_classification(classification)
+                else _default_safe_guidance()
+            )
+
+    original_metadata = guidance.get("guidance_metadata")
+    original_metadata = original_metadata if isinstance(original_metadata, dict) else {}
+    replacement["guidance_metadata"] = _merge_guidance_metadata(
+        {
+            "applicability_by_chunk": original_metadata.get(
+                "applicability_by_chunk", {}
+            ),
+            "applicability_reason_codes": original_metadata.get(
+                "applicability_reason_codes", {}
+            ),
+            "applicable_chunk_ids": list(
+                original_metadata.get("applicable_chunk_ids") or []
+            ),
+            "conditional_chunk_ids": list(
+                original_metadata.get("conditional_chunk_ids") or []
+            ),
+            "not_applicable_chunk_ids": list(
+                original_metadata.get("not_applicable_chunk_ids") or []
+            ),
+        },
+        replacement.get("guidance_metadata"),
+        guard_metadata,
+    )
+
+    fallback_validation = guidance_consistency_service.validate_guidance_consistency(
+        classification,
+        replacement,
+    )
+    if fallback_validation.get("valid") is not True:
+        replacement = (
+            _open_guidance_unavailable(classification)
+            if _is_open_recognition_classification(classification)
+            else _default_safe_guidance()
+        )
+        replacement["guidance_metadata"] = _merge_guidance_metadata(
+            replacement.get("guidance_metadata"),
+            guard_metadata,
+            {"consistency_secondary_fallback": True},
+        )
+
+    return replacement, clarification_decision
+
+
 def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
     clarification_decision = evaluate_clarification(classification)
     guidance = _resolve_guidance(
         classification,
         clarification_decision=clarification_decision,
+    )
+    guidance, clarification_decision = _apply_final_consistency_guard(
+        classification,
+        guidance,
+        clarification_decision,
     )
 
     guidance_metadata = guidance.get("guidance_metadata")
