@@ -10,11 +10,11 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 try:
-    from ..services import request_context, scan_rate_limit_service
+    from ..services import feedback_context_service, request_context, scan_rate_limit_service
     from ..services.guidance_service import build_prediction_response
     from ..services.recognition_router import recognize_item
 except ImportError:
-    from services import request_context, scan_rate_limit_service
+    from services import feedback_context_service, request_context, scan_rate_limit_service
     from services.guidance_service import build_prediction_response
     from services.recognition_router import recognize_item
 
@@ -47,6 +47,7 @@ async def predict(
     file: UploadFile | None = File(None),
     selected_item: str | None = Form(None),
     x_request_id: str | None = Header(None, alias="X-Request-ID"),
+    x_original_request_id: str | None = Header(None, alias="X-Original-Request-ID"),
     x_greenbin_client_id: str | None = Header(None, alias="X-GreenBin-Client-Id"),
 ) -> Any:
     request_started = perf_counter()
@@ -110,6 +111,21 @@ async def predict(
                     }
             if rate_limit_metadata is not None:
                 response.update(rate_limit_metadata.to_response_payload())
+            response["request_id"] = request_id
+            original_request_id = (
+                x_original_request_id.strip()
+                if isinstance(x_original_request_id, str)
+                and x_original_request_id.strip()
+                and len(x_original_request_id.strip()) <= 96
+                else None
+            )
+            feedback_context_service.store_prediction_context(
+                request_id=request_id,
+                classification=classification,
+                response=response,
+                original_request_id=original_request_id,
+                selected_item=selected_item,
+            )
             return response
         finally:
             logger.info(

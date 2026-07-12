@@ -52,6 +52,8 @@ From the **repository root** (`green-bin-app/`):
    REQUIRE_SCAN_CLIENT_ID=false
    ENABLE_CLIP_WARMUP=true
    ENABLE_NEAREST_PHASH_LOOKUP=false
+   SUPABASE_URL=your-supabase-project-url
+   SUPABASE_SERVICE_ROLE_KEY=your-backend-only-service-role-key
    ```
 
    `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
@@ -60,6 +62,9 @@ From the **repository root** (`green-bin-app/`):
    `REQUIRE_SCAN_CLIENT_ID` defaults to `false` for local development. Set it to `true` for production or closed testing so `/predict` rejects requests missing `X-GreenBin-Client-Id` before recognition work.
    `ENABLE_CLIP_WARMUP` defaults to `true`; set it to `false` to disable background CLIP initialization.
    `ENABLE_NEAREST_PHASH_LOOKUP` defaults to `false`; enable it only when approximate pHash matching is worth the full-cache scan cost.
+   `SUPABASE_SERVICE_ROLE_KEY` is used only by the backend closed-testing feedback repository and must never be included in the mobile app.
+
+4. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
 
 The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
 

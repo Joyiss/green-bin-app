@@ -13,12 +13,14 @@ try:
     from .materials import MATERIAL_LABELS
     from .repositories import cache_repository
     from .routes.predict import router as predict_router
+    from .routes.feedback import router as feedback_router
     from .services import clip_service, phash_service
     from .services.earth911_material_resolver import resolve_earth911_material
 except ImportError:
     from materials import MATERIAL_LABELS
     from repositories import cache_repository
     from routes.predict import router as predict_router
+    from routes.feedback import router as feedback_router
     from services import clip_service, phash_service
     from services.earth911_material_resolver import resolve_earth911_material
 
@@ -473,3 +475,4 @@ def nearby_locations(
 
 
 app.include_router(predict_router)
+app.include_router(feedback_router)

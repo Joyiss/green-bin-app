@@ -29,6 +29,12 @@ class PredictRouteTests(unittest.TestCase):
         )
         self.clip_ready_patch.start()
         self.addCleanup(self.clip_ready_patch.stop)
+        self.feedback_storage_patch = patch(
+            "routes.predict.feedback_context_service.store_prediction_context",
+            return_value=True,
+        )
+        self.feedback_storage_patch.start()
+        self.addCleanup(self.feedback_storage_patch.stop)
 
     def test_predict_allows_missing_client_id_when_not_required(self):
         client = TestClient(app)
@@ -47,7 +53,9 @@ class PredictRouteTests(unittest.TestCase):
             response = client.post("/predict", data={"selected_item": "Calculator"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"item": "Calculator"})
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
+        self.assertEqual(payload, {"item": "Calculator"})
         mock_recognize.assert_called_once()
 
     def test_predict_requires_client_id_when_configured(self):
@@ -102,8 +110,10 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
         self.assertEqual(
-            response.json(),
+            payload,
             {
                 "item": "Calculator",
                 "daily_limit": 40,
@@ -165,6 +175,79 @@ class PredictRouteTests(unittest.TestCase):
         self.assertIn("stage=guidance", combined)
         self.assertIn("stage=total", combined)
 
+    def test_predict_returns_request_id_and_stores_trusted_original_context(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Calculator",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [],
+            "recognition_source": "vlm",
+        }
+        with (
+            patch(
+                "routes.predict.recognize_item",
+                AsyncMock(return_value=classification),
+            ),
+            patch(
+                "routes.predict.build_prediction_response",
+                return_value={"item": "Calculator"},
+            ),
+            patch(
+                "routes.predict.feedback_context_service.store_prediction_context",
+                return_value=True,
+            ) as mock_store,
+        ):
+            response = client.post(
+                "/predict",
+                data={"selected_item": "Calculator"},
+                headers={"X-Request-ID": "mobile-original-1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["request_id"], "mobile-original-1")
+        kwargs = mock_store.call_args.kwargs
+        self.assertEqual(kwargs["request_id"], "mobile-original-1")
+        self.assertIsNone(kwargs["original_request_id"])
+
+    def test_correction_request_links_original_context(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Metal Cup",
+            "category": "Metal",
+            "status": "confident",
+            "candidates": [],
+            "recognition_source": "user_confirmed_selection",
+        }
+        with (
+            patch(
+                "routes.predict.recognize_item",
+                AsyncMock(return_value=classification),
+            ),
+            patch(
+                "routes.predict.build_prediction_response",
+                return_value={"item": "Metal Cup"},
+            ),
+            patch(
+                "routes.predict.feedback_context_service.store_prediction_context",
+                return_value=True,
+            ) as mock_store,
+        ):
+            response = client.post(
+                "/predict",
+                data={"selected_item": "Metal Cup"},
+                headers={
+                    "X-Request-ID": "mobile-correction-2",
+                    "X-Original-Request-ID": "mobile-original-1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        kwargs = mock_store.call_args.kwargs
+        self.assertEqual(kwargs["request_id"], "mobile-correction-2")
+        self.assertEqual(kwargs["original_request_id"], "mobile-original-1")
+        self.assertEqual(kwargs["selected_item"], "Metal Cup")
+
     def test_predict_preserves_existing_shape_and_includes_cache_metadata(self):
         client = TestClient(app)
         classification = {
@@ -189,8 +272,10 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
         self.assertEqual(
-            response.json(),
+            payload,
             {
                 "item": "Calculator",
                 "category": "Electronics",
@@ -610,8 +695,10 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
         self.assertEqual(
-            response.json(),
+            payload,
             {
                 "item": "Charging Cable",
                 "category": "Electronics",
@@ -719,8 +806,10 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
         self.assertEqual(
-            response.json(),
+            payload,
             {
                 "item": "",
                 "category": "Unknown",
@@ -794,8 +883,10 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.pop("request_id").startswith("predict-"))
         self.assertEqual(
-            response.json(),
+            payload,
             {
                 "item": "Calculator",
                 "category": "Electronics",

@@ -43,6 +43,7 @@ import {
   BOTTOM_NAV_BAR_TOTAL_HEIGHT,
 } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
+import { ResultFeedback } from '@/components/result-feedback';
 import { API_BASE_URL } from '@/constants/api';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import {
@@ -56,6 +57,10 @@ import {
   type PredictionClarification,
 } from '@/app/prediction-flow';
 import {
+  shouldShowGuidanceFeedback,
+  type FeedbackUpdate,
+} from '@/app/feedback-flow';
+import {
   saveRecentScan,
   updateRecentScan,
   type RecentScan,
@@ -64,6 +69,10 @@ import {
   getInstallationId,
   saveScanUsageMetadata,
 } from '../../storage/scanUsage';
+import {
+  enqueueFeedback,
+  flushFeedbackQueue,
+} from '../../storage/feedbackQueue';
 
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
@@ -133,6 +142,7 @@ type RawPredictionCandidate =
   | [unknown, unknown?];
 
 type PredictionResponse = {
+  request_id?: string;
   item: string;
   category: string;
   status: PredictionStatus;
@@ -216,7 +226,19 @@ type ActiveScanSession = {
   predictedItem: string | null;
   originalStatus: PredictionStatus;
   hasSavedRecord: boolean;
+  originalRequestId: string | null;
 };
+
+async function sendFeedbackRequest(requestId: string, update: FeedbackUpdate) {
+  const response = await fetch(`${API_BASE_URL}/feedback/${encodeURIComponent(requestId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  if (!response.ok) {
+    throw new Error(`Feedback request failed with status ${response.status}`);
+  }
+}
 
 function getDisposalActionText(disposalAction: string | null) {
   return (disposalAction ?? 'follow local guidance').trim().toLowerCase();
@@ -448,6 +470,7 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
     predictedItem: null,
     originalStatus: 'unknown',
     hasSavedRecord: false,
+    originalRequestId: null,
   };
 }
 
@@ -1063,6 +1086,8 @@ export default function ScannerScreen() {
   const [manualKeyboardOffset, setManualKeyboardOffset] = useState(0);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [isRateLimitWarningVisible, setIsRateLimitWarningVisible] = useState(false);
+  const [itemFeedback, setItemFeedback] = useState<boolean | null>(null);
+  const [guidanceFeedback, setGuidanceFeedback] = useState<boolean | null>(null);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
   const bottomNavOffset = Math.max(insets.bottom, BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET);
   const resultSheetBottomOffset =
@@ -1072,6 +1097,10 @@ export default function ScannerScreen() {
   useEffect(() => {
     requestPermission();
   }, [requestPermission]);
+
+  useEffect(() => {
+    void flushFeedbackQueue(sendFeedbackRequest);
+  }, []);
 
   useEffect(() => {
     if (visibleSheetState !== 'uncertain') {
@@ -1251,6 +1280,31 @@ export default function ScannerScreen() {
     }
   };
 
+  const submitFeedbackUpdate = async (update: FeedbackUpdate) => {
+    const requestId = activeScanSessionRef.current?.originalRequestId;
+    if (!requestId) {
+      return;
+    }
+    try {
+      await sendFeedbackRequest(requestId, update);
+    } catch {
+      await enqueueFeedback(requestId, update);
+    }
+  };
+
+  const handleItemFeedback = (answer: boolean) => {
+    setItemFeedback(answer);
+    void submitFeedbackUpdate({ item_correct: answer });
+    if (!answer) {
+      handleChangeItem();
+    }
+  };
+
+  const handleGuidanceFeedback = (answer: boolean) => {
+    setGuidanceFeedback(answer);
+    void submitFeedbackUpdate({ guidance_helpful: answer });
+  };
+
   const handleRetryMaterialLabels = () => {
     if (!isLoadingMaterialLabels) {
       void loadMaterialLabels();
@@ -1267,6 +1321,8 @@ export default function ScannerScreen() {
     setIsRateLimitWarningVisible(false);
     setReviewSummary(DEFAULT_REVIEW_SUMMARY);
     resetManualEntry();
+    setItemFeedback(null);
+    setGuidanceFeedback(null);
 
     if (visibleSheetState === 'idle') {
       setResult(null);
@@ -1366,6 +1422,7 @@ export default function ScannerScreen() {
         ...activeScanSessionRef.current,
         predictedItem: getPredictedItemFromPrediction(prediction),
         originalStatus: prediction.status,
+        originalRequestId: prediction.request_id ?? null,
       };
     }
 
@@ -1425,6 +1482,10 @@ export default function ScannerScreen() {
 
     const requestSource: PredictionRequestSource = selectedItem ? 'selection' : 'image';
     const fallbackCandidates = requestSource === 'selection' ? candidates : [];
+    const originalRequestId =
+      requestSource === 'selection'
+        ? activeScanSessionRef.current?.originalRequestId ?? null
+        : null;
     const requestId = predictRequestRef.current + 1;
     predictRequestRef.current = requestId;
     const backendRequestId = `mobile-${Date.now()}-${requestId}`;
@@ -1438,6 +1499,8 @@ export default function ScannerScreen() {
       setResult(null);
       setCandidates([]);
       setSheetState('idle');
+      setItemFeedback(null);
+      setGuidanceFeedback(null);
     }
 
     setRequestState('loading');
@@ -1469,12 +1532,16 @@ export default function ScannerScreen() {
 
     try {
       const installationId = await getInstallationId();
+      const headers: Record<string, string> = {
+        'X-Request-ID': backendRequestId,
+        'X-GreenBin-Client-Id': installationId,
+      };
+      if (originalRequestId) {
+        headers['X-Original-Request-ID'] = originalRequestId;
+      }
       const response = await fetch(`${API_BASE_URL}/predict`, {
         method: 'POST',
-        headers: {
-          'X-Request-ID': backendRequestId,
-          'X-GreenBin-Client-Id': installationId,
-        },
+        headers,
         body: formData,
       });
       const responseBody = await readJsonResponse(response);
@@ -1511,13 +1578,29 @@ export default function ScannerScreen() {
         throw new Error(`Request failed with status ${response.status}`);
       }
 
-      const prediction = responseBody as PredictionResponse;
+      const prediction = {
+        ...(responseBody as PredictionResponse),
+        request_id:
+          typeof (responseBody as PredictionResponse).request_id === 'string'
+            ? (responseBody as PredictionResponse).request_id
+            : backendRequestId,
+      };
       if (requestId !== predictRequestRef.current) {
         return;
       }
 
       await saveScanUsageMetadata(prediction);
       await applyPrediction(prediction, requestSource, fallbackCandidates);
+      if (selectedItem && originalRequestId && prediction.request_id) {
+        setItemFeedback(false);
+        void submitFeedbackUpdate({
+          item_correct: false,
+          prediction_changed: true,
+          corrected_item: prediction.item || selectedItem,
+          correction_request_id: prediction.request_id,
+        });
+      }
+      void flushFeedbackQueue(sendFeedbackRequest);
     } catch (error) {
       if (requestId !== predictRequestRef.current) {
         return;
@@ -1764,7 +1847,20 @@ export default function ScannerScreen() {
                   summary={result.summary}
                   title={result.title}
                   warnings={result.warnings}
-                />
+                >
+                  <ResultFeedback
+                    disabled={requestState === 'loading'}
+                    guidanceAnswer={guidanceFeedback}
+                    itemAnswer={itemFeedback}
+                    onGuidanceAnswer={handleGuidanceFeedback}
+                    onItemAnswer={handleItemFeedback}
+                    showGuidanceQuestion={shouldShowGuidanceFeedback({
+                      disposalAction: result.disposalAction,
+                      guidanceSource: result.guidanceSource,
+                      clarificationRequired: false,
+                    })}
+                  />
+                </ResultSheet>
               ) : null}
 
               {visibleSheetState === 'uncertain' ? (
