@@ -57,6 +57,9 @@ import {
   type PredictionClarification,
 } from '@/app/prediction-flow';
 import {
+  createFeedbackSubmissionCoordinator,
+  FeedbackRequestError,
+  isRetryableFeedbackError,
   shouldShowGuidanceFeedback,
   type FeedbackUpdate,
 } from '@/app/feedback-flow';
@@ -229,16 +232,18 @@ type ActiveScanSession = {
   originalRequestId: string | null;
 };
 
-async function sendFeedbackRequest(requestId: string, update: FeedbackUpdate) {
+async function sendFeedbackRequestRaw(requestId: string, update: FeedbackUpdate) {
   const response = await fetch(`${API_BASE_URL}/feedback/${encodeURIComponent(requestId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(update),
   });
   if (!response.ok) {
-    throw new Error(`Feedback request failed with status ${response.status}`);
+    throw new FeedbackRequestError(response.status);
   }
 }
+
+const sendFeedbackRequest = createFeedbackSubmissionCoordinator(sendFeedbackRequestRaw);
 
 function getDisposalActionText(disposalAction: string | null) {
   return (disposalAction ?? 'follow local guidance').trim().toLowerCase();
@@ -1287,8 +1292,10 @@ export default function ScannerScreen() {
     }
     try {
       await sendFeedbackRequest(requestId, update);
-    } catch {
-      await enqueueFeedback(requestId, update);
+    } catch (error) {
+      if (isRetryableFeedbackError(error)) {
+        await enqueueFeedback(requestId, update);
+      }
     }
   };
 

@@ -25,12 +25,21 @@ BATTERY_TERMS = ("battery", "batteries", "battery-like cell", "cylindrical cell"
 ELECTRONIC_TERMS = (
     "electronic",
     "electronics",
+    "electric",
     "phone",
     "laptop",
     "calculator",
     "remote",
     "charger",
+    "charging port",
+    "charging contact",
+    "power button",
+    "battery powered",
     "powered device",
+    "earbud",
+    "earbuds",
+    "headphone",
+    "headphones",
 )
 ORGANIC_ITEM_TERMS = (
     "banana",
@@ -52,6 +61,66 @@ CONTAINER_FEATURE_TERMS = (
     "cosmetic container",
 )
 MUG_OR_COOKWARE_TERMS = ("ceramic mug", "mug", "pot", "pressure cooker")
+PROTECTED_ITEM_TERMS = (
+    *BATTERY_TERMS,
+    *ELECTRONIC_TERMS,
+    "chemical",
+    "cleaning chemical",
+    "solvent",
+    "paint",
+    "pesticide",
+    "propane",
+    "motor oil",
+    "medication",
+    "aerosol",
+    "hazardous",
+)
+OBJECT_FAMILY_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "rigid_container",
+        (
+            "rigid container",
+            "bottle",
+            "jar",
+            "pump dispenser",
+            "dispenser",
+            "pump nozzle",
+            "spray nozzle",
+            "cosmetic container",
+            "personal care container",
+        ),
+    ),
+    (
+        "flexible_packaging",
+        ("wrapper", "flexible packaging", "pouch", "sachet", "plastic film"),
+    ),
+    (
+        "drinkware",
+        ("drinking cup", "open drinking cup", "cup", "mug", "tumbler", "flask"),
+    ),
+    ("cookware", ("pressure cooker", "cookware", "cooking pot", "pot", "pan")),
+    (
+        "wearable",
+        ("swimming goggles", "goggles", "eyewear", "glasses", "shoe", "glove", "clothing"),
+    ),
+    ("electronic_device", ELECTRONIC_TERMS),
+    ("battery", BATTERY_TERMS),
+    ("organic", ORGANIC_ITEM_TERMS),
+)
+COMPATIBLE_OBJECT_FAMILIES = {
+    frozenset(("electronic_device", "wearable")),
+}
+MATERIAL_FAMILY_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("plastic", ("plastic", "pet", "pete")),
+    ("metal", ("metal", "steel", "stainless steel", "aluminum", "aluminium")),
+    ("glass", ("glass",)),
+    ("ceramic", ("ceramic",)),
+    ("rubber", ("rubber", "silicone")),
+    ("paper", ("paper", "paperboard", "cardboard")),
+    ("wood", ("wood", "wooden")),
+    ("textile", ("fabric", "textile", "cloth")),
+)
+HIGH_CONFIDENCE_OBSERVATION_THRESHOLD = 0.75
 
 
 def _normalize(value: Any) -> str:
@@ -116,6 +185,119 @@ def _observation_value_text(observations: list[dict[str, Any]]) -> str:
     )
 
 
+def _high_confidence_identity_observations(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    relevant_aspects = {
+        "packaging_use",
+        "form_factor",
+        "construction",
+        "power_source",
+        "contents",
+        "closure_state",
+    }
+    return [
+        observation
+        for observation in observations
+        if str(observation.get("aspect") or "") in relevant_aspects
+        and _known_observation_value(observation)
+        and (_coerce_confidence(observation.get("confidence")) or 0.0)
+        >= HIGH_CONFIDENCE_OBSERVATION_THRESHOLD
+    ]
+
+
+def _observation_identity_text(observations: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for observation in _high_confidence_identity_observations(observations):
+        parts.append(_known_observation_value(observation))
+        evidence = _normalize(observation.get("evidence"))
+        if evidence and evidence not in UNKNOWN_TERMS:
+            parts.append(evidence)
+    return " ".join(parts)
+
+
+def _object_family(value: Any) -> str | None:
+    for family, terms in OBJECT_FAMILY_TERMS:
+        if _contains_any(value, terms):
+            return family
+    return None
+
+
+def _observed_object_families(
+    observations: list[dict[str, Any]],
+) -> set[str]:
+    form_families: set[str] = set()
+    supporting_families: set[str] = set()
+    for observation in _high_confidence_identity_observations(observations):
+        observation_text = " ".join(
+            (
+                _known_observation_value(observation),
+                _normalize(observation.get("evidence")),
+            )
+        )
+        family = _object_family(observation_text)
+        if family is None:
+            continue
+        if str(observation.get("aspect") or "") in {
+            "packaging_use",
+            "form_factor",
+            "construction",
+            "contents",
+            "closure_state",
+        }:
+            form_families.add(family)
+        else:
+            supporting_families.add(family)
+    return form_families or supporting_families
+
+
+def _families_are_compatible(label_family: str, observed_family: str) -> bool:
+    return label_family == observed_family or frozenset(
+        (label_family, observed_family)
+    ) in COMPATIBLE_OBJECT_FAMILIES
+
+
+def _material_families(value: Any) -> set[str]:
+    return {
+        family
+        for family, terms in MATERIAL_FAMILY_TERMS
+        if _contains_any(value, terms)
+    }
+
+
+def _observed_construction_materials(
+    observations: list[dict[str, Any]],
+) -> set[str]:
+    materials: set[str] = set()
+    for observation in _high_confidence_identity_observations(observations):
+        if str(observation.get("aspect") or "") != "construction":
+            continue
+        materials.update(
+            _material_families(
+                " ".join(
+                    (
+                        _known_observation_value(observation),
+                        _normalize(observation.get("evidence")),
+                    )
+                )
+            )
+        )
+    return materials
+
+
+def _broader_label_for_family(family: str | None) -> str | None:
+    return {
+        "rigid_container": "Rigid container",
+        "flexible_packaging": "Flexible packaging",
+        "drinkware": "Drinkware item",
+        "cookware": "Cookware item",
+        "wearable": "Wearable item",
+        "electronic_device": "Electronic device",
+        "battery": "Battery",
+        "organic": "Organic material",
+    }.get(family or "")
+
+
 def _evidence_quality(observations: list[dict[str, Any]]) -> str:
     known = [item for item in observations if _known_observation_value(item)]
     identity_aspects = {
@@ -170,7 +352,13 @@ def _suggest_broader_label(
     label_text: str,
     observation_text: str,
     recognition_details: dict[str, Any],
+    *,
+    observed_family: str | None = None,
+    preserve_specific: bool = False,
+    allow_family_fallback: bool = False,
 ) -> str | None:
+    if preserve_specific:
+        return None
     if _contains_any(observation_text, BATTERY_TERMS) and _candidate_supports(
         recognition_details, BATTERY_TERMS, minimum=0.45
     ):
@@ -183,7 +371,11 @@ def _suggest_broader_label(
         label_text, MUG_OR_COOKWARE_TERMS
     ):
         return "Metal cup"
-    return None
+    return (
+        _broader_label_for_family(observed_family)
+        if allow_family_fallback
+        else None
+    )
 
 
 def _contradictions(
@@ -193,6 +385,7 @@ def _contradictions(
     recognition_details: dict[str, Any],
 ) -> tuple[list[str], str | None]:
     observation_text = _observation_value_text(observations)
+    identity_observation_text = _observation_identity_text(observations)
     reasons: list[str] = []
 
     battery_signal = _contains_any(observation_text, BATTERY_TERMS)
@@ -219,8 +412,44 @@ def _contradictions(
     ):
         reasons.append("organic_identity_material_conflict")
 
+    label_family = _object_family(label_text)
+    observed_families = _observed_object_families(observations)
+    incompatible_observed_families = {
+        family
+        for family in observed_families
+        if label_family is not None
+        and not _families_are_compatible(label_family, family)
+    }
+    item_observation_contradiction = bool(
+        label_family is not None
+        and observed_families
+        and len(incompatible_observed_families) == len(observed_families)
+    )
+    if item_observation_contradiction:
+        reasons.append("item_observation_contradiction")
+
+    claimed_materials = _material_families(
+        recognition_details.get("likely_material")
+    )
+    observed_materials = _observed_construction_materials(observations)
+    if claimed_materials and observed_materials and claimed_materials.isdisjoint(
+        observed_materials
+    ):
+        reasons.append("material_observation_contradiction")
+
+    observed_family = next(iter(observed_families), None)
+    preserve_specific = (
+        _contains_any(label_text, PROTECTED_ITEM_TERMS)
+        and not item_observation_contradiction
+    )
+
     return list(dict.fromkeys(reasons)), _suggest_broader_label(
-        label_text, observation_text, recognition_details
+        label_text,
+        identity_observation_text or observation_text,
+        recognition_details,
+        observed_family=observed_family,
+        preserve_specific=preserve_specific,
+        allow_family_fallback=item_observation_contradiction,
     )
 
 

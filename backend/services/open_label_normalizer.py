@@ -147,6 +147,7 @@ _SPECIAL_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     (
         "electronics",
         (
+            "electric",
             "phone",
             "iphone",
             "android",
@@ -170,7 +171,16 @@ _SPECIAL_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
             "mouse",
             "remote",
             "headphone",
+            "headphones",
             "earbud",
+            "earbuds",
+            "wireless",
+            "bluetooth",
+            "powered device",
+            "battery powered",
+            "charging port",
+            "charging contact",
+            "power button",
         ),
     ),
 ]
@@ -882,15 +892,16 @@ def _infer_broad_category(
     raw_broad_category: str,
     special_flags: list[str],
 ) -> str:
-    item_category = _infer_routing_category_from_item(item_label, normalized_text, likely_material)
-    if item_category != _ROUTING_CATEGORIES["unknown"]:
-        return item_category
     if "battery" in special_flags:
         return _ROUTING_CATEGORIES["batteries"]
     if "hazardous" in special_flags:
         return _ROUTING_CATEGORIES["hazardous"]
     if "electronics" in special_flags:
         return _ROUTING_CATEGORIES["electronics"]
+
+    item_category = _infer_routing_category_from_item(item_label, normalized_text, likely_material)
+    if item_category != _ROUTING_CATEGORIES["unknown"]:
+        return item_category
 
     routed_hint = _map_routing_category_hint(raw_broad_category)
     if routed_hint != _ROUTING_CATEGORIES["unknown"]:
@@ -913,16 +924,16 @@ def _infer_disposal_category(
     ):
         return _APPROVED_DISPOSAL_CATEGORIES["organic"]
 
-    hinted_category = _map_disposal_category_hint(raw_broad_category)
-    if hinted_category != UNKNOWN_VALUE:
-        return hinted_category
-
     if "battery" in special_flags:
         return _APPROVED_DISPOSAL_CATEGORIES["battery"]
     if "hazardous" in special_flags:
         return _APPROVED_DISPOSAL_CATEGORIES["hazardous"]
     if "electronics" in special_flags:
         return _APPROVED_DISPOSAL_CATEGORIES["electronics"]
+
+    hinted_category = _map_disposal_category_hint(raw_broad_category)
+    if hinted_category != UNKNOWN_VALUE:
+        return hinted_category
 
     if item_label in {UNKNOWN_VALUE, ""}:
         return UNKNOWN_VALUE

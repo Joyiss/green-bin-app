@@ -31,15 +31,15 @@ def _get_supabase_client() -> Client | None:
         return _SUPABASE_CLIENT
 
     supabase_url = os.getenv("SUPABASE_URL")
-    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not supabase_url or not service_role_key:
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
         logger.info(
             "Closed-test feedback storage unavailable because service-role credentials are missing."
         )
         return None
 
     try:
-        _SUPABASE_CLIENT = create_client(supabase_url, service_role_key)
+        _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
     except Exception as exc:
         logger.warning("Failed to create closed-test feedback client: %s", exc)
         return None

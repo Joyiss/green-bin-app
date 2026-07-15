@@ -126,6 +126,95 @@ class RecognitionRouterTests(unittest.TestCase):
         self.assertEqual(result["recognition_confidence"]["level"], "low")
         self.assertFalse(_should_cache_open_vlm_classification(result))
 
+    def test_generic_personal_care_broadening_does_not_erase_electronic_item(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "electric toothbrush",
+                    "likely_material": "plastic",
+                    "broad_category": "plastic",
+                    "candidates": [
+                        {"label": "electric toothbrush", "confidence": 0.94}
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "packaging_use",
+                            "value": "personal-care product",
+                            "confidence": 0.9,
+                            "evidence": "Brush head and grip are visible.",
+                        },
+                        {
+                            "aspect": "form_factor",
+                            "value": "handheld powered toothbrush",
+                            "confidence": 0.93,
+                            "evidence": "Brush head attached to a powered handle.",
+                        },
+                        {
+                            "aspect": "power_source",
+                            "value": "charging port visible",
+                            "confidence": 0.92,
+                            "evidence": "Charging connection at the handle base.",
+                        },
+                        {
+                            "aspect": "construction",
+                            "value": "rigid plastic body",
+                            "confidence": 0.88,
+                            "evidence": "Molded plastic housing.",
+                        },
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["item"], "Electric Toothbrush")
+        self.assertEqual(result["category"], "Electronics")
+        self.assertEqual(result["recognized_broad_category"], "electronics")
+        self.assertEqual(result["status"], "confident")
+
+    def test_matching_personal_care_bottles_can_broaden_safely(self):
+        for raw_label in ("lotion bottle", "face cleanser bottle"):
+            with self.subTest(raw_label=raw_label):
+                result = _build_open_vlm_classification(
+                    {
+                        "recognition_details": {
+                            "status": "confident",
+                            "raw_item_label": raw_label,
+                            "likely_material": "plastic",
+                            "broad_category": "personal care container",
+                            "candidates": [
+                                {"label": raw_label, "confidence": 0.93}
+                            ],
+                            "visual_observations": [
+                                {
+                                    "aspect": "packaging_use",
+                                    "value": "personal care container",
+                                    "confidence": 0.92,
+                                    "evidence": "Product label is visible.",
+                                },
+                                {
+                                    "aspect": "form_factor",
+                                    "value": "rigid bottle with pump nozzle",
+                                    "confidence": 0.94,
+                                    "evidence": "Bottle body and pump are visible.",
+                                },
+                                {
+                                    "aspect": "construction",
+                                    "value": "rigid plastic with plastic pump",
+                                    "confidence": 0.9,
+                                    "evidence": "Molded plastic construction.",
+                                },
+                            ],
+                        }
+                    }
+                )
+
+                self.assertIsNotNone(result)
+                self.assertEqual(result["item"], "Personal care container")
+                self.assertEqual(result["status"], "confident")
+                self.assertFalse(result["recognition_confidence"]["blocking"])
+
     def test_nonblocking_medium_open_recognition_remains_confident(self):
         result = _build_open_vlm_classification(
             {

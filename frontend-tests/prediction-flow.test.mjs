@@ -8,8 +8,12 @@ import {
   resolvePredictionFlowStatus,
 } from '../app/prediction-flow.ts';
 import {
+  createFeedbackSubmissionCoordinator,
+  FeedbackRequestError,
   FEEDBACK_QUEUE_LIMIT,
   FEEDBACK_QUEUE_TTL_MS,
+  flushQueuedFeedbackEntries,
+  isRetryableFeedbackStatus,
   mergeQueuedFeedback,
   pruneQueuedFeedback,
   sanitizeFeedbackUpdate,
@@ -171,4 +175,60 @@ test('feedback payload sanitization removes diagnostic and private fields', () =
     }),
     { item_correct: false },
   );
+});
+
+test('feedback queue drops terminal 4xx responses and retains transient failures', async () => {
+  const entries = [
+    { requestId: 'missing', update: { item_correct: false }, queuedAt: 1 },
+    { requestId: 'invalid', update: { guidance_helpful: true }, queuedAt: 2 },
+    { requestId: 'unavailable', update: { item_correct: true }, queuedAt: 3 },
+    { requestId: 'limited', update: { guidance_helpful: false }, queuedAt: 4 },
+    { requestId: 'offline', update: { prediction_changed: false }, queuedAt: 5 },
+  ];
+
+  const remaining = await flushQueuedFeedbackEntries(entries, async (requestId) => {
+    if (requestId === 'missing') throw new FeedbackRequestError(404);
+    if (requestId === 'invalid') throw new FeedbackRequestError(422);
+    if (requestId === 'unavailable') throw new FeedbackRequestError(503);
+    if (requestId === 'limited') throw new FeedbackRequestError(429);
+    if (requestId === 'offline') throw new TypeError('Network request failed');
+  });
+
+  assert.deepEqual(
+    new Set(remaining.map((entry) => entry.requestId)),
+    new Set(['unavailable', 'limited', 'offline']),
+  );
+  assert.equal(isRetryableFeedbackStatus(404), false);
+  assert.equal(isRetryableFeedbackStatus(409), false);
+  assert.equal(isRetryableFeedbackStatus(503), true);
+});
+
+test('feedback submission suppresses concurrent and recently successful duplicates', async () => {
+  let sendCount = 0;
+  let releaseFirst;
+  const firstRequest = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const coordinatedSend = createFeedbackSubmissionCoordinator(async () => {
+    sendCount += 1;
+    if (sendCount === 1) {
+      await firstRequest;
+    }
+  });
+  const update = { item_correct: false };
+
+  const first = coordinatedSend('request-1', update);
+  const concurrentDuplicate = coordinatedSend('request-1', update);
+  assert.equal(sendCount, 1);
+  releaseFirst();
+  await Promise.all([first, concurrentDuplicate]);
+
+  await coordinatedSend('request-1', update);
+  assert.equal(sendCount, 1);
+
+  await coordinatedSend('request-1', {
+    item_correct: false,
+    prediction_changed: true,
+  });
+  assert.equal(sendCount, 2);
 });

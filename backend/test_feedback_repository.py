@@ -13,7 +13,7 @@ class FeedbackRepositoryTests(unittest.TestCase):
             os.environ,
             {
                 "SUPABASE_URL": "https://example.supabase.co",
-                "SUPABASE_SERVICE_ROLE_KEY": "service-role-key",
+                "SUPABASE_KEY": "service-role-key",
             },
             clear=True,
         )
@@ -91,7 +91,7 @@ class FeedbackRepositoryTests(unittest.TestCase):
         table.upsert.assert_called_once_with(payload, on_conflict="request_id")
 
     def test_feedback_repository_requires_service_role_key(self):
-        with patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": ""}, clear=False):
+        with patch.dict(os.environ, {"SUPABASE_KEY": ""}, clear=False):
             with self.assertRaises(feedback_repository.FeedbackRepositoryUnavailable):
                 feedback_repository.get_feedback_context("mobile-1")
 

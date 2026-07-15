@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  flushQueuedFeedbackEntries,
   mergeQueuedFeedback,
   pruneQueuedFeedback,
   sanitizeFeedbackUpdate,
@@ -86,14 +87,7 @@ export async function flushFeedbackQueue(
   send: (requestId: string, update: FeedbackUpdate) => Promise<void>,
 ) {
   const queue = await readQueue();
-  const remaining: QueuedFeedback[] = [];
-  for (const entry of [...queue].reverse()) {
-    try {
-      await send(entry.requestId, entry.update);
-    } catch {
-      remaining.push(entry);
-    }
-  }
+  const remaining = await flushQueuedFeedbackEntries(queue, send);
   try {
     await writeQueue(remaining);
   } catch {

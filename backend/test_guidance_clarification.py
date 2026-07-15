@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from services.guidance_service import build_prediction_response
+from services.recognition_router import _build_open_vlm_classification
 
 
 def _clarification_classification():
@@ -104,6 +105,102 @@ class GuidanceClarificationTests(unittest.TestCase):
             "unresolved_electronics_identity",
             response["clarification"]["reason_codes"],
         )
+
+    def test_item_observation_contradiction_skips_retrieval_and_guidance(self):
+        classification = {
+            "item": "Rigid container",
+            "category": "Household item",
+            "status": "uncertain",
+            "candidates": [],
+            "recognition_source": "vlm_open",
+            "recognition_confidence": {
+                "level": "low",
+                "score": 0.39,
+                "reason_codes": [
+                    "item_observation_contradiction",
+                    "material_observation_contradiction",
+                ],
+                "blocking": True,
+            },
+            "recognition_details": {
+                "raw_item_label": "swimming goggles",
+                "normalized": {
+                    "item_label": "Swimming Goggles",
+                    "disposal_category": "Household item",
+                    "broad_category": "unknown",
+                    "special_handling_flags": [],
+                },
+            },
+        }
+
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks"
+            ) as mock_retrieve,
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance"
+            ) as mock_source_llm,
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance"
+            ) as mock_general_llm,
+        ):
+            response = build_prediction_response(classification)
+
+        mock_retrieve.assert_not_called()
+        mock_source_llm.assert_not_called()
+        mock_general_llm.assert_not_called()
+        self.assertTrue(response["clarification"]["required"])
+        self.assertIn(
+            "item_observation_contradiction",
+            response["clarification"]["reason_codes"],
+        )
+
+    def test_protected_electronic_recognition_cannot_become_household_trash(self):
+        prediction_result = {
+            "recognition_details": {
+                "status": "confident",
+                "raw_item_label": "electric toothbrush",
+                "likely_material": "plastic",
+                "broad_category": "personal care",
+                "candidates": [
+                    {"label": "electric toothbrush", "confidence": 0.94}
+                ],
+                "visual_observations": [
+                    {
+                        "aspect": "form_factor",
+                        "value": "handheld powered toothbrush",
+                        "confidence": 0.93,
+                        "evidence": "Brush head attached to a powered handle.",
+                    },
+                    {
+                        "aspect": "power_source",
+                        "value": "charging port visible",
+                        "confidence": 0.92,
+                        "evidence": "Charging connection at the handle base.",
+                    },
+                    {
+                        "aspect": "construction",
+                        "value": "rigid plastic body",
+                        "confidence": 0.88,
+                        "evidence": "Molded plastic housing.",
+                    },
+                ],
+            }
+        }
+        classification = _build_open_vlm_classification(prediction_result)
+        self.assertIsNotNone(classification)
+        classification["recognition_source"] = "vlm_open"
+        classification["recognition_details"] = prediction_result["recognition_details"]
+
+        with patch(
+            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+            return_value=[],
+        ):
+            response = build_prediction_response(classification)
+
+        self.assertEqual(classification["item"], "Electric Toothbrush")
+        self.assertEqual(classification["category"], "Electronics")
+        self.assertNotEqual(response["disposal_action"], "trash")
 
     def test_nonblocking_medium_confidence_continues_to_guidance(self):
         classification = {

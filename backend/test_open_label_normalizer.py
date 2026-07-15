@@ -4,6 +4,119 @@ from services.open_label_normalizer import normalize_open_recognition
 
 
 class OpenLabelNormalizerTests(unittest.TestCase):
+    def test_electric_toothbrush_keeps_specific_electronic_identity(self):
+        result = normalize_open_recognition(
+            {
+                "status": "confident",
+                "raw_item_label": "electric toothbrush",
+                "likely_material": "plastic",
+                "broad_category": "personal-care product",
+                "candidates": [
+                    {"label": "electric toothbrush", "confidence": 0.94}
+                ],
+                "visual_observations": [
+                    {
+                        "aspect": "packaging_use",
+                        "value": "personal-care product",
+                        "confidence": 0.9,
+                        "evidence": "Brush head and grip are visible.",
+                    },
+                    {
+                        "aspect": "form_factor",
+                        "value": "handheld powered toothbrush",
+                        "confidence": 0.92,
+                        "evidence": "Narrow brush head attached to a powered handle.",
+                    },
+                    {
+                        "aspect": "power_source",
+                        "value": "charging port visible",
+                        "confidence": 0.91,
+                        "evidence": "Charging connection is visible at the handle base.",
+                    },
+                    {
+                        "aspect": "construction",
+                        "value": "rigid plastic body",
+                        "confidence": 0.87,
+                        "evidence": "Molded plastic housing.",
+                    },
+                ],
+            }
+        )
+
+        normalized = result["normalized"]
+        self.assertEqual(normalized["normalized_item"], "Electric Toothbrush")
+        self.assertEqual(normalized["disposal_category"], "Electronics")
+        self.assertEqual(normalized["broad_category"], "electronics")
+        self.assertIn("electronics", normalized["special_handling_flags"])
+
+    def test_charging_port_evidence_preserves_electronics_safety_flag(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "oral care tool",
+                "likely_material": "plastic",
+                "broad_category": "personal care",
+                "candidates": [],
+                "visual_observations": [
+                    {
+                        "aspect": "power_source",
+                        "value": "charging port",
+                        "confidence": 0.9,
+                        "evidence": "A recessed charging connection is visible.",
+                    }
+                ],
+            }
+        )
+
+        normalized = result["normalized"]
+        self.assertIn("electronics", normalized["special_handling_flags"])
+        self.assertEqual(normalized["disposal_category"], "Electronics")
+
+    def test_wireless_earbuds_remain_electronics(self):
+        result = normalize_open_recognition(
+            {
+                "raw_item_label": "wireless earbuds",
+                "likely_material": "plastic",
+                "broad_category": "personal accessory",
+                "candidates": [],
+            }
+        )
+
+        normalized = result["normalized"]
+        self.assertEqual(normalized["normalized_item"], "Wireless Earbuds")
+        self.assertEqual(normalized["disposal_category"], "Electronics")
+        self.assertIn("electronics", normalized["special_handling_flags"])
+
+    def test_ordinary_personal_care_bottles_do_not_gain_protected_flags(self):
+        for label in ("lotion bottle", "face cleanser bottle"):
+            with self.subTest(label=label):
+                result = normalize_open_recognition(
+                    {
+                        "raw_item_label": label,
+                        "likely_material": "plastic",
+                        "broad_category": "personal care container",
+                        "candidates": [],
+                        "visual_observations": [
+                            {
+                                "aspect": "form_factor",
+                                "value": "rigid bottle with pump",
+                                "confidence": 0.93,
+                                "evidence": "Bottle body and pump are visible.",
+                            },
+                            {
+                                "aspect": "construction",
+                                "value": "rigid plastic with plastic pump",
+                                "confidence": 0.9,
+                                "evidence": "Molded plastic components.",
+                            },
+                        ],
+                    }
+                )
+
+                normalized = result["normalized"]
+                self.assertEqual(normalized["material_category"], "Plastic")
+                self.assertNotIn("electronics", normalized["special_handling_flags"])
+                self.assertNotIn("battery", normalized["special_handling_flags"])
+
     def test_curtain_preserves_textile_disposal_and_material_signals(self):
         result = normalize_open_recognition(
             {

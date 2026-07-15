@@ -15,6 +15,34 @@ export type QueuedFeedback = {
   queuedAt: number;
 };
 
+const FEEDBACK_SUCCESS_CACHE_LIMIT = 100;
+
+export class FeedbackRequestError extends Error {
+  readonly retryable: boolean;
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Feedback request failed with status ${status}`);
+    this.name = 'FeedbackRequestError';
+    this.status = status;
+    this.retryable = isRetryableFeedbackStatus(status);
+  }
+}
+
+export function isRetryableFeedbackStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+export function isRetryableFeedbackError(error: unknown) {
+  if (error instanceof FeedbackRequestError) {
+    return error.retryable;
+  }
+  if (error && typeof error === 'object' && 'retryable' in error) {
+    return (error as { retryable?: unknown }).retryable !== false;
+  }
+  return true;
+}
+
 export function sanitizeFeedbackUpdate(value: unknown): FeedbackUpdate {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -40,6 +68,69 @@ export function sanitizeFeedbackUpdate(value: unknown): FeedbackUpdate {
     sanitized.correction_request_id = source.correction_request_id.trim().slice(0, 96);
   }
   return sanitized;
+}
+
+function feedbackPayloadKey(requestId: string, update: FeedbackUpdate) {
+  return `${requestId.trim()}:${JSON.stringify(sanitizeFeedbackUpdate(update))}`;
+}
+
+export function createFeedbackSubmissionCoordinator(
+  send: (requestId: string, update: FeedbackUpdate) => Promise<void>,
+) {
+  const inFlight = new Map<string, Promise<void>>();
+  const successful = new Map<string, true>();
+
+  return (requestId: string, update: FeedbackUpdate): Promise<void> => {
+    const sanitizedUpdate = sanitizeFeedbackUpdate(update);
+    if (!requestId.trim() || !Object.keys(sanitizedUpdate).length) {
+      return Promise.resolve();
+    }
+
+    const key = feedbackPayloadKey(requestId, sanitizedUpdate);
+    if (successful.has(key)) {
+      return Promise.resolve();
+    }
+    const existing = inFlight.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const request = send(requestId, sanitizedUpdate)
+      .then(() => {
+        successful.set(key, true);
+        while (successful.size > FEEDBACK_SUCCESS_CACHE_LIMIT) {
+          const oldestKey = successful.keys().next().value;
+          if (typeof oldestKey !== 'string') {
+            break;
+          }
+          successful.delete(oldestKey);
+        }
+      })
+      .finally(() => {
+        if (inFlight.get(key) === request) {
+          inFlight.delete(key);
+        }
+      });
+    inFlight.set(key, request);
+    return request;
+  };
+}
+
+export async function flushQueuedFeedbackEntries(
+  entries: QueuedFeedback[],
+  send: (requestId: string, update: FeedbackUpdate) => Promise<void>,
+) {
+  const remaining: QueuedFeedback[] = [];
+  for (const entry of [...entries].reverse()) {
+    try {
+      await send(entry.requestId, entry.update);
+    } catch (error) {
+      if (isRetryableFeedbackError(error)) {
+        remaining.push(entry);
+      }
+    }
+  }
+  return remaining;
 }
 
 export function mergeQueuedFeedback(
