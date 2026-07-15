@@ -168,6 +168,7 @@ _ALIAS_MAP = {
     "computer tower case": "Computer tower",
     "desktop tower computer": "Computer tower",
     "detergent jug": "Detergent bottle",
+    "drinking bottle": "Plastic water bottle",
     "drinks carton": "Drink carton",
     "ear buds": "Earbuds",
     "earbud": "Earbuds",
@@ -344,6 +345,11 @@ def build_material_selection_prompt() -> str:
         "Classify the single main item the user is most likely focusing on.\n"
         "Ignore background objects unless they are equally prominent and equally likely to be the intended item.\n"
         "Do not mark the result uncertain just because other background objects are visible.\n"
+        "Identify the actual physical object the user would dispose of, not only the product, brand, logo, printed text, or contents shown on it.\n"
+        "Use visible packaging form and material when choosing a label: bottle, jar, can, carton, box, bag, wrapper, tube, cup, lid, container, cable, device, or loose contents.\n"
+        "Consider whether the item appears opened, used, empty, food-soiled, wet, broken, reusable, or single-use when deciding the closest disposal label.\n"
+        "If a food or household product is visible inside packaging, classify the package or container unless the loose contents are clearly the disposal item.\n"
+        "Examples: chips in a crinkly pouch -> Chip bag; yogurt in a plastic tub -> Yogurt container; greasy pizza delivery box -> Pizza box; empty beverage can -> Soda can.\n"
         "\n"
         "Use only labels from the allowed inventory below.\n"
         "If the exact object is not listed, map it to the nearest allowed inventory label.\n"

@@ -20,6 +20,7 @@
       "package": "com.rakshan1234.greenbinapp",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
 
       "permissions": [
         "android.permission.CAMERA",
@@ -27,9 +28,13 @@
         "android.permission.ACCESS_FINE_LOCATION"
       ],
 
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
+
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/icon.png",
-        "backgroundColor": "#E6F4FE"
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundColor": "#F3F1EE"
       }
     },
 
@@ -65,11 +70,11 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/icon.png",
+          "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#E6F4FE",
+          "backgroundColor": "#F3F1EE",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#F3F1EE"
           }
         }
       ]

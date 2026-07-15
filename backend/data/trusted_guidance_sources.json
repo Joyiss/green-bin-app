@@ -1,0 +1,882 @@
+{
+    "version": "green_bin_rag_sources_v1",
+    "purpose": "Source-backed U.S.-general disposal knowledge base for RAG retrieval.",
+    "entries": [
+      {
+        "id": "curbside_basics_01",
+        "section": "curbside_recycling_basics",
+        "scope": "us_general",
+        "source": {
+          "name": "Frequent Questions on Recycling",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/frequent-questions-recycling",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Putting items in the recycling bin that can't be recycled can contaminate the recycling stream.",
+        "source_claim": "Placing non-recyclable materials into recycling bins contaminates the recycling stream.",
+        "applies_to": {
+          "materials": ["unaccepted_items"],
+          "item_examples": ["non_recyclable_debris"],
+          "conditions": ["mixed_curbside_collection"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [
+          "Acceptance criteria for specific materials vary by municipality."
+        ],
+        "retrieval_keywords": ["recycling_basics", "contamination", "wishcycling"],
+        "confidence": "high"
+      },
+      {
+        "id": "curbside_basics_02",
+        "section": "curbside_recycling_basics",
+        "scope": "us_general",
+        "source": {
+          "name": "Frequent Questions on Recycling",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/frequent-questions-recycling",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Plastic, metal and glass materials must be empty and rinsed clean of food debris before being recycled.",
+        "source_claim": "Plastic, metal, and glass materials require emptying and rinsing clean of food residue prior to recycling.",
+        "applies_to": {
+          "materials": ["rigid_plastics", "metals", "glass"],
+          "item_examples": ["soda_cans", "glass_jars", "laundry_detergent_bottles"],
+          "conditions": ["empty_and_rinsed"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["rinsing_recyclables", "cleaning_containers", "food_residue"],
+        "confidence": "high"
+      },
+      {
+        "id": "paper_cardboard_01",
+        "section": "paper_cardboard",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Pizza boxes can be recycled, even if they have grease in them. Make sure to remove any food scraps",
+        "source_claim": "Corrugated pizza boxes can be recycled despite containing grease, provided all food scraps are removed.",
+        "applies_to": {
+          "materials": ["corrugated_cardboard"],
+          "item_examples": ["pizza_box"],
+          "conditions": ["empty_and_flattened"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["pizza_box", "cardboard", "grease"],
+        "confidence": "high"
+      },
+      {
+        "id": "paper_cardboard_02",
+        "section": "paper_cardboard",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Paperback books can be recycled as-is; remove the cover from a hardcover book before recycling it.",
+        "source_claim": "Paperback books can be recycled directly, whereas hardcover books require the removal of the cover before recycling.",
+        "applies_to": {
+          "materials": ["mixed_paper"],
+          "item_examples": ["hardcover_book", "paperback_book"],
+          "conditions": ["cover_removed_for_hardcovers"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["books", "hardcover", "paperback", "mixed_paper"],
+        "confidence": "high"
+      },
+      {
+        "id": "paper_cardboard_03",
+        "section": "paper_cardboard",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Ensure that your paper products are clean and dry before placing them in the recycling bin.",
+        "source_claim": "Paper products should be clean and dry prior to recycling collection.",
+        "applies_to": {
+          "materials": ["mixed_paper", "cardboard"],
+          "item_examples": ["mail", "cardboard_boxes"],
+          "conditions": ["clean_and_dry"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["dry_paper", "clean_cardboard", "moisture_contamination"],
+        "confidence": "high"
+      },
+      {
+        "id": "plastic_containers_01",
+        "section": "plastic_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "the existence of a plastic resin code on the product does not guarantee that the product is recyclable in your area.",
+        "source_claim": "The presence of a resin identification code on a plastic container does not guarantee local recyclability.",
+        "applies_to": {
+          "materials": ["plastics_1_7"],
+          "item_examples": ["plastic_bottles", "tubs", "clamshells"],
+          "conditions": ["resin_code_present"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["resin_code", "spi_code", "plastic_number", "recycling_symbol"],
+        "confidence": "high"
+      },
+      {
+        "id": "plastic_containers_02",
+        "section": "plastic_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "What You Can Do to Reduce Plastic Waste",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/plastics/what-you-can-do-reduce-plastic-waste",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Compostable plastics are not intended for recycling either and can contaminate and disrupt the recycling stream",
+        "source_claim": "Compostable plastics are not intended for recycling and can contaminate standard plastic recycling processes.",
+        "applies_to": {
+          "materials": ["compostable_plastics"],
+          "item_examples": ["pla_cups", "compostable_cutlery"],
+          "conditions": ["mixed_with_standard_recyclables"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["compostable_plastic", "pla_plastic", "bioplastics", "resin_contamination"],
+        "confidence": "high"
+      },
+      {
+        "id": "plastic_film_01",
+        "section": "plastic_bags_film",
+        "scope": "national_dropoff",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "These items are recyclable, but they cannot go in your household recycling bin. Retail and grocery stores often accept these materials",
+        "source_claim": "Plastic bags and wrap film are recyclable but cannot go into standard household recycling bins.",
+        "applies_to": {
+          "materials": ["ldpe_film", "hdpe_bags"],
+          "item_examples": ["grocery_bags", "shrink_wrap"],
+          "conditions": ["clean_and_dry"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["plastic_bags", "grocery_bags", "plastic_wrap", "store_dropoff"],
+        "confidence": "high"
+      },
+      {
+        "id": "plastic_film_02",
+        "section": "plastic_bags_film",
+        "scope": "national_dropoff",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "If necessary, be sure to cut off the sealable zippers from sandwich bags before recycling them.",
+        "source_claim": "The sealable zippers from plastic sandwich bags may need to be cut off before the film is recycled.",
+        "applies_to": {
+          "materials": ["ldpe_film"],
+          "item_examples": ["ziploc_bags", "sandwich_bags"],
+          "conditions": ["zipper_present"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["zipper_bags", "ziploc_zipper", "bag_preparation"],
+        "confidence": "high"
+      },
+      {
+        "id": "glass_containers_01",
+        "section": "glass_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "No, broken glass should not go into the recycling bin. Glass shards can harm workers and damage equipment.",
+        "source_claim": "Broken glass should not be put into curbside recycling bins due to equipment damage and worker safety risks.",
+        "applies_to": {
+          "materials": ["container_glass"],
+          "item_examples": ["broken_bottles", "shattered_jars"],
+          "conditions": ["broken"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["broken_glass", "shards", "worker_safety", "mrf_damage"],
+        "confidence": "high"
+      },
+      {
+        "id": "glass_containers_02",
+        "section": "glass_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "No, metal bottle caps should be recycled separately from the glass bottles.",
+        "source_claim": "Metal bottle caps should be processed and recycled separately from glass bottles.",
+        "applies_to": {
+          "materials": ["container_glass", "ferrous_metal", "aluminum"],
+          "item_examples": ["beer_bottle_caps", "twist_off_caps"],
+          "conditions": ["separated"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["bottle_caps", "metal_caps", "glass_separation"],
+        "confidence": "high"
+      },
+      {
+        "id": "metal_containers_01",
+        "section": "metal_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "No, generally, aluminum cans should not be crushed before they are recycled. For areas with single-stream recycling, crushed cans are harder to detect",
+        "source_claim": "Aluminum cans generally should not be crushed prior to recycling in single-stream systems as they are harder to automatically detect.",
+        "applies_to": {
+          "materials": ["aluminum"],
+          "item_examples": ["soda_cans", "beer_cans"],
+          "conditions": ["single_stream_collection"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["aluminum_cans", "crushed_cans", "single_stream", "sorting_detection"],
+        "confidence": "high"
+      },
+      {
+        "id": "metal_containers_02",
+        "section": "metal_containers",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Both aluminum cans and foil can be recycled. Make sure to remove any food residue before recycling.",
+        "source_claim": "Aluminum foil can be recycled alongside aluminum cans provided all food residue is removed.",
+        "applies_to": {
+          "materials": ["aluminum"],
+          "item_examples": ["aluminum_foil", "foil_trays"],
+          "conditions": ["clean_and_free_of_food_residue"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["aluminum_foil", "foil_trays", "foil_recycling"],
+        "confidence": "high"
+      },
+      {
+        "id": "compost_food_01",
+        "section": "food_scraps_compost",
+        "scope": "us_general",
+        "source": {
+          "name": "Composting At Home",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/composting-home",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Do not add meat, dairy, or greasy foods to your pile.",
+        "source_claim": "Animal products including meat, dairy, and greasy foods are excluded from home backyard compost piles.",
+        "applies_to": {
+          "materials": ["animal_products", "lipids"],
+          "item_examples": ["cheese", "meat_scraps", "butter"],
+          "conditions": ["backyard_compost_pile"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["meat_composting", "dairy_compost", "backyard_compost"],
+        "confidence": "high"
+      },
+      {
+        "id": "compost_food_02",
+        "section": "food_scraps_compost",
+        "scope": "us_general",
+        "source": {
+          "name": "Composting At Home",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/composting-home",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Maintain the proper ratio of materials in your pile: two to three parts carbon-rich material (browns) to one part nitrogen-rich material (greens).",
+        "source_claim": "Home backyard composting utilizes a volume ratio of two to three parts carbon-rich materials to one part nitrogen-rich materials.",
+        "applies_to": {
+          "materials": ["organic_feedstocks"],
+          "item_examples": ["compost_pile_mix"],
+          "conditions": ["backyard_management"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": true,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["compost_ratio", "browns_to_greens", "pile_balance"],
+        "confidence": "high"
+      },
+      {
+        "id": "compost_food_03",
+        "section": "food_scraps_compost",
+        "scope": "us_general",
+        "source": {
+          "name": "Composting At Home",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/composting-home",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "What to Compost: Fruits and vegetables",
+        "source_claim": "Fruit and vegetable scraps are suitable feedstocks for home composting systems.",
+        "applies_to": {
+          "materials": ["organic_food_waste"],
+          "item_examples": ["apple_cores", "banana_peels", "vegetable_trimmings"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": true,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": false,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["produce_composting", "food_scraps", "greens"],
+        "confidence": "high"
+      },
+      {
+        "id": "yard_waste_01",
+        "section": "yard_waste",
+        "scope": "us_general",
+        "source": {
+          "name": "How Do I Recycle... Common Recyclables",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/how-do-i-recycle-common-recyclables",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Lawn materials cannot be recycled, but they can be composted.",
+        "source_claim": "Lawn materials are non-recyclable but can be managed via composting.",
+        "applies_to": {
+          "materials": ["organics_yard_trimmings"],
+          "item_examples": ["grass_clippings", "weeds"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": true,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["grass_clippings", "leaves", "yard_debris"],
+        "confidence": "high"
+      },
+      {
+        "id": "yard_waste_02",
+        "section": "yard_waste",
+        "scope": "us_general",
+        "source": {
+          "name": "Yard Wastes and Composting",
+          "organization": "EPA",
+          "url": "https://nepis.epa.gov/Exe/ZyPURL.cgi?Dockey=9101NRR1.TXT",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "To speed the composting process, woody yard wastes should be clipped and sawed down, or run through a shredder.",
+        "source_claim": "Woody landscape waste can be clipped, cut down, or mechanically shredded to accelerate decomposition in a compost system.",
+        "applies_to": {
+          "materials": ["organics_yard_trimmings", "woody_wastes"],
+          "item_examples": ["tree_branches", "dry_twigs"],
+          "conditions": ["mechanical_pretreatment"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": true,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["woody_waste", "shredding_branches", "compost_prep"],
+        "confidence": "high"
+      },
+      {
+        "id": "electronics_01",
+        "section": "electronics",
+        "scope": "national_dropoff",
+        "source": {
+          "name": "Certified Electronics Recyclers",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/electronics-batteries-management/certified-electronics-recyclers",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "EPA recommends using certified electronics recyclers to manage unwanted used electronics. Currently, there are two accredited certification standards in the United States: R2 and e-Stewards.",
+        "source_claim": "The EPA recommends managing unused electronics through certified recyclers accredited under the R2 or e-Stewards standards.",
+        "applies_to": {
+          "materials": ["e_waste"],
+          "item_examples": ["laptops", "desktop_computers"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["computers", "e_waste", "certified_recycler", "r2_standard"],
+        "confidence": "high"
+      },
+      {
+        "id": "electronics_02",
+        "section": "electronics",
+        "scope": "us_general",
+        "source": {
+          "name": "Electronics Donation and Recycling",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/electronics-donation-and-recycling",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Remove any batteries from your electronics; they may need to be recycled separately.",
+        "source_claim": "Batteries contained within electronic devices may require separate removal and recycling processing.",
+        "applies_to": {
+          "materials": ["e_waste", "spent_batteries"],
+          "item_examples": ["removable_laptops_batteries"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["battery_removal", "device_prep", "separate_battery_recycling"],
+        "confidence": "high"
+      },
+      {
+        "id": "batteries_01",
+        "section": "batteries",
+        "scope": "national_dropoff",
+        "source": {
+          "name": "Used Lithium-Ion Batteries",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/used-lithium-ion-batteries",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Lithium-ion batteries and devices containing these batteries should NOT go in household garbage or recycling bins.",
+        "source_claim": "Lithium-ion batteries and electronic devices containing them should be excluded from household garbage and curbside recycling bins.",
+        "applies_to": {
+          "materials": ["lithium_ion_chemistries"],
+          "item_examples": ["power_tool_batteries", "cellphone_batteries"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": true,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": true
+        },
+        "limitations": [],
+        "retrieval_keywords": ["lithium_ion", "battery_fire", "rechargeable"],
+        "confidence": "high"
+      },
+      {
+        "id": "batteries_02",
+        "section": "batteries",
+        "scope": "national_dropoff",
+        "source": {
+          "name": "Used Lithium-Ion Batteries",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/used-lithium-ion-batteries",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "To prevent fires, tape battery terminals and/or place lithium-ion batteries in separate plastic bags.",
+        "source_claim": "Covering battery terminals with tape or placing lithium-ion batteries in separate plastic bags mitigates fire risks.",
+        "applies_to": {
+          "materials": ["lithium_ion_chemistries", "rechargeable_batteries"],
+          "item_examples": ["laptop_batteries", "button_cells"],
+          "conditions": ["pre_dropoff_preparation"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": true
+        },
+        "limitations": [],
+        "retrieval_keywords": ["taping_batteries", "bagging_batteries", "battery_terminal_safety"],
+        "confidence": "high"
+      },
+      {
+        "id": "hhw_01",
+        "section": "household_hazardous_waste",
+        "scope": "us_general",
+        "source": {
+          "name": "Household Hazardous Waste",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/hw/household-hazardous-waste-hhw",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Products, such as paints, cleaners, oils, pesticides and batteries can contain hazardous ingredients and require special care when you dispose of them.",
+        "source_claim": "Leftover household products containing toxic, ignitable, corrosive, or reactive components require specialized care during disposal.",
+        "applies_to": {
+          "materials": ["hazardous_chemicals", "pesticides", "solvents"],
+          "item_examples": ["drain_opener", "insect_sprays"],
+          "conditions": []
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": true,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": true
+        },
+        "limitations": [],
+        "retrieval_keywords": ["household_hazardous_waste", "toxic_disposal", "chemical_dropoff"],
+        "confidence": "high"
+      },
+      {
+        "id": "hhw_02",
+        "section": "household_hazardous_waste",
+        "scope": "program_limited",
+        "source": {
+          "name": "PaintCare FAQs",
+          "organization": "PaintCare",
+          "url": "https://www.paintcare.org/faqs/",
+          "source_type": "stewardship_program"
+        },
+        "source_excerpt": "Paint that is already dried out (rock hard) can be disposed of in the trash.",
+        "source_claim": "Completely dried architectural paint can be safely disposed of in standard household trash streams.",
+        "applies_to": {
+          "materials": ["architectural_coatings"],
+          "item_examples": ["dried_latex_paint"],
+          "conditions": ["completely_rock_hard"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": true,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["dried_paint", "hardened_latex_paint", "paint_trash_rules"],
+        "confidence": "high"
+      },
+      {
+        "id": "textiles_donation_01",
+        "section": "textiles_donation",
+        "scope": "us_general",
+        "source": {
+          "name": "How to Recycle Clothing & Accessories",
+          "organization": "Earth911",
+          "url": "https://earth911.com/recycling-guide/how-to-recycle-clothing-accessories/",
+          "source_type": "national_directory"
+        },
+        "source_excerpt": "Clothing and textiles that are clean and dry can be donated for reuse or recycling, even if they have stains or tears.",
+        "source_claim": "Clean and dry clothing items and textiles can be donated for reuse or recycling regardless of minor stains or tears.",
+        "applies_to": {
+          "materials": ["fabrics", "apparel"],
+          "item_examples": ["stained_shirts", "torn_jeans"],
+          "conditions": ["clean_and_dry"]
+        },
+        "decision_signals": {
+          "supports_recycling": true,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": true,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [],
+        "retrieval_keywords": ["clothing_donation", "textile_recycling", "old_clothes"],
+        "confidence": "medium"
+      },
+      {
+        "id": "mixed_materials_01",
+        "section": "mixed_materials",
+        "scope": "us_general",
+        "source": {
+          "name": "Frequent Questions on Recycling",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/frequent-questions-recycling",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "A lot of gift wrap isn’t recyclable because of the coating on the paper",
+        "source_claim": "Coated paper products such as some gift wrap may not be recyclable because of their surface coating.",
+        "applies_to": {
+          "materials": ["coated_paper", "laminated_paper"],
+          "item_examples": ["gift_wrap", "shiny_wrapping_paper"],
+          "conditions": ["coated_or_laminated"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [
+          "Acceptance depends on the local recycling provider."
+        ],
+        "retrieval_keywords": ["gift_wrap", "coated_paper", "laminated_paper", "mixed_materials"],
+        "confidence": "high"
+      },
+      {
+        "id": "bulky_items_01",
+        "section": "bulky_items",
+        "scope": "us_general",
+        "source": {
+          "name": "Furniture and Household Garbage and Demolition",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/large-scale-residential-demolition/furniture-and-household-garbage-and-demolition",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "furniture, mattresses and household items are often disposed of in a municipal solid waste landfill",
+        "source_claim": "Furniture, mattresses, and large household items are often managed through municipal solid waste disposal systems.",
+        "applies_to": {
+          "materials": ["oversized_goods", "mixed_bulky_assemblies"],
+          "item_examples": ["furniture", "mattresses", "household_items"],
+          "conditions": ["bulky_or_oversized"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": true,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": true,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [
+          "Bulky item handling depends on the local solid waste district."
+        ],
+        "retrieval_keywords": ["bulky_items", "furniture", "mattress", "large_household_items"],
+        "confidence": "high"
+      },
+      {
+        "id": "unknown_items_01",
+        "section": "unknown_or_uncertain_items",
+        "scope": "us_general",
+        "source": {
+          "name": "Frequent Questions on Recycling",
+          "organization": "EPA",
+          "url": "https://www.epa.gov/recycle/frequent-questions-recycling",
+          "source_type": "federal_government"
+        },
+        "source_excerpt": "Do not put items in your recycling bin unless you know they are accepted.",
+        "source_claim": "Items with unverified recyclability should be kept out of curbside recycling bins.",
+        "applies_to": {
+          "materials": ["unknown_composition", "unverified_materials"],
+          "item_examples": ["unlabeled_items", "unknown_plastics", "novelty_items"],
+          "conditions": ["acceptance_not_verified"]
+        },
+        "decision_signals": {
+          "supports_recycling": false,
+          "supports_composting": false,
+          "supports_trash": false,
+          "supports_donation_or_reuse": false,
+          "requires_dropoff": false,
+          "requires_household_hazardous_waste": false,
+          "avoid_curbside_recycling": true,
+          "avoid_trash": false
+        },
+        "limitations": [
+          "This does not decide the final disposal path; it only prevents wishcycling."
+        ],
+        "retrieval_keywords": ["unknown_item", "wishcycling", "unverified_recyclability", "not_accepted"],
+        "confidence": "high"
+      }
+    ]
+  }

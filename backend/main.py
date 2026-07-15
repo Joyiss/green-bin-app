@@ -1,31 +1,46 @@
-import io
 import os
+import logging
 from pathlib import Path
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from PIL import Image
 
-from classifier import build_selected_item_prediction, classify
-from materials import MATERIAL_LABELS
-from rules import get_rules
+try:
+    from .materials import MATERIAL_LABELS
+    from .repositories import cache_repository
+    from .routes.predict import router as predict_router
+    from .routes.feedback import router as feedback_router
+    from .services import clip_service, phash_service
+    from .services.earth911_material_resolver import resolve_earth911_material
+except ImportError:
+    from materials import MATERIAL_LABELS
+    from repositories import cache_repository
+    from routes.predict import router as predict_router
+    from routes.feedback import router as feedback_router
+    from services import clip_service, phash_service
+    from services.earth911_material_resolver import resolve_earth911_material
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 
 EARTH911_BASE_URL = os.getenv("EARTH911_BASE_URL", "https://api.earth911.com").rstrip("/")
 EARTH911_API_KEY = os.getenv("EARTH911_API_KEY")
 EARTH911_TIMEOUT_SECONDS = 15
-EARTH911_MAX_DISTANCE_MILES = 20
+EARTH911_MAX_DISTANCE_MILES = 25
 EARTH911_MAX_RESULTS = 5
 LOCATION_CARD_ACCENTS = ("#88D39D", "#F2C572", "#7FC6FF")
 LOCATION_CARD_MAP_STYLES = ("grid", "building", "pin")
 EARTH911_SESSION = requests.Session()
 EARTH911_SESSION.trust_env = False
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.add_middleware(
@@ -35,6 +50,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized_value = raw_value.strip().casefold()
+    if normalized_value in _TRUE_ENV_VALUES:
+        return True
+    if normalized_value in _FALSE_ENV_VALUES:
+        return False
+    return default
+
+
+@app.on_event("startup")
+def warmup_phash_and_cache() -> None:
+    phash_service.warmup_phash()
+    cache_repository.warmup_exact_phash_lookup()
+
+
+@app.on_event("startup")
+def start_clip_warmup() -> None:
+    if not _env_flag("ENABLE_CLIP_WARMUP", default=True):
+        logging.getLogger(__name__).info("CLIP background warmup disabled by configuration.")
+        return
+
+    clip_service.start_background_warmup()
 
 
 def _require_earth911_api_key() -> str:
@@ -313,63 +360,6 @@ def _search_locations_for_material(lat: float, lon: float, material_id: int) -> 
 
     return normalized_locations
 
-
-def _empty_guidance() -> dict[str, Any]:
-    return {
-        "disposal_action": None,
-        "material_code": None,
-        "impact_level": None,
-        "steps": [],
-    }
-
-
-def _format_item_name(item: str) -> str:
-    if not item:
-        return ""
-
-    words = []
-    for word in item.split():
-        if "-" in word:
-            parts = [
-                part if part.isupper() else part.capitalize()
-                for part in word.split("-")
-            ]
-            words.append("-".join(parts))
-        else:
-            words.append(word if word.isupper() else word.capitalize())
-
-    return " ".join(words)
-
-
-def _serialize_candidates(candidates: list[tuple[str, float]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "label": label.title(),
-            "score": round(float(score), 4),
-        }
-        for label, score in candidates
-    ]
-
-
-def _build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
-    guidance = (
-        get_rules(classification["category"])
-        if classification["status"] == "confident"
-        else _empty_guidance()
-    )
-
-    return {
-        "item": _format_item_name(classification["item"]),
-        "category": classification["category"],
-        "status": classification["status"],
-        "candidates": _serialize_candidates(classification.get("candidates", [])),
-        "disposal_action": guidance["disposal_action"],
-        "material_code": guidance["material_code"],
-        "impact_level": guidance["impact_level"],
-        "steps": guidance["steps"],
-    }
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -378,37 +368,6 @@ def health() -> dict[str, str]:
 @app.get("/material_labels")
 def material_labels() -> dict[str, list[str]]:
     return {"labels": MATERIAL_LABELS}
-
-
-@app.post("/predict")
-async def predict(
-    file: UploadFile | None = File(None),
-    selected_item: str | None = Form(None),
-) -> dict[str, Any]:
-    try:
-        if selected_item:
-            classification = build_selected_item_prediction(selected_item)
-        else:
-            if file is None:
-                raise HTTPException(status_code=400, detail={"error": "Image file is required."})
-
-            image_bytes = await file.read()
-
-            try:
-                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail={"error": "Invalid image file."}) from exc
-
-            from model import get_top_predictions
-
-            predictions = get_top_predictions(image)
-            classification = classify(predictions)
-    except Exception as exc:
-        if isinstance(exc, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail={"error": "Model inference failed."}) from exc
-
-    return _build_prediction_response(classification)
 
 
 @app.get("/get_material_id")
@@ -443,20 +402,77 @@ def get_location_details(location_id: str) -> dict[str, Any]:
 
 
 @app.get("/nearby_locations")
-def nearby_locations(item: str, lat: float, lon: float) -> dict[str, Any]:
+def nearby_locations(
+    item: str,
+    lat: float,
+    lon: float,
+    normalized_item: str | None = None,
+    broad_category: str | None = None,
+    disposal_category: str | None = None,
+    material_category: str | None = None,
+) -> dict[str, Any]:
     try:
-        material_result = _earth911_request("earth911.searchMaterials", {"query": item})
-        material_id = _extract_material_id(material_result, item)
+        resolver_label = normalized_item.strip() if normalized_item and normalized_item.strip() else item
+        recognition_details = {
+            key: value
+            for key, value in {
+                "broad_category": broad_category,
+                "disposal_category": disposal_category,
+                "material_category": material_category,
+            }.items()
+            if value
+        } or None
+        material_resolution = resolve_earth911_material(
+            resolver_label,
+            recognition_details,
+            _earth911_request,
+        )
+        material_id = material_resolution.get("material_id")
+        logger.info(
+            "earth911_material_resolution original_label=%s normalized_label=%s resolved_material_label=%s matched_material=%s material_id=%s match_type=%s routing_category=%s routing_category_source=%s catalog_family_filter=%s protected_item=%s protected_item_specific=%s llm_selection=%s llm_confidence=%s llm_reason=%s validation_failure_reason=%s catalog_selection_candidates=%s stale_catalog_used=%s search_skipped=%s",
+            material_resolution.get("original_label"),
+            material_resolution.get("normalized_label"),
+            material_resolution.get("resolved_material_label"),
+            material_resolution.get("matched_material_name"),
+            material_resolution.get("material_id"),
+            material_resolution.get("match_type"),
+            material_resolution.get("routing_category"),
+            material_resolution.get("routing_category_source"),
+            material_resolution.get("catalog_family_filter"),
+            material_resolution.get("protected_item"),
+            material_resolution.get("protected_item_specific"),
+            material_resolution.get("llm_selection"),
+            material_resolution.get("llm_confidence"),
+            material_resolution.get("llm_reason"),
+            material_resolution.get("validation_failure_reason"),
+            material_resolution.get("catalog_selection_candidates"),
+            material_resolution.get("stale_catalog_used"),
+            material_resolution.get("search_skipped"),
+        )
 
         if material_id is None:
-            return {"item": item, "material_id": None, "locations": []}
+            return {
+                "item": item,
+                "material_id": None,
+                "locations": [],
+                "reason": "unsupported_material",
+                "earth911_search_skipped": True,
+                "material_resolution": material_resolution,
+            }
 
         return {
             "item": item,
             "material_id": material_id,
+            "reason": None,
+            "earth911_search_skipped": False,
+            "material_resolution": material_resolution,
             "locations": _search_locations_for_material(lat, lon, material_id),
         }
     except HTTPException:
         raise
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+app.include_router(predict_router)
+app.include_router(feedback_router)

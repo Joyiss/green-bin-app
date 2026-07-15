@@ -44,9 +44,27 @@ From the **repository root** (`green-bin-app/`):
    CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
    CLOUDFLARE_API_TOKEN=your-workers-ai-api-token
    CLOUDFLARE_AI_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+   ENABLE_LLM_GUIDANCE=true
+   GUIDANCE_LLM_PROVIDER=groq
+   GUIDANCE_LLM_MODEL=llama-3.1-8b-instant
+   GROQ_API_KEY=your-groq-api-key
+   DAILY_SCAN_LIMIT=40
+   REQUIRE_SCAN_CLIENT_ID=false
+   ENABLE_CLIP_WARMUP=true
+   ENABLE_NEAREST_PHASH_LOOKUP=false
+   SUPABASE_URL=your-supabase-project-url
+   SUPABASE_KEY=your-backend-only-service-role-key
    ```
 
    `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
+   `GUIDANCE_LLM_MODEL` defaults to `llama-3.1-8b-instant` if you omit it.
+   `DAILY_SCAN_LIMIT` defaults to `40` if omitted or invalid.
+   `REQUIRE_SCAN_CLIENT_ID` defaults to `false` for local development. Set it to `true` for production or closed testing so `/predict` rejects requests missing `X-GreenBin-Client-Id` before recognition work.
+   `ENABLE_CLIP_WARMUP` defaults to `true`; set it to `false` to disable background CLIP initialization.
+   `ENABLE_NEAREST_PHASH_LOOKUP` defaults to `false`; enable it only when approximate pHash matching is worth the full-cache scan cost.
+   `SUPABASE_KEY` is used by backend Supabase repositories, including closed-testing feedback storage, and must never be included in the mobile app.
+
+4. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
 
 The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
 
