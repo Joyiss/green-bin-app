@@ -30,6 +30,7 @@ try:
         user_confirmed_recognition_confidence,
     )
     from .confidence_router import TOP_K, evaluate_clip_candidates
+    from .runtime_config import is_clip_enabled
 except ImportError:
     from classifier import build_selected_item_prediction, classify
     from repositories import cache_repository
@@ -49,6 +50,7 @@ except ImportError:
         user_confirmed_recognition_confidence,
     )
     from services.confidence_router import TOP_K, evaluate_clip_candidates
+    from services.runtime_config import is_clip_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -1025,9 +1027,15 @@ async def recognize_item(
                         phash_distance,
                     )
             else:
+                next_stages = (
+                    "barcode, CLIP, and VLM"
+                    if is_clip_enabled()
+                    else "barcode and VLM"
+                )
                 logger.info(
-                    "No usable pHash cache hit found. phash=%s continuing to barcode, CLIP, and VLM.",
+                    "No usable pHash cache hit found. phash=%s continuing to %s.",
                     phash,
+                    next_stages,
                 )
         except Exception as exc:
             logger.warning("pHash cache lookup failed: %s", exc)
@@ -1305,7 +1313,11 @@ async def recognize_item(
 
             return classification
 
-        if clip_service.is_clip_initialized():
+        clip_enabled = is_clip_enabled()
+        logger.info("CLIP feature enabled=%s", clip_enabled)
+        if not clip_enabled:
+            logger.info("predict_stage stage=clip skipped=true reason=clip_disabled")
+        elif clip_service.is_clip_initialized():
             with _timed_stage("clip"):
                 try:
                     clip_embedding = clip_service.create_clip_embedding(image_bytes)

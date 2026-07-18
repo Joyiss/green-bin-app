@@ -14,14 +14,24 @@ try:
     from .repositories import cache_repository
     from .routes.predict import router as predict_router
     from .routes.feedback import router as feedback_router
-    from .services import clip_service, phash_service
+    from .services import phash_service
+    from .services.runtime_config import (
+        env_flag as _env_flag,
+        is_clip_enabled,
+        is_clip_warmup_enabled,
+    )
     from .services.earth911_material_resolver import resolve_earth911_material
 except ImportError:
     from materials import MATERIAL_LABELS
     from repositories import cache_repository
     from routes.predict import router as predict_router
     from routes.feedback import router as feedback_router
-    from services import clip_service, phash_service
+    from services import phash_service
+    from services.runtime_config import (
+        env_flag as _env_flag,
+        is_clip_enabled,
+        is_clip_warmup_enabled,
+    )
     from services.earth911_material_resolver import resolve_earth911_material
 
 
@@ -52,23 +62,6 @@ app.add_middleware(
 )
 
 
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
-_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
-
-
-def _env_flag(name: str, *, default: bool) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-
-    normalized_value = raw_value.strip().casefold()
-    if normalized_value in _TRUE_ENV_VALUES:
-        return True
-    if normalized_value in _FALSE_ENV_VALUES:
-        return False
-    return default
-
-
 @app.on_event("startup")
 def warmup_phash_and_cache() -> None:
     phash_service.warmup_phash()
@@ -77,9 +70,20 @@ def warmup_phash_and_cache() -> None:
 
 @app.on_event("startup")
 def start_clip_warmup() -> None:
-    if not _env_flag("ENABLE_CLIP_WARMUP", default=True):
+    clip_enabled = is_clip_enabled()
+    logger.info("CLIP feature enabled=%s", clip_enabled)
+    if not clip_enabled:
+        logger.info("CLIP background warmup skipped. reason=clip_disabled")
+        return
+
+    if not is_clip_warmup_enabled():
         logging.getLogger(__name__).info("CLIP background warmup disabled by configuration.")
         return
+
+    try:
+        from .services import clip_service
+    except ImportError:
+        from services import clip_service
 
     clip_service.start_background_warmup()
 

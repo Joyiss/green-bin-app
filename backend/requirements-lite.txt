@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+Pillow
+imagehash
+python-multipart
+python-dotenv
+requests
+supabase
+zxing-cpp
+groq

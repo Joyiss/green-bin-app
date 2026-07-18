@@ -1,6 +1,8 @@
 import asyncio
 import io
 import os
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -475,6 +477,64 @@ class RecognitionRouterTests(unittest.TestCase):
         self.assertTrue(any("stage=clip" in message and "skipped=true" in message for message in logs.output))
         self.assertTrue(any("nearest lookup skipped" in message for message in logs.output))
 
+    def test_disabled_clip_skips_warmup_recognition_and_uses_vlm(self):
+        with (
+            patch.dict(os.environ, {"ENABLE_CLIP": "false"}),
+            patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
+            patch("services.recognition_router.cache_repository.find_nearest_phash_match") as mock_nearest,
+            patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
+            patch("services.recognition_router.clip_service.is_clip_initialized") as mock_ready,
+            patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
+            patch("services.recognition_router.cache_repository.find_similar_embeddings") as mock_search,
+            patch(
+                "services.recognition_router.vlm_service.get_top_predictions",
+                return_value={"top_predictions": [("Calculator", 0.91)], "margin": 0.91},
+            ) as mock_vlm,
+            patch("services.recognition_router.classify", return_value=_classification()),
+            patch("services.recognition_router.cache_repository.save_recognition_record") as mock_save,
+        ):
+            with self.assertLogs("services.recognition_router", level="INFO") as logs:
+                result = _run_recognize_item(file=_make_upload_file())
+
+        self.assertEqual(result["recognition_source"], "vlm")
+        mock_ready.assert_not_called()
+        mock_clip.assert_not_called()
+        mock_search.assert_not_called()
+        mock_nearest.assert_not_called()
+        mock_vlm.assert_called_once()
+        self.assertIsNone(mock_save.call_args.kwargs["clip_embedding"])
+        combined = "\n".join(logs.output)
+        self.assertIn("CLIP feature enabled=False", combined)
+        self.assertIn("stage=clip skipped=true reason=clip_disabled", combined)
+
+    def test_disabled_clip_imports_no_torch_openclip_or_clip_service(self):
+        script = (
+            "import os, sys\n"
+            "os.environ['ENABLE_CLIP'] = 'false'\n"
+            "import main\n"
+            "import services.recognition_router\n"
+            "main.start_clip_warmup()\n"
+            "blocked = ['torch', 'torchvision', 'open_clip', 'services.clip_service', 'backend.services.clip_service']\n"
+            "loaded = [name for name in blocked if name in sys.modules]\n"
+            "raise SystemExit('loaded=' + ','.join(loaded) if loaded else 0)\n"
+        )
+        env = {
+            **os.environ,
+            "ENABLE_CLIP": "false",
+            "PYTHONPATH": os.getcwd(),
+        }
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=os.path.dirname(__file__),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_nearest_phash_lookup_runs_only_when_enabled(self):
         near_record = {
             "item_label": "Calculator",
@@ -512,6 +572,7 @@ class RecognitionRouterTests(unittest.TestCase):
             "metadata": {"classification": _classification()},
         }
         with (
+            patch.dict(os.environ, {"ENABLE_CLIP": "true"}),
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch("services.recognition_router.cache_repository.find_nearest_phash_match", return_value=None),
             patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
@@ -529,6 +590,7 @@ class RecognitionRouterTests(unittest.TestCase):
 
     def test_ready_clip_miss_runs_vlm_and_saves_embedding(self):
         with (
+            patch.dict(os.environ, {"ENABLE_CLIP": "true"}),
             patch("services.recognition_router.phash_service.create_phash", return_value="deadbeef"),
             patch("services.recognition_router.cache_repository.find_nearest_phash_match", return_value=None),
             patch("services.recognition_router.barcode_service.detect_barcode", return_value=None),
