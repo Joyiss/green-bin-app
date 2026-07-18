@@ -35,14 +35,6 @@ const SHEET_STATE_COLLAPSED = 1;
 
 type ResultSheetDisplayMode = 'expandable' | 'static';
 type ResultSheetViewState = 'expanded' | 'collapsed';
-type GestureLogPhase = 'ended' | 'cancelled';
-type GestureLogReason =
-  | 'collapse-distance'
-  | 'collapse-velocity'
-  | 'expand-distance'
-  | 'expand-velocity'
-  | 'snap-back'
-  | 'gesture-cancelled-or-failed';
 
 type ResultSheetProps = {
   label: string;
@@ -66,28 +58,6 @@ type ResultSheetProps = {
 
   children?: ReactNode;
 };
-
-function logAndroidSheetGestureDecision(
-  translationY: number,
-  velocityY: number,
-  currentState: ResultSheetViewState,
-  targetState: ResultSheetViewState,
-  phase: GestureLogPhase,
-  reason: GestureLogReason,
-) {
-  if (!IS_ANDROID || !__DEV__) {
-    return;
-  }
-
-  console.debug('[ResultSheet Android gesture]', {
-    translationY: Math.round(translationY),
-    velocityY: Math.round(velocityY),
-    currentState,
-    targetState,
-    phase,
-    reason,
-  });
-}
 
 export function ResultSheet({
   label,
@@ -209,31 +179,26 @@ export function ResultSheet({
         .onEnd((event) => {
           const currentState = sheetStateValue.value;
           let targetState = currentState;
-          let reason: GestureLogReason = 'snap-back';
 
           if (currentState === SHEET_STATE_EXPANDED) {
             if (IS_ANDROID && event.velocityY > ANDROID_SHEET_VELOCITY_THRESHOLD) {
               targetState = SHEET_STATE_COLLAPSED;
-              reason = 'collapse-velocity';
             } else if (
               event.translationY >=
               (IS_ANDROID ? ANDROID_SHEET_COLLAPSE_THRESHOLD : SHEET_COLLAPSE_THRESHOLD)
             ) {
               targetState = SHEET_STATE_COLLAPSED;
-              reason = 'collapse-distance';
             }
           }
 
           if (currentState === SHEET_STATE_COLLAPSED) {
             if (IS_ANDROID && event.velocityY < -ANDROID_SHEET_VELOCITY_THRESHOLD) {
               targetState = SHEET_STATE_EXPANDED;
-              reason = 'expand-velocity';
             } else if (
               event.translationY <=
               -(IS_ANDROID ? ANDROID_SHEET_COLLAPSE_THRESHOLD : SHEET_COLLAPSE_THRESHOLD)
             ) {
               targetState = SHEET_STATE_EXPANDED;
-              reason = 'expand-distance';
             }
           }
 
@@ -241,22 +206,6 @@ export function ResultSheet({
             targetState === SHEET_STATE_COLLAPSED
               ? collapsedHeightValue.value
               : expandedHeightValue.value;
-          const currentStateLabel =
-            currentState === SHEET_STATE_COLLAPSED ? 'collapsed' : 'expanded';
-          const targetStateLabel =
-            targetState === SHEET_STATE_COLLAPSED ? 'collapsed' : 'expanded';
-
-          if (IS_ANDROID) {
-            runOnJS(logAndroidSheetGestureDecision)(
-              event.translationY,
-              event.velocityY,
-              currentStateLabel,
-              targetStateLabel,
-              'ended',
-              reason,
-            );
-          }
-
           if (targetState !== currentState) {
             sheetStateValue.value = targetState;
             sheetHeightValue.value = withTiming(
@@ -282,21 +231,6 @@ export function ResultSheet({
             targetHeight,
             SHEET_HEIGHT_SNAP_CONFIG,
           );
-        })
-        .onFinalize((event, success) => {
-          if (IS_ANDROID && !success) {
-            const currentState =
-              sheetStateValue.value === SHEET_STATE_COLLAPSED ? 'collapsed' : 'expanded';
-
-            runOnJS(logAndroidSheetGestureDecision)(
-              event.translationY,
-              event.velocityY,
-              currentState,
-              currentState,
-              'cancelled',
-              'gesture-cancelled-or-failed',
-            );
-          }
         });
     },
     [
@@ -375,6 +309,7 @@ export function ResultSheet({
         <>
           {showSecondaryButton ? (
             <Pressable
+              accessibilityRole="button"
               onPress={onSecondaryButtonPress}
               style={({ pressed }) => [
                 styles.secondaryButton,
@@ -387,6 +322,7 @@ export function ResultSheet({
 
           {showPrimaryButton ? (
             <Pressable
+              accessibilityRole="button"
               onPress={onButtonPress}
               style={({ pressed }) => [
                 styles.button,

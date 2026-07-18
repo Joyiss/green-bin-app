@@ -11,10 +11,12 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   Image,
   Keyboard,
   LayoutChangeEvent,
   Linking,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -44,7 +46,25 @@ import {
 } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { ResultFeedback } from '@/components/result-feedback';
-import { API_BASE_URL } from '@/constants/api';
+import {
+  ensureApiReady,
+  fetchPrediction,
+  fetchSupportedLabels,
+  prewarmApi,
+  sendFeedback,
+} from '@/api/client';
+import {
+  normalizeScanLimitResponse,
+  type PredictionResponse,
+  type PredictionStatus,
+  type ScanLimitResponse,
+} from '@/api/contracts';
+import {
+  acquireRequestLock,
+  ApiError,
+  getApiErrorMessage,
+  releaseRequestLock,
+} from '@/api/request';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import {
   clearLastNearbyScanContext,
@@ -54,11 +74,9 @@ import {
   DEFAULT_REVIEW_SUMMARY,
   getRecognitionReviewSummary,
   resolvePredictionFlowStatus,
-  type PredictionClarification,
 } from '@/app/prediction-flow';
 import {
   createFeedbackSubmissionCoordinator,
-  FeedbackRequestError,
   isRetryableFeedbackError,
   shouldShowGuidanceFeedback,
   type FeedbackUpdate,
@@ -82,6 +100,7 @@ const CAMERA_READY_FALLBACK_DELAY_MS = 450;
 const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
 const ANALYZING_STATUS_INTERVAL_MS = 1400;
 const ANALYZING_STATUS_MESSAGES = [
+  'Connecting to Green Bin',
   'Preparing image',
   'Checking for barcode or text',
   'Identifying the item',
@@ -120,81 +139,16 @@ const MAX_VISIBLE_CANDIDATES = 5;
 const MANUAL_KEYBOARD_GAP = 12;
 const MANUAL_SHEET_MIN_HEIGHT = 280;
 
-type PredictionStatus = 'confident' | 'uncertain' | 'unknown';
-
 type PredictionCandidate = {
   label: string;
   selectedItem: string;
   score?: number;
 };
 
-type RawPredictionCandidate =
-  | string
-  | {
-      label?: unknown;
-      name?: unknown;
-      item_label?: unknown;
-      selected_item?: unknown;
-      selectedItem?: unknown;
-      score?: unknown;
-      confidence?: unknown;
-      similarity?: unknown;
-      guidance_supported?: unknown;
-      guidanceSupported?: unknown;
-    }
-  | [unknown, unknown?];
-
-type PredictionResponse = {
-  request_id?: string;
-  item: string;
-  category: string;
-  status: PredictionStatus;
-  candidates?: RawPredictionCandidate[] | null;
-  disposal_action: string | null;
-  material_code: string | null;
-  impact_level: string | null;
-  summary?: string | null;
-  steps: string[];
-  guidance_source?: string;
-  guidanceSource?: string;
-  recognition_source?: string;
-  recognitionSource?: string;
-  recognition_confidence?: Record<string, unknown>;
-  recognitionConfidence?: Record<string, unknown>;
-  clarification?: PredictionClarification | null;
-  guidance_confidence?: Record<string, unknown>;
-  guidanceConfidence?: Record<string, unknown>;
-  warnings?: string[];
-  guidance_metadata?: Record<string, unknown>;
-  guidanceMetadata?: Record<string, unknown>;
-  daily_limit?: number;
-  dailyLimit?: number;
-  scans_remaining?: number;
-  scansRemaining?: number;
-  reset_at?: string;
-  resetAt?: string;
-  recognition_details?: {
-    candidates?: RawPredictionCandidate[] | null;
-    raw_item_label?: unknown;
-    normalized?: {
-      normalized_item?: unknown;
-      disposal_category?: unknown;
-      broad_category?: unknown;
-      material_category?: unknown;
-      item_label?: unknown;
-      matched_supported_label?: unknown;
-    } | null;
-  } | null;
-};
-
 type SheetViewState = 'idle' | PredictionStatus;
 type VisibleSheetState = Exclude<SheetViewState, 'idle'>;
 type RequestState = 'idle' | 'loading';
 type PredictionRequestSource = 'image' | 'selection';
-
-type SupportedLabelsResponse = {
-  labels: string[];
-};
 
 type ScannerResultData = {
   item: string;
@@ -233,14 +187,7 @@ type ActiveScanSession = {
 };
 
 async function sendFeedbackRequestRaw(requestId: string, update: FeedbackUpdate) {
-  const response = await fetch(`${API_BASE_URL}/feedback/${encodeURIComponent(requestId)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(update),
-  });
-  if (!response.ok) {
-    throw new FeedbackRequestError(response.status);
-  }
+  await sendFeedback(requestId, update);
 }
 
 const sendFeedbackRequest = createFeedbackSubmissionCoordinator(sendFeedbackRequestRaw);
@@ -527,21 +474,6 @@ function isPredictionRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function readJsonResponse(response: Response) {
-  try {
-    return (await response.json()) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function isDailyScanLimitResponse(value: unknown) {
-  return (
-    isPredictionRecord(value) &&
-    value.error === 'daily_scan_limit_reached'
-  );
-}
-
 function getCandidateLabel(value: unknown) {
   if (typeof value === 'string') {
     return value.trim();
@@ -671,23 +603,58 @@ function normalizePredictionCandidates(
   return normalizedCandidates.slice(0, MAX_VISIBLE_CANDIDATES);
 }
 
-function CameraPermissionNotice() {
+function CameraPermissionNotice({
+  canAskAgain,
+  onRequestPermission,
+}: {
+  canAskAgain: boolean;
+  onRequestPermission: () => void;
+}) {
   return (
     <View style={styles.permissionState}>
       <Text style={styles.permissionTitle}>Camera access is required to scan items.</Text>
-      <Pressable onPress={() => Linking.openSettings()} style={styles.permissionButton}>
-        <Text style={styles.permissionButtonText}>Open Settings</Text>
+      <Pressable
+        accessibilityHint={
+          canAskAgain
+            ? 'Shows the Android camera permission prompt.'
+            : 'Opens Android settings for Green Bin.'
+        }
+        accessibilityRole="button"
+        onPress={onRequestPermission}
+        style={styles.permissionButton}>
+        <Text style={styles.permissionButtonText}>
+          {canAskAgain ? 'Allow Camera' : 'Open Settings'}
+        </Text>
       </Pressable>
     </View>
   );
 }
 
+function getScanLimitMessage(limit: ScanLimitResponse | null) {
+  const dailyLimit = limit?.daily_limit;
+  const resetTimestamp = limit?.reset_at ? Date.parse(limit.reset_at) : Number.NaN;
+  const resetText = Number.isNaN(resetTimestamp)
+    ? 'Your scans will reset later.'
+    : `Your scans reset ${new Date(resetTimestamp).toLocaleString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        month: 'short',
+        day: 'numeric',
+      })}.`;
+
+  return dailyLimit
+    ? `You’ve used all ${dailyLimit} scans for this period. ${resetText}`
+    : `You’ve reached the current scan limit. ${resetText}`;
+}
+
 function DailyScanLimitWarning({
   bottomInset,
+  limit,
   maxHeight,
   onDismiss,
 }: {
   bottomInset: number;
+  limit: ScanLimitResponse | null;
   maxHeight: number;
   onDismiss: () => void;
 }) {
@@ -699,6 +666,7 @@ function DailyScanLimitWarning({
     >
       <Pressable
         accessibilityLabel="Dismiss daily scan limit warning"
+        accessibilityRole="button"
         onPress={onDismiss}
         style={StyleSheet.absoluteFill}
       />
@@ -720,9 +688,7 @@ function DailyScanLimitWarning({
         <View style={styles.rateLimitTextBlock}>
           <Text style={styles.rateLimitEyebrow}>Daily Limit</Text>
           <Text style={styles.rateLimitTitle}>You’re out of scans for today</Text>
-          <Text style={styles.rateLimitMessage}>
-            You’ve used all 40 scans for today. Your scans reset tomorrow.
-          </Text>
+          <Text style={styles.rateLimitMessage}>{getScanLimitMessage(limit)}</Text>
         </View>
 
         <Pressable
@@ -998,11 +964,21 @@ function CameraArea({
         {!shouldHideCameraUi ? (
           <>
             <View style={[styles.backdropTopBar, { paddingTop: topInset + 16 }]}>
-              <Pressable onPress={onToggleTorch} style={styles.headerIconButton}>
+              <Pressable
+                accessibilityLabel={isTorchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
+                accessibilityRole="button"
+                hitSlop={6}
+                onPress={onToggleTorch}
+                style={styles.headerIconButton}>
                 <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
               </Pressable>
               {onClose ? (
-                <Pressable onPress={onClose} style={styles.closeButton}>
+                <Pressable
+                  accessibilityLabel="Close scan result"
+                  accessibilityRole="button"
+                  hitSlop={6}
+                  onPress={onClose}
+                  style={styles.closeButton}>
                   <Ionicons color="#F3F6F9" name="close" size={20} />
                 </Pressable>
               ) : (
@@ -1026,6 +1002,8 @@ function CameraArea({
                 { bottom: bottomInset + BOTTOM_NAV_BAR_HEIGHT + CAMERA_CONTROLS_NAV_CLEARANCE },
               ]}>
               <Pressable
+                accessibilityLabel="Choose a photo from your library"
+                accessibilityRole="button"
                 disabled={isLoading}
                 onPress={onPickImage}
                 style={[styles.iconActionButton, isLoading && styles.buttonDisabled]}>
@@ -1033,6 +1011,9 @@ function CameraArea({
               </Pressable>
 
               <Pressable
+                accessibilityHint="Takes a photo and sends it to Green Bin for analysis."
+                accessibilityLabel="Take photo"
+                accessibilityRole="button"
                 disabled={isCaptureDisabled}
                 onPress={onTakePhoto}
                 style={[styles.shutterButton, isCaptureDisabled && styles.buttonDisabled]}>
@@ -1069,9 +1050,19 @@ export default function ScannerScreen() {
   const cameraReadyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraLoadingOverlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const predictRequestRef = useRef(0);
-  const predictInFlightCountRef = useRef(0);
+  const predictLockRef = useRef(false);
+  const predictAbortControllerRef = useRef<AbortController | null>(null);
+  const materialLabelsAbortControllerRef = useRef<AbortController | null>(null);
+  const captureLockRef = useRef(false);
+  const mediaPickerLockRef = useRef(false);
+  const hasRequestedCameraPermissionRef = useRef(false);
+  const hasRecoveredPickerResultRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const pendingPredictionHandlerRef = useRef<
+    ((input: { imageUri?: string; selectedItem?: string }) => Promise<void>) | null
+  >(null);
   const activeScanSessionRef = useRef<ActiveScanSession | null>(null);
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, refreshCameraPermission] = useCameraPermissions();
   const [requestState, setRequestState] = useState<RequestState>('idle');
   const [sheetState, setSheetState] = useState<SheetViewState>('idle');
   const [visibleSheetState, setVisibleSheetState] = useState<VisibleSheetState | 'idle'>('idle');
@@ -1091,6 +1082,7 @@ export default function ScannerScreen() {
   const [manualKeyboardOffset, setManualKeyboardOffset] = useState(0);
   const [sheetHeight, setSheetHeight] = useState(0);
   const [isRateLimitWarningVisible, setIsRateLimitWarningVisible] = useState(false);
+  const [scanLimitWarning, setScanLimitWarning] = useState<ScanLimitResponse | null>(null);
   const [itemFeedback, setItemFeedback] = useState<boolean | null>(null);
   const [guidanceFeedback, setGuidanceFeedback] = useState<boolean | null>(null);
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
@@ -1100,12 +1092,45 @@ export default function ScannerScreen() {
   const hiddenSheetOffset = Math.max(sheetHeight + resultSheetBottomOffset + 24, windowHeight);
 
   useEffect(() => {
-    requestPermission();
-  }, [requestPermission]);
+    if (
+      !permission ||
+      permission.granted ||
+      !permission.canAskAgain ||
+      hasRequestedCameraPermissionRef.current
+    ) {
+      return;
+    }
+
+    hasRequestedCameraPermissionRef.current = true;
+    void requestPermission().catch(() => {
+      Alert.alert(
+        'Camera unavailable',
+        'Green Bin could not request camera access. You can try again or use a photo from your library.',
+      );
+    });
+  }, [permission, requestPermission]);
 
   useEffect(() => {
+    isMountedRef.current = true;
+    void prewarmApi();
     void flushFeedbackQueue(sendFeedbackRequest);
-  }, []);
+
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void prewarmApi();
+        void flushFeedbackQueue(sendFeedbackRequest);
+        void refreshCameraPermission().catch(() => undefined);
+      }
+    });
+
+    return () => {
+      isMountedRef.current = false;
+      predictRequestRef.current += 1;
+      appStateSubscription.remove();
+      predictAbortControllerRef.current?.abort();
+      materialLabelsAbortControllerRef.current?.abort();
+    };
+  }, [refreshCameraPermission]);
 
   useEffect(() => {
     if (visibleSheetState !== 'uncertain') {
@@ -1249,26 +1274,29 @@ export default function ScannerScreen() {
   };
 
   const loadMaterialLabels = async () => {
-    if (materialLabels || isLoadingMaterialLabels) {
+    if (materialLabels || materialLabelsAbortControllerRef.current) {
       return;
     }
 
+    const controller = new AbortController();
+    materialLabelsAbortControllerRef.current = controller;
     setIsLoadingMaterialLabels(true);
     setMaterialLabelsError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/material_labels`);
-
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
+      const data = await fetchSupportedLabels(controller.signal);
+      if (!controller.signal.aborted) {
+        setMaterialLabels(data.labels);
       }
-
-      const data = (await response.json()) as SupportedLabelsResponse;
-      setMaterialLabels(Array.isArray(data.labels) ? data.labels : []);
-    } catch {
-      setMaterialLabelsError('Could not load supported items right now. Please try again.');
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMaterialLabelsError(getApiErrorMessage(error, 'labels'));
+      }
     } finally {
-      setIsLoadingMaterialLabels(false);
+      if (materialLabelsAbortControllerRef.current === controller) {
+        materialLabelsAbortControllerRef.current = null;
+        setIsLoadingMaterialLabels(false);
+      }
     }
   };
 
@@ -1320,12 +1348,16 @@ export default function ScannerScreen() {
 
   const resetScanner = () => {
     predictRequestRef.current += 1;
+    predictAbortControllerRef.current?.abort();
+    predictAbortControllerRef.current = null;
+    predictLockRef.current = false;
     clearLastNearbyScanContext();
     clearActiveScanSession();
     restoreCameraPreview();
     setRequestState('idle');
     setSheetState('idle');
     setIsRateLimitWarningVisible(false);
+    setScanLimitWarning(null);
     setReviewSummary(DEFAULT_REVIEW_SUMMARY);
     resetManualEntry();
     setItemFeedback(null);
@@ -1453,8 +1485,8 @@ export default function ScannerScreen() {
 
       try {
         await persistConfidentRecentScan(prediction, requestSource);
-      } catch (error) {
-        console.warn('Could not save recent scan.', error);
+      } catch {
+        // Local history failure must not discard an otherwise valid scan result.
       }
       return;
     }
@@ -1483,7 +1515,11 @@ export default function ScannerScreen() {
     imageUri?: string;
     selectedItem?: string;
   }) => {
-    if (!imageUri && !selectedItem) {
+    if (
+      (!imageUri && !selectedItem) ||
+      !isMountedRef.current ||
+      !acquireRequestLock(predictLockRef)
+    ) {
       return;
     }
 
@@ -1496,8 +1532,11 @@ export default function ScannerScreen() {
     const requestId = predictRequestRef.current + 1;
     predictRequestRef.current = requestId;
     const backendRequestId = `mobile-${Date.now()}-${requestId}`;
-    const requestStartedAt = Date.now();
+    const controller = new AbortController();
+    predictAbortControllerRef.current?.abort();
+    predictAbortControllerRef.current = controller;
     setIsRateLimitWarningVisible(false);
+    setScanLimitWarning(null);
 
     if (imageUri) {
       clearLastNearbyScanContext();
@@ -1511,19 +1550,6 @@ export default function ScannerScreen() {
     }
 
     setRequestState('loading');
-    predictInFlightCountRef.current += 1;
-    console.log(
-      '[predict] start',
-      JSON.stringify({
-        requestId: backendRequestId,
-        localRequestId: requestId,
-        source: requestSource,
-        hasImage: !!imageUri,
-        selectedItem: !!selectedItem,
-        inFlight: predictInFlightCountRef.current,
-        overlapping: predictInFlightCountRef.current > 1,
-      })
-    );
 
     const formData = new FormData();
     if (selectedItem) {
@@ -1538,6 +1564,15 @@ export default function ScannerScreen() {
     }
 
     try {
+      await ensureApiReady();
+      if (
+        !isMountedRef.current ||
+        requestId !== predictRequestRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
       const installationId = await getInstallationId();
       const headers: Record<string, string> = {
         'X-Request-ID': backendRequestId,
@@ -1546,25 +1581,51 @@ export default function ScannerScreen() {
       if (originalRequestId) {
         headers['X-Original-Request-ID'] = originalRequestId;
       }
-      const response = await fetch(`${API_BASE_URL}/predict`, {
-        method: 'POST',
-        headers,
-        body: formData,
-      });
-      const responseBody = await readJsonResponse(response);
-      console.log(
-        '[predict] response',
-        JSON.stringify({
-          requestId: backendRequestId,
-          status: response.status,
-          ok: response.ok,
-          durationMs: Date.now() - requestStartedAt,
-        })
-      );
 
-      if (response.status === 429 && isDailyScanLimitResponse(responseBody)) {
-        await saveScanUsageMetadata(responseBody);
-        if (requestId !== predictRequestRef.current) {
+      const responseBody = await fetchPrediction({
+        body: formData,
+        headers,
+        signal: controller.signal,
+      });
+
+      const prediction = {
+        ...responseBody,
+        request_id: responseBody.request_id ?? backendRequestId,
+      };
+      if (!isMountedRef.current || requestId !== predictRequestRef.current) {
+        return;
+      }
+
+      await saveScanUsageMetadata(prediction);
+      if (!isMountedRef.current || requestId !== predictRequestRef.current) {
+        return;
+      }
+      await applyPrediction(prediction, requestSource, fallbackCandidates);
+      if (!isMountedRef.current || requestId !== predictRequestRef.current) {
+        return;
+      }
+      if (selectedItem && originalRequestId && prediction.request_id) {
+        setItemFeedback(false);
+        void submitFeedbackUpdate({
+          item_correct: false,
+          prediction_changed: true,
+          corrected_item: prediction.item || selectedItem,
+          correction_request_id: prediction.request_id,
+        });
+      }
+      void flushFeedbackQueue(sendFeedbackRequest);
+    } catch (error) {
+      if (!isMountedRef.current || requestId !== predictRequestRef.current) {
+        return;
+      }
+
+      const scanLimit =
+        error instanceof ApiError && error.status === 429
+          ? normalizeScanLimitResponse(error.body)
+          : null;
+      if (scanLimit) {
+        await saveScanUsageMetadata(scanLimit);
+        if (!isMountedRef.current || requestId !== predictRequestRef.current) {
           return;
         }
 
@@ -1577,86 +1638,67 @@ export default function ScannerScreen() {
         setVisibleSheetState('idle');
         setSheetState('idle');
         setSheetHeight(0);
+        setScanLimitWarning(scanLimit);
         setIsRateLimitWarningVisible(true);
         return;
       }
 
-      if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const prediction = {
-        ...(responseBody as PredictionResponse),
-        request_id:
-          typeof (responseBody as PredictionResponse).request_id === 'string'
-            ? (responseBody as PredictionResponse).request_id
-            : backendRequestId,
-      };
-      if (requestId !== predictRequestRef.current) {
-        return;
-      }
-
-      await saveScanUsageMetadata(prediction);
-      await applyPrediction(prediction, requestSource, fallbackCandidates);
-      if (selectedItem && originalRequestId && prediction.request_id) {
-        setItemFeedback(false);
-        void submitFeedbackUpdate({
-          item_correct: false,
-          prediction_changed: true,
-          corrected_item: prediction.item || selectedItem,
-          correction_request_id: prediction.request_id,
-        });
-      }
-      void flushFeedbackQueue(sendFeedbackRequest);
-    } catch (error) {
-      if (requestId !== predictRequestRef.current) {
-        return;
-      }
-
-      console.warn(
-        '[predict] failed',
-        JSON.stringify({
-          requestId: backendRequestId,
-          durationMs: Date.now() - requestStartedAt,
-          message: error instanceof Error ? error.message : String(error),
-        })
-      );
-
+      const message = getApiErrorMessage(error, 'scan');
       if (selectedItem) {
-        Alert.alert('Could not confirm that selection. Please try again.');
+        Alert.alert('Could not confirm item', message, [
+          { style: 'cancel', text: 'Cancel' },
+          {
+            text: 'Retry',
+            onPress: () => {
+              void sendPredictionRequest({ selectedItem });
+            },
+          },
+        ]);
       } else {
-        clearActiveScanSession();
-        restoreCameraPreview();
         setResult(null);
         setCandidates([]);
         setVisibleSheetState('idle');
         setSheetState('idle');
         setSheetHeight(0);
-        Alert.alert('Could not analyze image. Please try again.');
+        Alert.alert('Could not analyze image', message, [
+          {
+            style: 'cancel',
+            text: 'Retake',
+            onPress: resetScanner,
+          },
+          {
+            text: 'Retry',
+            onPress: () => {
+              void sendPredictionRequest({ imageUri });
+            },
+          },
+        ]);
       }
     } finally {
-      predictInFlightCountRef.current = Math.max(0, predictInFlightCountRef.current - 1);
-      console.log(
-        '[predict] finish',
-        JSON.stringify({
-          requestId: backendRequestId,
-          localRequestId: requestId,
-          active: requestId === predictRequestRef.current,
-          durationMs: Date.now() - requestStartedAt,
-          inFlight: predictInFlightCountRef.current,
-        })
-      );
       if (requestId === predictRequestRef.current) {
+        releaseRequestLock(predictLockRef);
+        if (predictAbortControllerRef.current === controller) {
+          predictAbortControllerRef.current = null;
+        }
         setRequestState('idle');
       }
     }
   };
+  pendingPredictionHandlerRef.current = sendPredictionRequest;
 
   const handleTakePhoto = async () => {
-    if (!cameraRef.current || requestState === 'loading' || !isCameraReady || !isScreenFocused) {
+    if (
+      !cameraRef.current ||
+      captureLockRef.current ||
+      predictLockRef.current ||
+      requestState === 'loading' ||
+      !isCameraReady ||
+      !isScreenFocused
+    ) {
       return;
     }
 
+    captureLockRef.current = true;
     try {
       const camera = cameraRef.current;
       const photo = await camera.takePictureAsync({
@@ -1671,34 +1713,122 @@ export default function ScannerScreen() {
 
       await sendPredictionRequest({ imageUri: photo.uri });
     } catch {
-      Alert.alert('Could not analyze image. Please try again.');
+      Alert.alert(
+        'Could not take photo',
+        'The camera could not capture that photo. Please try again.',
+      );
       resetScanner();
+    } finally {
+      captureLockRef.current = false;
+    }
+  };
+
+  const openAppSettings = async () => {
+    try {
+      await Linking.openSettings();
+    } catch {
+      Alert.alert(
+        'Could not open Settings',
+        'Open Android Settings and allow the requested permission for Green Bin.',
+      );
+    }
+  };
+
+  const handleRequestCameraPermission = async () => {
+    if (!permission?.canAskAgain) {
+      await openAppSettings();
+      return;
+    }
+    try {
+      await requestPermission();
+    } catch {
+      Alert.alert(
+        'Camera unavailable',
+        'Green Bin could not request camera access. Please try again.',
+      );
     }
   };
 
   const handlePickImage = async () => {
-    if (requestState === 'loading') {
+    if (requestState === 'loading' || mediaPickerLockRef.current || predictLockRef.current) {
       return;
     }
 
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    mediaPickerLockRef.current = true;
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
-    if (!permissionResult.granted) {
-      Alert.alert('Please allow photo library access in your settings.');
-      return;
+      if (!permissionResult.granted) {
+        Alert.alert(
+          'Photo access needed',
+          'Allow photo access to choose an item for scanning.',
+          [
+            { style: 'cancel', text: 'Cancel' },
+            {
+              text: permissionResult.canAskAgain ? 'Try Again' : 'Open Settings',
+              onPress: () => {
+                if (permissionResult.canAskAgain) {
+                  void handlePickImage();
+                } else {
+                  void openAppSettings();
+                }
+              },
+            },
+          ],
+        );
+        return;
+      }
+
+      const selection = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.7,
+      });
+
+      if (selection.canceled || !selection.assets[0]?.uri) {
+        return;
+      }
+
+      await sendPredictionRequest({ imageUri: selection.assets[0].uri });
+    } catch {
+      Alert.alert(
+        'Could not open photos',
+        'Green Bin could not load that photo. Please try another image.',
+      );
+    } finally {
+      mediaPickerLockRef.current = false;
     }
-
-    const selection = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.7,
-    });
-
-    if (selection.canceled || !selection.assets[0]?.uri) {
-      return;
-    }
-
-    await sendPredictionRequest({ imageUri: selection.assets[0].uri });
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || hasRecoveredPickerResultRef.current) {
+      return;
+    }
+    hasRecoveredPickerResultRef.current = true;
+    let isActive = true;
+
+    void ImagePicker.getPendingResultAsync()
+      .then((pendingResult) => {
+        if (
+          !isActive ||
+          !pendingResult ||
+          'code' in pendingResult ||
+          pendingResult.canceled ||
+          !pendingResult.assets[0]?.uri
+        ) {
+          return;
+        }
+        void pendingPredictionHandlerRef.current?.({
+          imageUri: pendingResult.assets[0].uri,
+        });
+      })
+      .catch(() => {
+        // A missing pending result is non-fatal; the picker remains available.
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   const permissionDenied = permission && !permission.granted;
   const currentPredictedLabel = result?.item ?? candidates[0]?.label ?? null;
@@ -1780,7 +1910,12 @@ export default function ScannerScreen() {
       <StatusBar style="light" />
       <View style={styles.shell}>
         {permissionDenied ? (
-          <CameraPermissionNotice />
+          <CameraPermissionNotice
+            canAskAgain={permission.canAskAgain}
+            onRequestPermission={() => {
+              void handleRequestCameraPermission();
+            }}
+          />
         ) : permission?.granted ? (
           <CameraArea
             cameraRef={cameraRef}
@@ -1884,6 +2019,7 @@ export default function ScannerScreen() {
                   <View style={styles.manualEntrySection}>
                     <Text style={styles.manualEntryPrompt}>Supported item label</Text>
                     <TextInput
+                      accessibilityLabel="Supported item search"
                       autoCapitalize="words"
                       autoCorrect={false}
                       editable={requestState !== 'loading'}
@@ -1905,6 +2041,7 @@ export default function ScannerScreen() {
                       <View style={styles.manualStateBlock}>
                         <Text style={styles.manualErrorText}>{materialLabelsError}</Text>
                         <Pressable
+                          accessibilityRole="button"
                           disabled={isLoadingMaterialLabels}
                           onPress={handleRetryMaterialLabels}
                           style={({ pressed }) => [
@@ -1942,6 +2079,7 @@ export default function ScannerScreen() {
 
                           return (
                             <Pressable
+                              accessibilityRole="button"
                               disabled={requestState === 'loading'}
                               key={label}
                               onPress={() => handleManualSuggestionPress(label)}
@@ -1966,6 +2104,7 @@ export default function ScannerScreen() {
 
                     <View style={styles.manualActionRow}>
                       <Pressable
+                        accessibilityRole="button"
                         disabled={!canSubmitManualEntry}
                         onPress={handleManualSubmit}
                         style={({ pressed }) => [
@@ -1999,6 +2138,7 @@ export default function ScannerScreen() {
         {isRateLimitWarningVisible ? (
           <DailyScanLimitWarning
             bottomInset={bottomNavOffset}
+            limit={scanLimitWarning}
             maxHeight={rateLimitWarningMaxHeight}
             onDismiss={() => setIsRateLimitWarningVisible(false)}
           />
@@ -2518,8 +2658,11 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   permissionButton: {
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: 999,
+    justifyContent: 'center',
+    minHeight: 44,
     paddingHorizontal: 18,
     paddingVertical: 12,
   },

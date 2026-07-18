@@ -92,7 +92,7 @@ def _require_earth911_api_key() -> str:
     if not EARTH911_API_KEY:
         raise HTTPException(
             status_code=500,
-            detail={"error": "EARTH911_API_KEY is not set. Add it to backend/.env."},
+            detail={"error": "Nearby location service is not configured."},
         )
 
     return EARTH911_API_KEY
@@ -110,9 +110,14 @@ def _earth911_request(endpoint: str, params: dict[str, Any]) -> Any:
         )
         response.raise_for_status()
     except requests.RequestException as exc:
+        logger.warning(
+            "Earth911 request failed for endpoint=%s error_type=%s",
+            endpoint,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=502,
-            detail={"error": f"Earth911 request failed: {exc}"},
+            detail={"error": "Nearby location service is unavailable."},
         ) from exc
 
     try:
@@ -381,8 +386,12 @@ def get_material_id(item: str) -> dict[str, int | None]:
         return {"material_id": _extract_material_id(material_result, item)}
     except HTTPException:
         raise
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+    except Exception:
+        logger.exception("Unexpected get_material_id failure")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Unable to resolve this material right now."},
+        )
 
 
 @app.get("/search_locations")
@@ -391,8 +400,12 @@ def search_locations(lat: float, lon: float, material_id: int) -> dict[str, list
         return {"locations": _raw_search_locations(lat, lon, material_id)}
     except HTTPException:
         raise
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+    except Exception:
+        logger.exception("Unexpected search_locations failure")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Unable to search nearby locations right now."},
+        )
 
 
 @app.get("/get_location_details")
@@ -401,8 +414,12 @@ def get_location_details(location_id: str) -> dict[str, Any]:
         return {"details": _location_details(location_id)}
     except HTTPException:
         raise
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+    except Exception:
+        logger.exception("Unexpected get_location_details failure")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Unable to load location details right now."},
+        )
 
 
 @app.get("/nearby_locations")
@@ -474,8 +491,12 @@ def nearby_locations(
         }
     except HTTPException:
         raise
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+    except Exception:
+        logger.exception("Unexpected nearby_locations failure")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Unable to load nearby locations right now."},
+        )
 
 
 app.include_router(predict_router)

@@ -3,8 +3,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -18,41 +19,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
 import { LocationCardSkeletonList } from '@/components/location-card-skeleton';
-import { API_BASE_URL } from '@/constants/api';
+import { fetchNearbyLocations as fetchNearbyLocationsApi } from '@/api/client';
+import { getApiErrorMessage } from '@/api/request';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import { getLastNearbyScanContext, getLastScannedItem } from '@/constants/scan-session';
 
 type NearbyLocation = LocationCardProps & {
   id: string;
   directionsUrl?: string | null;
-};
-
-type NearbyLocationsResponse = {
-  item: string;
-  material_id: number | null;
-  locations: NearbyLocation[];
-  reason?: 'unsupported_material' | null;
-  earth911_search_skipped?: boolean;
-  material_resolution?: {
-    original_label?: string | null;
-    normalized_label?: string | null;
-    resolved_material_label?: string | null;
-    matched_material_name?: string | null;
-    match_type?: 'exact' | 'alias' | 'llm' | 'none' | string;
-    confidence?: number;
-    llm_confidence?: 'high' | 'low' | null;
-    llm_reason?: string | null;
-    llm_selection?: string | null;
-    validation_failure_reason?: string | null;
-    routing_category?: string | null;
-    routing_category_source?: string | null;
-    catalog_family_filter?: string | null;
-    catalog_selection_candidates?: string[];
-    protected_item?: boolean;
-    protected_item_specific?: boolean;
-    stale_catalog_used?: boolean;
-    search_skipped?: boolean;
-  } | null;
 };
 
 type Coordinates = {
@@ -114,6 +88,7 @@ async function fetchNearbyLocations(
   item: string,
   coordinates: Coordinates,
   context: NearbySearchContext = {},
+  signal?: AbortSignal,
 ) {
   const query = new URLSearchParams({
     item,
@@ -132,13 +107,36 @@ async function fetchNearbyLocations(
   if (context.materialCategory) {
     query.set('material_category', context.materialCategory);
   }
-  const response = await fetch(`${API_BASE_URL}/nearby_locations?${query.toString()}`);
+  return fetchNearbyLocationsApi(query, signal);
+}
 
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+class NearbyPermissionError extends Error {
+  readonly openSettings: boolean;
+
+  constructor(openSettings: boolean) {
+    super('Location permission denied');
+    this.name = 'NearbyPermissionError';
+    this.openSettings = openSettings;
   }
+}
 
-  return (await response.json()) as NearbyLocationsResponse;
+class LocationUnavailableError extends Error {}
+
+async function getUsablePosition() {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const currentPosition = await Promise.race([
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(
+      () => null,
+    ),
+    new Promise<null>((resolve) => {
+      timeoutId = setTimeout(() => resolve(null), 15_000);
+    }),
+  ]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+  return currentPosition ?? Location.getLastKnownPositionAsync();
 }
 
 function routeBoolean(value: string | null, fallback: boolean) {
@@ -209,6 +207,9 @@ export default function NearbyScreen() {
   const activeNearbyKey =
     sessionContext?.scanSessionId ?? (canUseRouteParams ? routeScanSessionId ?? selectedItem : null);
   const broaderFallback = getNearbyFallback(disposalCategory);
+  const nearbyAbortControllerRef = useRef<AbortController | null>(null);
+  const broaderAbortControllerRef = useRef<AbortController | null>(null);
+  const broaderSearchLockRef = useRef(false);
 
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
   const [searchStateNearbyKey, setSearchStateNearbyKey] = useState<string | null>(null);
@@ -216,6 +217,10 @@ export default function NearbyScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorAction, setErrorAction] = useState<
+    'retry' | 'retry_broader' | 'settings' | null
+  >(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [emptySearchScope, setEmptySearchScope] = useState<EmptySearchScope | null>(null);
   const [broaderSearchTerm, setBroaderSearchTerm] = useState<string | null>(null);
   const [isUnsupportedMaterial, setIsUnsupportedMaterial] = useState(false);
@@ -228,13 +233,21 @@ export default function NearbyScreen() {
     setSearchQuery('');
     setIsLoading(false);
     setErrorMessage(null);
+    setErrorAction(null);
+    setRetryKey(0);
     setEmptySearchScope(null);
     setBroaderSearchTerm(null);
     setIsUnsupportedMaterial(false);
+    nearbyAbortControllerRef.current?.abort();
+    broaderAbortControllerRef.current?.abort();
+    broaderSearchLockRef.current = false;
   }, [selectedItem, sessionContext?.scanSessionId]);
 
   useEffect(() => {
     let isActive = true;
+    const controller = new AbortController();
+    nearbyAbortControllerRef.current?.abort();
+    nearbyAbortControllerRef.current = controller;
 
     async function loadLocations() {
       if (!selectedItem || !shouldAutoSearch) {
@@ -244,24 +257,28 @@ export default function NearbyScreen() {
       setIsLoading(true);
       setSearchStateNearbyKey(activeNearbyKey);
       setErrorMessage(null);
+      setErrorAction(null);
       setEmptySearchScope(null);
       setBroaderSearchTerm(null);
       setIsUnsupportedMaterial(false);
 
       try {
-        const permission = await Location.requestForegroundPermissionsAsync();
+        let permission = await Location.getForegroundPermissionsAsync();
+        if (permission.status !== 'granted' && permission.canAskAgain) {
+          permission = await Location.requestForegroundPermissionsAsync();
+        }
         if (permission.status !== 'granted') {
-          throw new Error('Location permission denied');
+          throw new NearbyPermissionError(!permission.canAskAgain);
         }
 
-        const currentPosition = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        const lastKnownPosition = await Location.getLastKnownPositionAsync();
-        const position = currentPosition ?? lastKnownPosition;
+        const position = await getUsablePosition();
 
-        if (!position) {
-          throw new Error('Location unavailable');
+        if (
+          !position ||
+          !Number.isFinite(position.coords.latitude) ||
+          !Number.isFinite(position.coords.longitude)
+        ) {
+          throw new LocationUnavailableError('Location unavailable');
         }
 
         const nextCoordinates = {
@@ -273,8 +290,8 @@ export default function NearbyScreen() {
           disposalCategory,
           materialCategory,
           normalizedItem,
-        });
-        if (!isActive) {
+        }, controller.signal);
+        if (!isActive || controller.signal.aborted) {
           return;
         }
 
@@ -289,7 +306,7 @@ export default function NearbyScreen() {
           setEmptySearchScope(nextLocations.length ? null : 'exact');
         }
       } catch (error) {
-        if (!isActive) {
+        if (!isActive || controller.signal.aborted) {
           return;
         }
 
@@ -297,16 +314,22 @@ export default function NearbyScreen() {
         setSearchStateNearbyKey(activeNearbyKey);
         setEmptySearchScope(null);
         setIsUnsupportedMaterial(false);
-        if (error instanceof Error && error.message === 'Location permission denied') {
+        if (error instanceof NearbyPermissionError) {
           setErrorMessage('Location access is required to load nearby recycling sites.');
-        } else if (error instanceof Error && error.message === 'Location unavailable') {
+          setErrorAction(error.openSettings ? 'settings' : 'retry');
+        } else if (error instanceof LocationUnavailableError) {
           setErrorMessage('Your location could not be determined right now.');
+          setErrorAction('retry');
         } else {
-          setErrorMessage('Could not load nearby locations right now.');
+          setErrorMessage(getApiErrorMessage(error, 'nearby'));
+          setErrorAction('retry');
         }
       } finally {
-        if (isActive) {
+        if (isActive && !controller.signal.aborted) {
           setIsLoading(false);
+        }
+        if (nearbyAbortControllerRef.current === controller) {
+          nearbyAbortControllerRef.current = null;
         }
       }
     }
@@ -315,6 +338,10 @@ export default function NearbyScreen() {
 
     return () => {
       isActive = false;
+      controller.abort();
+      if (nearbyAbortControllerRef.current === controller) {
+        nearbyAbortControllerRef.current = null;
+      }
     };
   }, [
     activeNearbyKey,
@@ -324,22 +351,36 @@ export default function NearbyScreen() {
     normalizedItem,
     selectedItem,
     shouldAutoSearch,
+    retryKey,
   ]);
 
   async function tryBroaderSearch() {
-    if (!broaderFallback || !coordinates) {
+    if (!broaderFallback || !coordinates || broaderSearchLockRef.current) {
       return;
     }
 
+    broaderSearchLockRef.current = true;
+    broaderAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    broaderAbortControllerRef.current = controller;
     setIsLoading(true);
     setErrorMessage(null);
+    setErrorAction(null);
     setEmptySearchScope(null);
     setIsUnsupportedMaterial(false);
     setSearchQuery('');
     setBroaderSearchTerm(broaderFallback.searchTerm);
 
     try {
-      const data = await fetchNearbyLocations(broaderFallback.searchTerm, coordinates);
+      const data = await fetchNearbyLocations(
+        broaderFallback.searchTerm,
+        coordinates,
+        {},
+        controller.signal,
+      );
+      if (controller.signal.aborted) {
+        return;
+      }
       const nextLocations = data.locations ?? [];
       setLocations(nextLocations);
       setSearchStateNearbyKey(activeNearbyKey);
@@ -351,15 +392,41 @@ export default function NearbyScreen() {
         setIsUnsupportedMaterial(false);
         setEmptySearchScope(nextLocations.length ? null : 'broader');
       }
-    } catch {
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
       setLocations([]);
       setSearchStateNearbyKey(activeNearbyKey);
       setBroaderSearchTerm(null);
       setIsUnsupportedMaterial(false);
-      setErrorMessage('Could not load broader nearby results right now.');
+      setErrorMessage(getApiErrorMessage(error, 'nearby'));
+      setErrorAction('retry_broader');
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
+      if (broaderAbortControllerRef.current === controller) {
+        broaderAbortControllerRef.current = null;
+      }
+      broaderSearchLockRef.current = false;
     }
+  }
+
+  async function openLocationSettings() {
+    try {
+      await Linking.openSettings();
+      setErrorAction('retry');
+    } catch {
+      Alert.alert(
+        'Unable to open Settings',
+        'Open Android Settings and allow location access for Green Bin.',
+      );
+    }
+  }
+
+  function retryNearbySearch() {
+    setRetryKey((value) => value + 1);
   }
 
   const subtitle = displayItem
@@ -371,6 +438,7 @@ export default function NearbyScreen() {
   const currentLocations =
     hasCurrentNearbyState ? locations : [];
   const currentErrorMessage = hasCurrentNearbyState ? errorMessage : null;
+  const currentErrorAction = hasCurrentNearbyState ? errorAction : null;
   const currentEmptySearchScope = hasCurrentNearbyState ? emptySearchScope : null;
   const currentBroaderSearchTerm = hasCurrentNearbyState ? broaderSearchTerm : null;
   const isCurrentLoading = hasCurrentNearbyState && isLoading;
@@ -419,14 +487,12 @@ export default function NearbyScreen() {
           <Text style={styles.title}>nearby.</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
         </View>
-        <View style={styles.filterButton}>
-          <Ionicons color="#9C968F" name="options-outline" size={18} />
-        </View>
       </View>
 
       <View style={styles.searchBar}>
         <Ionicons color="#B4AEA8" name="search-outline" size={18} />
         <TextInput
+          accessibilityLabel="Search nearby facilities"
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setSearchQuery}
@@ -452,6 +518,22 @@ export default function NearbyScreen() {
         {!isCurrentLoading && currentErrorMessage ? (
           <View style={styles.stateCard}>
             <Text selectable style={styles.stateText}>{currentErrorMessage}</Text>
+            {currentErrorAction ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={
+                  currentErrorAction === 'settings'
+                    ? openLocationSettings
+                    : currentErrorAction === 'retry_broader'
+                      ? tryBroaderSearch
+                      : retryNearbySearch
+                }
+                style={styles.primaryButton}>
+                <Text style={styles.primaryButtonText}>
+                  {currentErrorAction === 'settings' ? 'Open Settings' : 'Try Again'}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
 
@@ -585,7 +667,12 @@ export default function NearbyScreen() {
               {...location}
               onPress={() => {
                 if (location.directionsUrl) {
-                  Linking.openURL(location.directionsUrl);
+                  Linking.openURL(location.directionsUrl).catch(() => {
+                    Alert.alert(
+                      'Unable to open directions',
+                      'Try opening this location in your maps app.',
+                    );
+                  });
                 }
               }}
             />
@@ -625,17 +712,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: 4,
     maxWidth: 260,
-  },
-  filterButton: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E7E4DE',
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 36,
-    justifyContent: 'center',
-    marginTop: 10,
-    width: 36,
   },
   searchBar: {
     alignItems: 'center',

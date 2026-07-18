@@ -419,7 +419,12 @@ export default function RecentScanDetailScreen() {
                     accessibilityRole="link"
                     key={source.id}
                     onPress={() => {
-                      void Linking.openURL(sourceUrl);
+                      Linking.openURL(sourceUrl).catch(() => {
+                        Alert.alert(
+                          'Unable to open source',
+                          'Try opening the guidance source in your browser.',
+                        );
+                      });
                     }}
                     style={({ pressed }) => [
                       styles.sourceRow,

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import requests
 from fastapi.testclient import TestClient
 
 from main import _env_flag, app, start_clip_warmup, warmup_phash_and_cache
@@ -114,6 +115,46 @@ class NearbyLocationsEndpointTests(unittest.TestCase):
         self.assertEqual(payload["material_resolution"], resolution)
         mock_resolve.assert_called_once()
         mock_search.assert_not_called()
+
+    def test_earth911_failure_does_not_disclose_query_credentials(self):
+        client = TestClient(app)
+        private_value = "private-earth911-key"
+        failure = requests.RequestException(
+            f"https://api.earth911.com/search?api_key={private_value}",
+        )
+
+        with (
+            patch("main.EARTH911_API_KEY", private_value),
+            patch("main.EARTH911_SESSION.get", side_effect=failure),
+        ):
+            response = client.get("/get_material_id", params={"item": "battery"})
+
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn(private_value, response.text)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"error": "Nearby location service is unavailable."}},
+        )
+
+    def test_nearby_unexpected_failure_does_not_disclose_exception_text(self):
+        client = TestClient(app)
+        private_value = "private-backend-detail"
+
+        with patch(
+            "main.resolve_earth911_material",
+            side_effect=RuntimeError(private_value),
+        ):
+            response = client.get(
+                "/nearby_locations",
+                params={"item": "battery", "lat": 40.0, "lon": -75.0},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn(private_value, response.text)
+        self.assertEqual(
+            response.json(),
+            {"error": "Unable to load nearby locations right now."},
+        )
 
 
 class ClipWarmupStartupTests(unittest.TestCase):

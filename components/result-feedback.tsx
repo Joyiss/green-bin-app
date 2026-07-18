@@ -106,9 +106,9 @@ const styles = StyleSheet.create({
     borderColor: '#E3DED6',
     borderRadius: 18,
     borderWidth: 1,
-    height: 36,
+    height: 44,
     justifyContent: 'center',
-    width: 36,
+    width: 44,
   },
   iconButtonDisabled: {
     opacity: 0.55,

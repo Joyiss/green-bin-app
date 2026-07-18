@@ -251,6 +251,7 @@ export default function RecentScansScreen() {
     (scanId: string) => (
       <Pressable
         accessibilityLabel="Delete recent scan"
+        accessibilityRole="button"
         onPress={() => {
           void handleDeleteScan(scanId);
         }}
@@ -279,6 +280,7 @@ export default function RecentScansScreen() {
             {recentScans.length > 0 ? (
               <Pressable
                 accessibilityLabel="Clear all recent scans"
+                accessibilityRole="button"
                 onPress={handleClearAllPress}
                 style={({ pressed }) => [
                   styles.clearAllButton,
@@ -368,8 +370,11 @@ const styles = StyleSheet.create({
     letterSpacing: -1.3,
   },
   clearAllButton: {
+    alignItems: 'center',
     backgroundColor: '#ECE8E2',
     borderRadius: 999,
+    justifyContent: 'center',
+    minHeight: 44,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },

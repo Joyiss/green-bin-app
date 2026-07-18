@@ -185,7 +185,9 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
             return (
               <Pressable
                 key={route.key}
-                accessibilityLabel={descriptors[route.key].options.tabBarAccessibilityLabel}
+                accessibilityLabel={
+                  descriptors[route.key].options.tabBarAccessibilityLabel ?? config.label
+                }
                 accessibilityRole="button"
                 accessibilityState={isFocused ? { selected: true } : {}}
                 onLongPress={onLongPress}

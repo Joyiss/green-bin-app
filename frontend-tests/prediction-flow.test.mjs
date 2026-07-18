@@ -19,6 +19,22 @@ import {
   sanitizeFeedbackUpdate,
   shouldShowGuidanceFeedback,
 } from '../app/feedback-flow.ts';
+import { resolveApiBaseUrl } from '../app/api-config.ts';
+import {
+  ApiContractError,
+  normalizeFeedbackResponse,
+  normalizeHealthResponse,
+  normalizeNearbyLocationsResponse,
+  normalizePredictionResponse,
+  normalizeScanLimitResponse,
+  normalizeSupportedLabelsResponse,
+} from '../api/contracts.ts';
+import {
+  acquireRequestLock,
+  ApiError,
+  releaseRequestLock,
+  requestJson,
+} from '../api/request.ts';
 
 test('explicit clarification overrides a confident legacy status', () => {
   const prediction = {
@@ -231,4 +247,254 @@ test('feedback submission suppresses concurrent and recently successful duplicat
     prediction_changed: true,
   });
   assert.equal(sendCount, 2);
+});
+
+test('release API URL resolution requires an explicit HTTPS endpoint', () => {
+  assert.equal(
+    resolveApiBaseUrl({
+      configuredUrl: 'https://green-bin-app.onrender.com/',
+      developmentHost: null,
+      isDevelopment: false,
+    }),
+    'https://green-bin-app.onrender.com',
+  );
+  assert.equal(
+    resolveApiBaseUrl({
+      configuredUrl: 'http://green-bin-app.onrender.com',
+      developmentHost: null,
+      isDevelopment: false,
+    }),
+    null,
+  );
+  assert.equal(
+    resolveApiBaseUrl({
+      configuredUrl: null,
+      developmentHost: '192.168.1.5',
+      isDevelopment: false,
+    }),
+    null,
+  );
+});
+
+test('development API URL resolution permits configured HTTP and host discovery', () => {
+  assert.equal(
+    resolveApiBaseUrl({
+      configuredUrl: 'http://dev.example.test:9000/',
+      developmentHost: null,
+      isDevelopment: true,
+    }),
+    'http://dev.example.test:9000',
+  );
+  assert.equal(
+    resolveApiBaseUrl({
+      configuredUrl: null,
+      developmentHost: '192.168.1.5',
+      isDevelopment: true,
+    }),
+    'http://192.168.1.5:8000',
+  );
+});
+
+test('prediction validation rejects incompatible core fields and normalizes optional data', () => {
+  assert.throws(
+    () => normalizePredictionResponse({ status: 'confident', item: '' }),
+    ApiContractError,
+  );
+  assert.throws(
+    () => normalizePredictionResponse({ status: 'maybe', item: 'Bottle' }),
+    ApiContractError,
+  );
+
+  const prediction = normalizePredictionResponse({
+    status: 'confident',
+    item: ' Bottle ',
+    category: null,
+    disposal_action: 42,
+    material_code: ' PET ',
+    steps: [' Empty it. ', null, 7],
+    warnings: 'not-an-array',
+    recognition_details: {
+      normalized: {
+        normalized_item: 'plastic bottle',
+      },
+    },
+  });
+
+  assert.equal(prediction.item, 'Bottle');
+  assert.equal(prediction.category, 'Unknown');
+  assert.equal(prediction.disposal_action, null);
+  assert.equal(prediction.material_code, 'PET');
+  assert.deepEqual(prediction.steps, ['Empty it.']);
+  assert.deepEqual(prediction.warnings, []);
+});
+
+test('endpoint validators enforce acknowledgements and safe location defaults', () => {
+  assert.deepEqual(normalizeHealthResponse({ status: 'ok' }), { status: 'ok' });
+  assert.throws(() => normalizeHealthResponse({ status: 'starting' }), ApiContractError);
+  assert.deepEqual(
+    normalizeFeedbackResponse({ recorded: true, request_id: 'request-1' }, 'request-1'),
+    { recorded: true, request_id: 'request-1' },
+  );
+  assert.throws(
+    () => normalizeFeedbackResponse({ recorded: true, request_id: 'other' }, 'request-1'),
+    ApiContractError,
+  );
+  assert.deepEqual(
+    normalizeSupportedLabelsResponse({ labels: [' Battery ', '', 7, 'Battery'] }),
+    { labels: ['Battery'] },
+  );
+
+  const nearby = normalizeNearbyLocationsResponse({
+    item: 'Battery',
+    locations: [
+      {
+        id: 'location-1',
+        name: 'Drop-off',
+        directionsUrl: 'http://unsafe.example.test',
+        accent: 'not-a-color',
+      },
+      { id: '', name: 'Malformed' },
+    ],
+  });
+  assert.equal(nearby.locations.length, 1);
+  assert.equal(nearby.locations[0].directionsUrl, null);
+  assert.equal(nearby.locations[0].address, 'Address unavailable');
+  assert.match(nearby.locations[0].accent, /^#[0-9A-F]{6}$/i);
+});
+
+test('scan limit validation ignores malformed metadata', () => {
+  assert.deepEqual(
+    normalizeScanLimitResponse({
+      error: 'daily_scan_limit_reached',
+      daily_limit: 40,
+      scans_remaining: -1,
+      reset_at: 123,
+    }),
+    {
+      error: 'daily_scan_limit_reached',
+      daily_limit: 40,
+      scans_remaining: undefined,
+      reset_at: undefined,
+    },
+  );
+  assert.equal(normalizeScanLimitResponse({ error: 'other' }), null);
+});
+
+test('safe GET policy retries one transient server failure', async () => {
+  let fetchCount = 0;
+  const result = await requestJson('https://example.test/health', {
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return fetchCount === 1
+        ? new Response(JSON.stringify({ error: 'starting' }), { status: 503 })
+        : new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+    },
+    retryCount: 1,
+    retryDelayMs: 0,
+    timeoutMs: 100,
+    validate: normalizeHealthResponse,
+  });
+
+  assert.deepEqual(result, { status: 'ok' });
+  assert.equal(fetchCount, 2);
+});
+
+test('rate limits and POST-style requests are never automatically retried', async () => {
+  let rateLimitFetchCount = 0;
+  await assert.rejects(
+    requestJson('https://example.test/predict', {
+      fetchImpl: async () => {
+        rateLimitFetchCount += 1;
+        return new Response(JSON.stringify({ error: 'daily_scan_limit_reached' }), {
+          status: 429,
+        });
+      },
+      init: { method: 'POST' },
+      retryCount: 1,
+      retryDelayMs: 0,
+      timeoutMs: 100,
+      validate: normalizePredictionResponse,
+    }),
+    (error) =>
+      error instanceof ApiError &&
+      error.kind === 'rate_limit' &&
+      error.retryable === true,
+  );
+  assert.equal(rateLimitFetchCount, 1);
+
+  let postFetchCount = 0;
+  await assert.rejects(
+    requestJson('https://example.test/predict', {
+      fetchImpl: async () => {
+        postFetchCount += 1;
+        throw new TypeError('offline');
+      },
+      init: { method: 'POST' },
+      timeoutMs: 100,
+      validate: normalizePredictionResponse,
+    }),
+    (error) => error instanceof ApiError && error.kind === 'network',
+  );
+  assert.equal(postFetchCount, 1);
+});
+
+test('timeouts abort the request and malformed success bodies are classified', async () => {
+  await assert.rejects(
+    requestJson('https://example.test/predict', {
+      fetchImpl: (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        }),
+      timeoutMs: 5,
+      validate: normalizePredictionResponse,
+    }),
+    (error) => error instanceof ApiError && error.kind === 'timeout',
+  );
+
+  await assert.rejects(
+    requestJson('https://example.test/health', {
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ status: 'unexpected' }), { status: 200 }),
+      timeoutMs: 100,
+      validate: normalizeHealthResponse,
+    }),
+    (error) => error instanceof ApiError && error.kind === 'invalid_response',
+  );
+});
+
+test('synchronous request locks block duplicate work until released', () => {
+  const lock = { current: false };
+
+  assert.equal(acquireRequestLock(lock), true);
+  assert.equal(acquireRequestLock(lock), false);
+  releaseRequestLock(lock);
+  assert.equal(acquireRequestLock(lock), true);
+});
+
+test('caller cancellation aborts stale work without retrying it', async () => {
+  const controller = new AbortController();
+  let fetchCount = 0;
+  const request = requestJson('https://example.test/nearby', {
+    fetchImpl: (_url, init) => {
+      fetchCount += 1;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        });
+      });
+    },
+    retryCount: 1,
+    timeoutMs: 100,
+    signal: controller.signal,
+    validate: normalizeNearbyLocationsResponse,
+  });
+
+  controller.abort();
+  await assert.rejects(
+    request,
+    (error) => error instanceof ApiError && error.message === 'Request was cancelled.',
+  );
+  assert.equal(fetchCount, 1);
 });

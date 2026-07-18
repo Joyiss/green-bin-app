@@ -68,6 +68,9 @@ export function LocationCard({
       </View>
 
       <Pressable
+        accessibilityLabel={`Get directions to ${name}`}
+        accessibilityRole="link"
+        accessibilityState={{ disabled: !onPress }}
         disabled={!onPress}
         onPress={onPress}
         style={[styles.button, !onPress && styles.buttonDisabled]}>
