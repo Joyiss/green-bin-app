@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY requirements-lite.txt .
 
-RUN pip install --no-cache-dir -r requirements.light.txt
+RUN pip install --no-cache-dir -r requirements-lite.txt
 
 COPY . .
 
