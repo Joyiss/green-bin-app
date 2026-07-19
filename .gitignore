@@ -52,3 +52,7 @@ __pycache__/
 .Python
 .venv/
 venv/
+
+credentials.json
+*.jks
+*.keystore
