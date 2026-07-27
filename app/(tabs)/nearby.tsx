@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -23,15 +22,16 @@ import { fetchNearbyLocations as fetchNearbyLocationsApi } from '@/api/client';
 import { getApiErrorMessage } from '@/api/request';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import { getLastNearbyScanContext, getLastScannedItem } from '@/constants/scan-session';
+import {
+  getAppLocationContext,
+  LocationPermissionError,
+  LocationUnavailableError,
+  type AppCoordinates,
+} from '@/app/location-context';
 
 type NearbyLocation = LocationCardProps & {
   id: string;
   directionsUrl?: string | null;
-};
-
-type Coordinates = {
-  latitude: number;
-  longitude: number;
 };
 
 type EmptySearchScope = 'exact' | 'broader';
@@ -41,6 +41,8 @@ type NearbySearchContext = {
   broadCategory?: string | null;
   disposalCategory?: string | null;
   materialCategory?: string | null;
+  jurisdictionId?: string | null;
+  localRuleId?: string | null;
 };
 
 type NearbyRouteParams = {
@@ -54,6 +56,8 @@ type NearbyRouteParams = {
   requiresLocationCheck?: string | string[];
   scanSessionId?: string | string[];
   supportsDonationReuse?: string | string[];
+  jurisdictionId?: string | string[];
+  localRuleId?: string | string[];
 };
 
 function getRouteValue(value: string | string[] | undefined) {
@@ -86,7 +90,7 @@ function getLocationSearchText(location: NearbyLocation) {
 
 async function fetchNearbyLocations(
   item: string,
-  coordinates: Coordinates,
+  coordinates: AppCoordinates,
   context: NearbySearchContext = {},
   signal?: AbortSignal,
 ) {
@@ -107,36 +111,11 @@ async function fetchNearbyLocations(
   if (context.materialCategory) {
     query.set('material_category', context.materialCategory);
   }
-  return fetchNearbyLocationsApi(query, signal);
-}
-
-class NearbyPermissionError extends Error {
-  readonly openSettings: boolean;
-
-  constructor(openSettings: boolean) {
-    super('Location permission denied');
-    this.name = 'NearbyPermissionError';
-    this.openSettings = openSettings;
+  if (context.jurisdictionId && context.localRuleId) {
+    query.set('jurisdiction_id', context.jurisdictionId);
+    query.set('local_rule_id', context.localRuleId);
   }
-}
-
-class LocationUnavailableError extends Error {}
-
-async function getUsablePosition() {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const currentPosition = await Promise.race([
-    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(
-      () => null,
-    ),
-    new Promise<null>((resolve) => {
-      timeoutId = setTimeout(() => resolve(null), 15_000);
-    }),
-  ]).finally(() => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  });
-  return currentPosition ?? Location.getLastKnownPositionAsync();
+  return fetchNearbyLocationsApi(query, signal);
 }
 
 function routeBoolean(value: string | null, fallback: boolean) {
@@ -202,18 +181,24 @@ export default function NearbyScreen() {
         disposalAction,
       }),
   );
+  const jurisdictionId =
+    sessionContext?.jurisdictionId ??
+    (canUseRouteParams ? getRouteValue(routeParams.jurisdictionId) : null);
+  const localRuleId =
+    sessionContext?.localRuleId ??
+    (canUseRouteParams ? getRouteValue(routeParams.localRuleId) : null);
   const shouldAutoSearch =
     routeAutoSearch && routeReferencesCurrentScan && !!selectedItem;
   const activeNearbyKey =
     sessionContext?.scanSessionId ?? (canUseRouteParams ? routeScanSessionId ?? selectedItem : null);
-  const broaderFallback = getNearbyFallback(disposalCategory);
+  const broaderFallback = localRuleId ? null : getNearbyFallback(disposalCategory);
   const nearbyAbortControllerRef = useRef<AbortController | null>(null);
   const broaderAbortControllerRef = useRef<AbortController | null>(null);
   const broaderSearchLockRef = useRef(false);
 
   const [locations, setLocations] = useState<NearbyLocation[]>([]);
   const [searchStateNearbyKey, setSearchStateNearbyKey] = useState<string | null>(null);
-  const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
+  const [coordinates, setCoordinates] = useState<AppCoordinates | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -263,31 +248,13 @@ export default function NearbyScreen() {
       setIsUnsupportedMaterial(false);
 
       try {
-        let permission = await Location.getForegroundPermissionsAsync();
-        if (permission.status !== 'granted' && permission.canAskAgain) {
-          permission = await Location.requestForegroundPermissionsAsync();
-        }
-        if (permission.status !== 'granted') {
-          throw new NearbyPermissionError(!permission.canAskAgain);
-        }
-
-        const position = await getUsablePosition();
-
-        if (
-          !position ||
-          !Number.isFinite(position.coords.latitude) ||
-          !Number.isFinite(position.coords.longitude)
-        ) {
-          throw new LocationUnavailableError('Location unavailable');
-        }
-
-        const nextCoordinates = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        };
+        const locationContext = await getAppLocationContext();
+        const nextCoordinates = locationContext.coordinates;
         const data = await fetchNearbyLocations(selectedItem, nextCoordinates, {
           broadCategory,
           disposalCategory,
+          jurisdictionId,
+          localRuleId,
           materialCategory,
           normalizedItem,
         }, controller.signal);
@@ -314,7 +281,7 @@ export default function NearbyScreen() {
         setSearchStateNearbyKey(activeNearbyKey);
         setEmptySearchScope(null);
         setIsUnsupportedMaterial(false);
-        if (error instanceof NearbyPermissionError) {
+        if (error instanceof LocationPermissionError) {
           setErrorMessage('Location access is required to load nearby recycling sites.');
           setErrorAction(error.openSettings ? 'settings' : 'retry');
         } else if (error instanceof LocationUnavailableError) {
@@ -347,6 +314,8 @@ export default function NearbyScreen() {
     activeNearbyKey,
     broadCategory,
     disposalCategory,
+    jurisdictionId,
+    localRuleId,
     materialCategory,
     normalizedItem,
     selectedItem,

@@ -46,6 +46,7 @@ def _has_predict_input(file: UploadFile | None, selected_item: str | None) -> bo
 async def predict(
     file: UploadFile | None = File(None),
     selected_item: str | None = Form(None),
+    jurisdiction_id: str | None = Form(None),
     x_request_id: str | None = Header(None, alias="X-Request-ID"),
     x_original_request_id: str | None = Header(None, alias="X-Original-Request-ID"),
     x_greenbin_client_id: str | None = Header(None, alias="X-GreenBin-Client-Id"),
@@ -98,10 +99,19 @@ async def predict(
                 content={"error": "scan_rate_limit_unavailable"},
             )
 
+        normalized_jurisdiction_id = (
+            jurisdiction_id.strip()
+            if isinstance(jurisdiction_id, str)
+            and jurisdiction_id.strip() == "forsyth_county_ga"
+            else None
+        )
         classification = await recognize_item(file=file, selected_item=selected_item)
         guidance_started = perf_counter()
         try:
-            response = build_prediction_response(classification)
+            response = build_prediction_response(
+                classification,
+                jurisdiction_id=normalized_jurisdiction_id,
+            )
             recognition_details = classification.get("recognition_details")
             if isinstance(recognition_details, dict):
                 normalized_details = recognition_details.get("normalized")

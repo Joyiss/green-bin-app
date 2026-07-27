@@ -8,6 +8,48 @@ export type PredictionClarification = {
   message?: unknown;
 };
 
+export type LocalGuidanceSource = {
+  source_id: string | null;
+  title: string;
+  publisher: string | null;
+  url: string;
+  accessed: string | null;
+};
+
+export type LocalGuidanceDestination = {
+  location_id: string;
+  name: string;
+  address: string;
+  phone: string | null;
+  hours: string | null;
+  payment: string | null;
+  directions_url: string | null;
+};
+
+export type LocalGuidance = {
+  dataset_id: string;
+  rules_version: string;
+  rule_id: string;
+  program_id: string;
+  decision: string;
+  applicability: 'applicable' | 'conditional' | 'excluded';
+  local_action: string;
+  preparation: string[];
+  restrictions: string[];
+  fees: {
+    currency: string | null;
+    line_items: Array<{
+      label: string;
+      amount: number;
+      unit: string;
+    }>;
+  } | null;
+  sources: LocalGuidanceSource[];
+  earth911_material_label: string | null;
+  allowed_location_names: string[];
+  destinations: LocalGuidanceDestination[];
+};
+
 export type RawPredictionCandidate =
   | string
   | {
@@ -47,6 +89,8 @@ export type PredictionResponse = {
   warnings?: string[];
   guidance_metadata?: Record<string, unknown>;
   guidanceMetadata?: Record<string, unknown>;
+  jurisdiction_id?: string;
+  local_guidance?: LocalGuidance;
   daily_limit?: number;
   dailyLimit?: number;
   scans_remaining?: number;
@@ -84,6 +128,9 @@ export type NearbyLocationResponse = {
   accent: string;
   mapStyle: 'grid' | 'building' | 'pin';
   directionsUrl: string | null;
+  phone: string | null;
+  source: string | null;
+  official: boolean;
 };
 
 export type NearbyLocationsResponse = {
@@ -143,6 +190,124 @@ function optionalHttpsUrl(value: unknown) {
   }
 }
 
+function normalizeLocalGuidance(value: unknown): LocalGuidance | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const datasetId = text(value.dataset_id);
+  const rulesVersion = text(value.rules_version);
+  const ruleId = text(value.rule_id);
+  const programId = text(value.program_id);
+  const decision = text(value.decision);
+  const localAction = text(value.local_action);
+  const applicability = value.applicability;
+  if (
+    !datasetId ||
+    !rulesVersion ||
+    !ruleId ||
+    !programId ||
+    !decision ||
+    !localAction ||
+    (applicability !== 'applicable' &&
+      applicability !== 'conditional' &&
+      applicability !== 'excluded')
+  ) {
+    return undefined;
+  }
+
+  const fees = isRecord(value.fees)
+    ? {
+        currency: text(value.fees.currency),
+        line_items: Array.isArray(value.fees.line_items)
+          ? value.fees.line_items
+              .map((item) => {
+                if (!isRecord(item)) {
+                  return null;
+                }
+                const label = text(item.label);
+                const unit = text(item.unit);
+                const amount =
+                  typeof item.amount === 'number' && Number.isFinite(item.amount)
+                    ? item.amount
+                    : null;
+                return label && unit && amount !== null && amount >= 0
+                  ? { label, amount, unit }
+                  : null;
+              })
+              .filter(
+                (
+                  item,
+                ): item is { label: string; amount: number; unit: string } =>
+                  item !== null,
+              )
+          : [],
+      }
+    : null;
+  const sources = Array.isArray(value.sources)
+    ? value.sources
+        .map((source) => {
+          if (!isRecord(source)) {
+            return null;
+          }
+          const title = text(source.title);
+          const url = optionalHttpsUrl(source.url);
+          return title && url
+            ? {
+                source_id: text(source.source_id),
+                title,
+                publisher: text(source.publisher),
+                url,
+                accessed: text(source.accessed),
+              }
+            : null;
+        })
+        .filter((source): source is LocalGuidanceSource => source !== null)
+    : [];
+  const destinations = Array.isArray(value.destinations)
+    ? value.destinations
+        .map((destination) => {
+          if (!isRecord(destination)) {
+            return null;
+          }
+          const locationId = text(destination.location_id);
+          const name = text(destination.name);
+          if (!locationId || !name) {
+            return null;
+          }
+          return {
+            location_id: locationId,
+            name,
+            address: text(destination.address) ?? 'Address unavailable',
+            phone: text(destination.phone),
+            hours: text(destination.hours),
+            payment: text(destination.payment),
+            directions_url: optionalHttpsUrl(destination.directions_url),
+          };
+        })
+        .filter(
+          (destination): destination is LocalGuidanceDestination =>
+            destination !== null,
+        )
+    : [];
+
+  return {
+    dataset_id: datasetId,
+    rules_version: rulesVersion,
+    rule_id: ruleId,
+    program_id: programId,
+    decision,
+    applicability,
+    local_action: localAction,
+    preparation: stringArray(value.preparation),
+    restrictions: stringArray(value.restrictions),
+    fees,
+    sources,
+    earth911_material_label: text(value.earth911_material_label),
+    allowed_location_names: stringArray(value.allowed_location_names),
+    destinations,
+  };
+}
+
 export function normalizePredictionResponse(value: unknown): PredictionResponse {
   if (!isRecord(value)) {
     throw new ApiContractError('Prediction response must be an object.');
@@ -192,6 +357,8 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
     warnings: stringArray(value.warnings),
     guidance_metadata: optionalRecord(value.guidance_metadata),
     guidanceMetadata: optionalRecord(value.guidanceMetadata),
+    jurisdiction_id: text(value.jurisdiction_id) ?? undefined,
+    local_guidance: normalizeLocalGuidance(value.local_guidance),
     daily_limit: finiteInteger(value.daily_limit, 1),
     dailyLimit: finiteInteger(value.dailyLimit, 1),
     scans_remaining: finiteInteger(value.scans_remaining),
@@ -288,6 +455,9 @@ function normalizeLocation(value: unknown, index: number): NearbyLocationRespons
         : LOCATION_ACCENTS[index % LOCATION_ACCENTS.length],
     mapStyle,
     directionsUrl: optionalHttpsUrl(value.directionsUrl),
+    phone: text(value.phone),
+    source: text(value.source),
+    official: value.official === true,
   };
 }
 

@@ -1,0 +1,214 @@
+{
+  "schema_version": "1",
+  "rules_version": "1",
+  "jurisdiction_id": "forsyth_county_ga",
+  "accepted_dataset_review_statuses": [
+    "human_reviewed"
+  ],
+  "locations": {
+    "Tolbert Street Center": {
+      "location_id": "tolbert_street_center",
+      "earth911_location_ids": [],
+      "earth911_name_aliases": [
+        "Tolbert Street Center"
+      ]
+    },
+    "Old Atlanta Center": {
+      "location_id": "old_atlanta_center",
+      "earth911_location_ids": [],
+      "earth911_name_aliases": [
+        "Old Atlanta Center"
+      ]
+    },
+    "Coal Mountain Center": {
+      "location_id": "coal_mountain_center",
+      "earth911_location_ids": [],
+      "earth911_name_aliases": [
+        "Coal Mountain Center"
+      ]
+    }
+  },
+  "rules": {
+    "fc_boxes": {
+      "program_id": "forsyth_county_convenience_centers",
+      "allowed_location_ids": [
+        "tolbert_street_center",
+        "old_atlanta_center",
+        "coal_mountain_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 70,
+        "include_terms": [
+          "box",
+          "cardboard",
+          "cardboard box",
+          "corrugated cardboard",
+          "paperboard box",
+          "cereal box",
+          "shipping box"
+        ],
+        "exclude_terms": [
+          "pizza box",
+          "food stained box",
+          "food-soiled box"
+        ],
+        "required_evidence": []
+      }
+    },
+    "fc_glass_food_beverage": {
+      "program_id": "forsyth_county_convenience_centers",
+      "allowed_location_ids": [
+        "tolbert_street_center",
+        "old_atlanta_center",
+        "coal_mountain_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 80,
+        "include_terms": [
+          "glass food container",
+          "glass beverage container",
+          "glass bottle",
+          "glass jar"
+        ],
+        "exclude_terms": [
+          "light bulb",
+          "window glass",
+          "drinking glass",
+          "mirror",
+          "crystal",
+          "chinaware"
+        ],
+        "required_evidence": []
+      }
+    },
+    "fc_plastic_1_2": {
+      "program_id": "forsyth_county_convenience_centers",
+      "allowed_location_ids": [
+        "tolbert_street_center",
+        "old_atlanta_center",
+        "coal_mountain_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 80,
+        "include_terms": [
+          "pet bottle",
+          "hdpe bottle",
+          "plastic bottle",
+          "plastic jug",
+          "plastic food container"
+        ],
+        "exclude_terms": [
+          "plastic bag",
+          "plastic wrap",
+          "plastic film",
+          "plastic storage tub",
+          "plastic storage lid",
+          "plastic tubing",
+          "large plastic item"
+        ],
+        "required_evidence": [
+          {
+            "field": "resin_code",
+            "allowed_values": [
+              "1",
+              "2"
+            ],
+            "on_missing": "conditional",
+            "message": "Confirm that the container has a #1 or #2 resin code or an accepted How2Recycle label."
+          }
+        ]
+      }
+    },
+    "fc_hefty_renew": {
+      "program_id": "forsyth_county_hefty_renew",
+      "allowed_location_ids": [
+        "tolbert_street_center",
+        "old_atlanta_center",
+        "coal_mountain_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 100,
+        "include_terms": [
+          "plastic packaging",
+          "plastic bag",
+          "plastic shopping bag",
+          "plastic wrap",
+          "plastic film",
+          "styrofoam product",
+          "plastic dinnerware"
+        ],
+        "exclude_terms": [
+          "plastic storage tub",
+          "plastic storage lid",
+          "plastic tubing",
+          "large plastic item"
+        ],
+        "required_evidence": []
+      }
+    },
+    "fc_tires": {
+      "program_id": "forsyth_county_convenience_centers",
+      "allowed_location_ids": [
+        "coal_mountain_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 90,
+        "include_terms": [
+          "vehicle tire",
+          "car tire",
+          "truck tire",
+          "tire"
+        ],
+        "exclude_terms": [
+          "solid tire"
+        ],
+        "required_evidence": []
+      }
+    },
+    "fc_electronics": {
+      "program_id": "forsyth_county_convenience_centers",
+      "allowed_location_ids": [
+        "tolbert_street_center"
+      ],
+      "earth911_material_label": null,
+      "match": {
+        "priority": 90,
+        "include_terms": [
+          "electronics",
+          "electronic",
+          "computer",
+          "laptop",
+          "monitor",
+          "keyboard",
+          "printer",
+          "stereo",
+          "radio",
+          "cell phone",
+          "telephone",
+          "camera",
+          "camcorder",
+          "fax machine",
+          "copier",
+          "projector",
+          "vcr",
+          "dvd player",
+          "network equipment",
+          "cable",
+          "ups"
+        ],
+        "exclude_terms": [
+          "wood console television",
+          "rear projection television",
+          "refrigerator",
+          "household appliance"
+        ],
+        "required_evidence": []
+      }
+    }
+  }
+}

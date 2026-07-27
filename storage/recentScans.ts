@@ -26,6 +26,9 @@ export type RecentScanGuidanceSnapshot = {
   materialCategory: string | null;
   requiresLocationCheck: boolean;
   supportsDonationReuse: boolean;
+  jurisdictionId: string | null;
+  localRuleId: string | null;
+  localGuidance: Record<string, unknown> | null;
 };
 
 export type RecentScan = {
@@ -162,6 +165,9 @@ function normalizeRecentScan(value: unknown): RecentScan | null {
       materialCategory: normalizeOptionalString(guidanceSnapshotValue?.materialCategory),
       requiresLocationCheck: normalizeOptionalBoolean(guidanceSnapshotValue?.requiresLocationCheck),
       supportsDonationReuse: normalizeOptionalBoolean(guidanceSnapshotValue?.supportsDonationReuse),
+      jurisdictionId: normalizeOptionalString(guidanceSnapshotValue?.jurisdictionId),
+      localRuleId: normalizeOptionalString(guidanceSnapshotValue?.localRuleId),
+      localGuidance: normalizeOptionalRecord(guidanceSnapshotValue?.localGuidance),
     },
   };
 }

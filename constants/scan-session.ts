@@ -10,6 +10,8 @@ export type NearbyScanContext = {
   disposalAction: string | null;
   requiresLocationCheck: boolean;
   supportsDonationReuse: boolean;
+  jurisdictionId: string | null;
+  localRuleId: string | null;
 };
 
 let lastNearbyScanContext: NearbyScanContext | null = null;

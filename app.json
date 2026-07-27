@@ -51,7 +51,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow Green Bin to use your location to find nearby recycling sites."
+          "locationWhenInUsePermission": "Allow Green Bin to use your location for local disposal guidance and nearby recycling sites."
         }
       ],
       [

@@ -1,0 +1,832 @@
+{
+  "dataset_id": "forsyth_county_ga_local_disposal_guidance_v1",
+  "generated_at": "2026-07-26",
+  "review_status": "human_reviewed",
+  "jurisdiction": {
+    "county": "Forsyth County",
+    "state": "Georgia",
+    "country": "United States"
+  },
+  "scope": {
+    "primary_program": "Forsyth County Recycling Convenience Centers",
+    "important_limit": "This dataset does not define one countywide curbside rule because Forsyth County Government does not provide countywide curbside pickup.",
+    "city_context": "Inside Cumming city limits, Cumming Utilities partners with Red Oak Sanitation and offers optional recycling to eligible customers.",
+    "outside_city_context": "Outside Cumming city limits, residents generally select a private hauler; provider-specific rules must be stored separately."
+  },
+  "programs": [
+    {
+      "program_id": "forsyth_county_convenience_centers",
+      "name": "Forsyth County Recycling Convenience Centers",
+      "eligibility": "Forsyth County residents; residential waste only",
+      "hours": "Monday-Saturday, 7:30 a.m.-5:00 p.m.; closed Sundays and holidays",
+      "payment": "Cash only; no bill larger than $20",
+      "locations": [
+        {
+          "name": "Tolbert Street Center",
+          "address": "351 Tolbert Street, Cumming, GA 30040",
+          "phone": "(770) 781-2176",
+          "special": "Only center listed for electronics"
+        },
+        {
+          "name": "Old Atlanta Center",
+          "address": "3678 Old Atlanta Road, Suwanee, GA 30024",
+          "phone": "(770) 205-3010",
+          "special": "General recycling, trash, and Hefty ReNew"
+        },
+        {
+          "name": "Coal Mountain Center",
+          "address": "3560 Settingdown Road, Cumming, GA 30028",
+          "phone": "(770) 781-2071",
+          "special": "Only center listed for tires"
+        }
+      ],
+      "source_ids": [
+        "S1"
+      ]
+    },
+    {
+      "program_id": "forsyth_county_hefty_renew",
+      "name": "Hefty ReNew Program",
+      "eligibility": "Forsyth County residents using the designated orange bags",
+      "locations": [
+        "Tolbert Street Center",
+        "Old Atlanta Center",
+        "Coal Mountain Center"
+      ],
+      "source_ids": [
+        "S1",
+        "S2"
+      ]
+    },
+    {
+      "program_id": "forsyth_county_hhw_event",
+      "name": "Forsyth County Household Hazardous Waste Event",
+      "eligibility": "Forsyth County residents; residential household hazardous waste; pre-registration required",
+      "time_sensitive": true,
+      "source_ids": [
+        "S3"
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "rule_id": "fc_boxes",
+      "item_family": "Boxes",
+      "aliases": [
+        "corrugated cardboard",
+        "paperboard box",
+        "cereal box",
+        "shipping box"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Flatten all boxes",
+        "Cut large boxes to no more than 30 inches in length"
+      ],
+      "restrictions": [],
+      "notes": "Accepted in the paper/cardboard stream at the county convenience centers.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_paper",
+      "item_family": "Paper",
+      "aliases": [
+        "newspaper",
+        "office paper",
+        "envelope",
+        "magazine",
+        "junk mail",
+        "phone book",
+        "catalog",
+        "shredded paper"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Keep shredded paper contained in a bag"
+      ],
+      "restrictions": [
+        "No paper towels",
+        "No tissue",
+        "No wax-coated paper",
+        "No food-stained paper"
+      ],
+      "notes": "Clean, listed paper products are accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_glass_food_beverage",
+      "item_family": "Glass food and beverage containers",
+      "aliases": [
+        "glass bottle",
+        "glass jar",
+        "clear glass",
+        "brown glass",
+        "green glass",
+        "blue glass"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Use only food or beverage containers"
+      ],
+      "restrictions": [
+        "No light bulbs",
+        "No window glass",
+        "No drinking glasses",
+        "No mirrors",
+        "No crystal",
+        "No chinaware"
+      ],
+      "notes": "Container form matters; other glass products are excluded.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_aluminum",
+      "item_family": "Aluminum beverage cans, foil, and foil pans",
+      "aliases": [
+        "aluminum can",
+        "soda can",
+        "beer can",
+        "aluminum foil",
+        "foil pan"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Foil and foil pans must be clean"
+      ],
+      "restrictions": [],
+      "notes": "All types of aluminum beverage cans are accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_food_cans",
+      "item_family": "Steel and tin food cans",
+      "aliases": [
+        "steel can",
+        "tin can",
+        "pet food can",
+        "food can"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "Steel, tin, and food cans are accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_scrap_metal",
+      "item_family": "Scrap metal",
+      "aliases": [
+        "metal car part",
+        "washer",
+        "dryer",
+        "dishwasher",
+        "microwave",
+        "metal sink",
+        "metal tool",
+        "metal shelving",
+        "open drum",
+        "water heater",
+        "lawn mower",
+        "grill",
+        "pipe",
+        "wire",
+        "fencing",
+        "tire rim"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Remove all oil, gasoline, and other liquids before drop-off"
+      ],
+      "restrictions": [
+        "No propane tanks",
+        "No aerosol cans",
+        "No flammable items",
+        "No pressurized tanks",
+        "No paint cans",
+        "No items containing Freon"
+      ],
+      "notes": "Large metal items are an exception to the usual 32-gallon trash-size limit.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_plastic_1_2",
+      "item_family": "Rigid #1 or #2 plastic bottles, jugs, and food containers",
+      "aliases": [
+        "PET bottle",
+        "HDPE bottle",
+        "plastic bottle",
+        "plastic jug",
+        "plastic food container"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Confirm a #1 or #2 resin code, or an accepted How2Recycle label"
+      ],
+      "restrictions": [
+        "Nothing larger than one gallon",
+        "No plastic storage tubs or lids",
+        "No plastic tubing",
+        "No large plastic items",
+        "No unnumbered plastic unless the accepted label is present"
+      ],
+      "notes": "The county page specifically limits the standard plastics bin by both resin code and item form.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_hefty_renew",
+      "item_family": "Hard-to-recycle plastics in Hefty ReNew bags",
+      "aliases": [
+        "plastic packaging",
+        "plastic bag",
+        "plastic wrap",
+        "plastic film",
+        "styrofoam product",
+        "plastic dinnerware"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "special_program_drop_off",
+      "program_id": "forsyth_county_hefty_renew",
+      "preparation": [
+        "Purchase and use an official orange Hefty ReNew bag",
+        "Place accepted plastics inside the orange bag",
+        "Drop the filled bag in the designated Hefty ReNew bin"
+      ],
+      "restrictions": [
+        "No loose items",
+        "No items in another type of bag",
+        "Plastic storage tubs or lids, tubing, large plastic items, and other excluded plastics remain unacceptable"
+      ],
+      "notes": "Available at all three county convenience centers at no drop-off cost; the special bag must be purchased.",
+      "source_ids": [
+        "S1",
+        "S2"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_paint",
+      "item_family": "Latex and oil-based paint and stains",
+      "aliases": [
+        "latex paint",
+        "oil paint",
+        "wood stain"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "paid_drop_off",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Keep paint or stain in its original container"
+      ],
+      "restrictions": [
+        "Leaking containers are not accepted"
+      ],
+      "fees": {
+        "latex": {
+          "quart_or_smaller": 1,
+          "one_gallon": 3,
+          "two_gallon": 5,
+          "five_gallon": 10
+        },
+        "oil": {
+          "pint": 1,
+          "quart": 2,
+          "one_gallon": 4,
+          "five_gallon": 15
+        },
+        "currency": "USD"
+      },
+      "notes": "Liquid or dried paint is accepted under the listed conditions.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_books",
+      "item_family": "Books",
+      "aliases": [
+        "hardback book",
+        "paperback book"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "All types and conditions are listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_clothing_shoes",
+      "item_family": "Clothing and shoes",
+      "aliases": [
+        "clothes",
+        "shirt",
+        "pants",
+        "shoes"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_reuse_or_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "All sizes and conditions are listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_eyeglasses",
+      "item_family": "Eyeglasses and sunglasses",
+      "aliases": [
+        "glasses",
+        "sunglasses",
+        "eyewear"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_reuse_or_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "Any condition is listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_ink_cartridges",
+      "item_family": "Ink and toner cartridges",
+      "aliases": [
+        "inkjet cartridge",
+        "laser toner",
+        "printer cartridge"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "Inkjet and laser-toner cartridges are accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_cooking_oil",
+      "item_family": "Cooking oil",
+      "aliases": [
+        "peanut oil",
+        "vegetable oil",
+        "olive oil",
+        "canola oil"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [
+        "No synthetic oil"
+      ],
+      "notes": "Listed household cooking oils are accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_propane_canisters",
+      "item_family": "Small non-refillable propane canisters",
+      "aliases": [
+        "small propane cylinder",
+        "camping propane canister"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Canister must be empty"
+      ],
+      "restrictions": [
+        "Only small non-refillable cylinders",
+        "Refillable or pressurized tanks are not accepted as scrap metal"
+      ],
+      "notes": "Do not generalize this rule to larger propane tanks.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_motor_oil",
+      "item_family": "Used motor oil",
+      "aliases": [
+        "engine oil",
+        "automotive motor oil"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [
+        "Must be free of gasoline, water, and other chemicals"
+      ],
+      "notes": "Contaminated oil is not covered by this rule.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_oil_filters",
+      "item_family": "Used oil filters",
+      "aliases": [
+        "motor oil filter",
+        "automotive oil filter"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "Used oil filters of all types are listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_antifreeze",
+      "item_family": "Antifreeze",
+      "aliases": [
+        "engine coolant"
+      ],
+      "decision": "accepted",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [],
+      "notes": "All types are listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_us_flags",
+      "item_family": "United States flags",
+      "aliases": [
+        "American flag",
+        "US flag"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "special_drop_off",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [],
+      "restrictions": [
+        "Cloth flags only"
+      ],
+      "notes": "Any condition is listed as accepted.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_batteries",
+      "item_family": "Household batteries",
+      "aliases": [
+        "alkaline battery",
+        "lithium battery",
+        "lithium-ion battery",
+        "NiMH battery",
+        "NiCd battery",
+        "tool battery",
+        "laptop battery",
+        "button cell",
+        "lead-acid battery"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "drop_off_recycling",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Keep alkaline batteries separate from other battery types",
+        "Protect exposed terminals or contacts on 9V, lithium, rechargeable, laptop, tool, and coin-cell batteries",
+        "Use tape or place each applicable battery in its own sealed bag"
+      ],
+      "restrictions": [
+        "Alkaline drop-off limit is one quart-size bag per customer per visit"
+      ],
+      "notes": "Preparation depends on battery type; use the county battery guide before drop-off.",
+      "source_ids": [
+        "S1",
+        "S5"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_tires",
+      "item_family": "Vehicle tires",
+      "aliases": [
+        "car tire",
+        "truck tire"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "paid_drop_off",
+      "program_id": "coal_mountain_center",
+      "preparation": [],
+      "restrictions": [
+        "Coal Mountain Center only",
+        "No solid tires",
+        "Limit six tires per week without additional authorization"
+      ],
+      "fees": {
+        "off_rim": 3,
+        "on_rim": 15,
+        "currency": "USD"
+      },
+      "notes": "Call the county office for larger quantities.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_electronics",
+      "item_family": "Electronics",
+      "aliases": [
+        "computer",
+        "laptop",
+        "monitor",
+        "keyboard",
+        "printer",
+        "stereo",
+        "radio",
+        "cell phone",
+        "telephone",
+        "camera",
+        "camcorder",
+        "fax machine",
+        "copier",
+        "projector",
+        "VCR",
+        "DVD player",
+        "network equipment",
+        "cable",
+        "UPS"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "paid_drop_off",
+      "program_id": "tolbert_street_center",
+      "preparation": [],
+      "restrictions": [
+        "Tolbert Street Center only",
+        "No wood-console televisions",
+        "No rear-projection televisions",
+        "No refrigerators or household appliances listed as unacceptable electronics"
+      ],
+      "fees": {
+        "television_each": 12,
+        "other_electronic_each": 2,
+        "other_electronics_unlimited": 5,
+        "currency": "USD"
+      },
+      "notes": "The county brochure provides a detailed accepted/unaccepted electronics list.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_household_trash",
+      "item_family": "Bagged household trash",
+      "aliases": [
+        "household garbage",
+        "bagged trash"
+      ],
+      "decision": "accepted_with_conditions",
+      "action": "paid_trash_drop_off",
+      "program_id": "forsyth_county_convenience_centers",
+      "preparation": [
+        "Bag household trash",
+        "Use bags no larger than 32 gallons"
+      ],
+      "restrictions": [
+        "Residential waste only",
+        "Maximum five bags per day at standard rate",
+        "No mattresses, furniture, or oversized items that do not fit in a compliant bag"
+      ],
+      "fees": {
+        "per_bag_with_recycling": 0.5,
+        "per_bag_without_recycling": 1.0,
+        "each_bag_above_five": 2.0,
+        "empty_32_gallon_bag_including_disposal": 1.0,
+        "currency": "USD"
+      },
+      "notes": "Cash only; no bill larger than $20.",
+      "source_ids": [
+        "S1"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rule_id": "fc_hhw_event",
+      "item_family": "Household hazardous waste",
+      "aliases": [
+        "aerosol paint",
+        "automotive fluid",
+        "chemical",
+        "cleaner",
+        "fuel",
+        "fluorescent bulb",
+        "herbicide",
+        "pesticide",
+        "pool chemical",
+        "solvent",
+        "varnish",
+        "mercury thermometer",
+        "fire extinguisher"
+      ],
+      "decision": "accepted_at_scheduled_event",
+      "action": "registered_event_drop_off",
+      "program_id": "forsyth_county_hhw_event",
+      "preparation": [
+        "Pre-register for the event",
+        "Bring residential household hazardous waste only"
+      ],
+      "restrictions": [
+        "Forsyth County residents only",
+        "Paint limit: 10 gallons per vehicle",
+        "No medical waste or needles",
+        "No ammunition or explosives",
+        "No pharmaceuticals",
+        "No non-hazardous items"
+      ],
+      "notes": "At the time of research, the next listed event was November 7, 2026, 9 a.m.–1 p.m., at Freedom Park Campus. Event details must be re-verified before display.",
+      "source_ids": [
+        "S3"
+      ],
+      "confidence": "high",
+      "time_sensitive": true
+    }
+  ],
+  "alternative_disposal_paths": [
+    {
+      "category": "Plastic bags / film",
+      "action": "Use the county Hefty ReNew program when the material fits its rules, or search for a participating film drop-off.",
+      "source_ids": [
+        "S2",
+        "S4"
+      ],
+      "verification_note": "Third-party drop-off participation can change; verify before travel."
+    },
+    {
+      "category": "Furniture and oversized household waste",
+      "action": "Use a landfill or other disposal facility listed by KFCB; the county convenience centers do not accept these items.",
+      "source_ids": [
+        "S1",
+        "S4"
+      ],
+      "verification_note": "Call the destination before travel."
+    },
+    {
+      "category": "Yard waste and tree debris",
+      "action": "Use one of the yard-waste or inert-landfill options listed by KFCB; county convenience centers do not accept yard waste.",
+      "source_ids": [
+        "S1",
+        "S4"
+      ],
+      "verification_note": "Facility rules and fees can change."
+    },
+    {
+      "category": "Medication",
+      "action": "KFCB lists disposal boxes at Forsyth County Sheriff precincts and the jail lobby.",
+      "source_ids": [
+        "S4"
+      ],
+      "verification_note": "Verify hours before travel."
+    },
+    {
+      "category": "Light bulbs",
+      "action": "KFCB lists Batteries Plus for light bulbs and batteries, and selected Home Depot locations for compact fluorescent bulbs.",
+      "source_ids": [
+        "S4"
+      ],
+      "verification_note": "Retail participation and fees can change."
+    },
+    {
+      "category": "Reusable goods",
+      "action": "KFCB lists several local reuse charities for suitable items.",
+      "source_ids": [
+        "S4"
+      ],
+      "verification_note": "Confirm current acceptance rules with the organization."
+    }
+  ],
+  "curbside_service_context": {
+    "countywide_service": false,
+    "city_of_cumming": {
+      "provider": "Red Oak Sanitation",
+      "recycling": "Optional recycling for eligible City of Cumming customers",
+      "collection_day": "Friday, with one-day delay after a weekday holiday",
+      "source_ids": [
+        "S7"
+      ]
+    },
+    "private_hauler_note": "The county's hauler list identifies several residential haulers that provide recycling but says glass is excluded; exact accepted-item rules should be verified with the selected provider.",
+    "source_ids": [
+      "S6"
+    ]
+  },
+  "coverage_gaps": [
+    "Exact curbside accepted-item lists for each private hauler",
+    "Apartment, HOA, and commercial-service rules",
+    "Live confirmation that third-party drop-off locations still participate",
+    "Rules for item families not explicitly listed by the official sources",
+    "Automatic re-verification of event dates, fees, and hours"
+  ],
+  "sources": {
+    "S1": {
+      "title": "Forsyth County Recycling Convenience Centers",
+      "url": "https://www.keepforsythcountybeautiful.org/recycling-centers",
+      "publisher": "Keep Forsyth County Beautiful / Forsyth County",
+      "accessed": "2026-07-26"
+    },
+    "S2": {
+      "title": "Hefty ReNew Program",
+      "url": "https://www.keepforsythcountybeautiful.org/hefty-energy-bag-program",
+      "publisher": "Keep Forsyth County Beautiful",
+      "accessed": "2026-07-26"
+    },
+    "S3": {
+      "title": "Household Hazardous Waste",
+      "url": "https://www.keepforsythcountybeautiful.org/copy-of-household-hazardous-waste-e",
+      "publisher": "Keep Forsyth County Beautiful / Forsyth County",
+      "accessed": "2026-07-26"
+    },
+    "S4": {
+      "title": "Frequently Asked Questions: Disposal Resources",
+      "url": "https://www.keepforsythcountybeautiful.org/disposal-resources",
+      "publisher": "Keep Forsyth County Beautiful",
+      "accessed": "2026-07-26"
+    },
+    "S5": {
+      "title": "Battery Recycling Guide",
+      "url": "https://www.keepforsythcountybeautiful.org/_files/ugd/0f9e47_6ec6f4e3efad42ca8c79a2cd252cfc34.pdf",
+      "publisher": "Forsyth County Recycling & Solid Waste",
+      "accessed": "2026-07-26"
+    },
+    "S6": {
+      "title": "Waste Disposal in Forsyth County / Hauler List",
+      "url": "https://www.keepforsythcountybeautiful.org/_files/ugd/0f9e47_3bcb9f10dc3f4adfa27e8c6ff0fb2ca1.pdf",
+      "publisher": "Forsyth County Government",
+      "accessed": "2026-07-26"
+    },
+    "S7": {
+      "title": "City of Cumming Garbage & Recycling",
+      "url": "https://cummingutilities.com/billing/garbage-collection/",
+      "publisher": "Cumming Utilities",
+      "accessed": "2026-07-26"
+    }
+  }
+}

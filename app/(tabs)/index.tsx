@@ -46,6 +46,7 @@ import {
 } from '@/components/bottom-nav-bar';
 import { ResultSheet } from '@/components/result-sheet';
 import { ResultFeedback } from '@/components/result-feedback';
+import { LocalGuidanceDetails } from '@/components/local-guidance-details';
 import {
   ensureApiReady,
   fetchPrediction,
@@ -55,6 +56,7 @@ import {
 } from '@/api/client';
 import {
   normalizeScanLimitResponse,
+  type LocalGuidance,
   type PredictionResponse,
   type PredictionStatus,
   type ScanLimitResponse,
@@ -81,6 +83,11 @@ import {
   shouldShowGuidanceFeedback,
   type FeedbackUpdate,
 } from '@/app/feedback-flow';
+import { getAppLocationContext } from '@/app/location-context';
+import {
+  appendJurisdictionId,
+  resolveJurisdictionForPrediction,
+} from '@/app/jurisdiction';
 import {
   saveRecentScan,
   updateRecentScan,
@@ -168,6 +175,8 @@ type ScannerResultData = {
   disposalAction: string | null;
   requiresLocationCheck: boolean;
   supportsDonationReuse: boolean;
+  jurisdictionId: string | null;
+  localGuidance: LocalGuidance | null;
 };
 
 type NormalizedGuidanceMetadata = Record<string, unknown> & {
@@ -184,6 +193,7 @@ type ActiveScanSession = {
   originalStatus: PredictionStatus;
   hasSavedRecord: boolean;
   originalRequestId: string | null;
+  jurisdictionId: string | null;
 };
 
 async function sendFeedbackRequestRaw(requestId: string, update: FeedbackUpdate) {
@@ -336,6 +346,10 @@ function getPredictionSummary(response: PredictionResponse) {
 }
 
 function shouldShowNearbyButton(response: PredictionResponse) {
+  if (response.local_guidance?.applicability === 'excluded') {
+    return false;
+  }
+
   const normalizedAction = response.disposal_action?.trim().toLowerCase() ?? '';
   if (
     normalizedAction.includes('drop-off')
@@ -423,6 +437,7 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
     originalStatus: 'unknown',
     hasSavedRecord: false,
     originalRequestId: null,
+    jurisdictionId: null,
   };
 }
 
@@ -463,6 +478,8 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
       summary: response.summary,
       steps: response.steps,
     }),
+    jurisdictionId: response.jurisdiction_id ?? null,
+    localGuidance: response.local_guidance ?? null,
   };
 }
 
@@ -1426,6 +1443,9 @@ export default function ScannerScreen() {
         materialCategory: resultSnapshot.materialCategory,
         requiresLocationCheck: resultSnapshot.requiresLocationCheck,
         supportsDonationReuse: resultSnapshot.supportsDonationReuse,
+        jurisdictionId: resultSnapshot.jurisdictionId,
+        localRuleId: resultSnapshot.localGuidance?.rule_id ?? null,
+        localGuidance: resultSnapshot.localGuidance,
       },
     };
 
@@ -1478,6 +1498,8 @@ export default function ScannerScreen() {
         disposalAction: nextResult.disposalAction,
         requiresLocationCheck: nextResult.requiresLocationCheck,
         supportsDonationReuse: nextResult.supportsDonationReuse,
+        jurisdictionId: nextResult.jurisdictionId,
+        localRuleId: nextResult.localGuidance?.rule_id ?? null,
       });
       setResult(nextResult);
       setVisibleSheetState('confident');
@@ -1551,7 +1573,19 @@ export default function ScannerScreen() {
 
     setRequestState('loading');
 
+    let jurisdictionId = activeScanSessionRef.current?.jurisdictionId ?? null;
+    if (requestSource === 'image') {
+      jurisdictionId = await resolveJurisdictionForPrediction(getAppLocationContext);
+      if (activeScanSessionRef.current) {
+        activeScanSessionRef.current = {
+          ...activeScanSessionRef.current,
+          jurisdictionId,
+        };
+      }
+    }
+
     const formData = new FormData();
+    appendJurisdictionId(formData, jurisdictionId);
     if (selectedItem) {
       formData.append('selected_item', selectedItem);
     }
@@ -1978,6 +2012,8 @@ export default function ScannerScreen() {
                               requiresLocationCheck: String(result.requiresLocationCheck),
                               scanSessionId: activeScanSessionRef.current?.id ?? undefined,
                               supportsDonationReuse: String(result.supportsDonationReuse),
+                              jurisdictionId: result.jurisdictionId ?? undefined,
+                              localRuleId: result.localGuidance?.rule_id ?? undefined,
                             },
                           })
                       : undefined
@@ -1990,6 +2026,9 @@ export default function ScannerScreen() {
                   title={result.title}
                   warnings={result.warnings}
                 >
+                  {result.localGuidance ? (
+                    <LocalGuidanceDetails guidance={result.localGuidance} />
+                  ) : null}
                   <ResultFeedback
                     disabled={requestState === 'loading'}
                     guidanceAnswer={guidanceFeedback}

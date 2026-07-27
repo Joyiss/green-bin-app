@@ -35,6 +35,77 @@ import {
   releaseRequestLock,
   requestJson,
 } from '../api/request.ts';
+import {
+  appendJurisdictionId,
+  detectJurisdiction,
+  FORSYTH_COUNTY_JURISDICTION_ID,
+  resolveJurisdictionForPrediction,
+} from '../app/jurisdiction.ts';
+
+test('jurisdiction detection requires a Georgia county-level Forsyth match', () => {
+  assert.equal(
+    detectJurisdiction([
+      {
+        country: 'United States',
+        isoCountryCode: 'US',
+        region: 'Georgia',
+        subregion: 'Forsyth County',
+      },
+    ]),
+    FORSYTH_COUNTY_JURISDICTION_ID,
+  );
+  assert.equal(
+    detectJurisdiction([
+      {
+        country: 'United States',
+        region: 'Georgia',
+        subregion: 'Monroe County',
+        district: null,
+      },
+    ]),
+    null,
+  );
+  assert.equal(
+    detectJurisdiction([
+      {
+        country: 'United States',
+        region: 'North Carolina',
+        subregion: 'Forsyth County',
+      },
+    ]),
+    null,
+  );
+});
+
+test('denied or unavailable location omits jurisdiction without failing prediction', async () => {
+  assert.equal(
+    await resolveJurisdictionForPrediction(async () => {
+      throw new Error('permission denied');
+    }),
+    null,
+  );
+  assert.equal(
+    await resolveJurisdictionForPrediction(async () => {
+      throw new Error('position unavailable');
+    }),
+    null,
+  );
+});
+
+test('prediction form includes only a resolved stable jurisdiction id', () => {
+  const appended = [];
+  const formData = {
+    append(name, value) {
+      appended.push([name, value]);
+    },
+  };
+  appendJurisdictionId(formData, null);
+  appendJurisdictionId(formData, FORSYTH_COUNTY_JURISDICTION_ID);
+
+  assert.deepEqual(appended, [
+    ['jurisdiction_id', FORSYTH_COUNTY_JURISDICTION_ID],
+  ]);
+});
 
 test('explicit clarification overrides a confident legacy status', () => {
   const prediction = {
@@ -326,6 +397,69 @@ test('prediction validation rejects incompatible core fields and normalizes opti
   assert.equal(prediction.material_code, 'PET');
   assert.deepEqual(prediction.steps, ['Empty it.']);
   assert.deepEqual(prediction.warnings, []);
+});
+
+test('prediction contract preserves safe structured local guidance', () => {
+  const prediction = normalizePredictionResponse({
+    status: 'confident',
+    item: 'Laptop',
+    category: 'Electronics',
+    disposal_action: 'Drop off',
+    material_code: null,
+    impact_level: 'Local Guidance',
+    steps: [],
+    jurisdiction_id: 'forsyth_county_ga',
+    local_guidance: {
+      dataset_id: 'forsyth_county_ga_local_disposal_guidance_v1',
+      rules_version: '1',
+      rule_id: 'fc_electronics',
+      program_id: 'forsyth_county_convenience_centers',
+      decision: 'accepted_with_conditions',
+      applicability: 'applicable',
+      local_action: 'paid_drop_off',
+      preparation: [],
+      restrictions: ['Tolbert Street Center only'],
+      fees: {
+        currency: 'USD',
+        line_items: [
+          { label: 'Other electronic', amount: 2, unit: 'each' },
+        ],
+      },
+      sources: [
+        {
+          source_id: 'S1',
+          title: 'Forsyth County Recycling Convenience Centers',
+          publisher: 'Forsyth County',
+          url: 'https://example.test/forsyth',
+          accessed: '2026-07-26',
+        },
+        {
+          title: 'Unsafe source',
+          url: 'http://unsafe.example.test',
+        },
+      ],
+      earth911_material_label: null,
+      allowed_location_names: ['Tolbert Street Center'],
+      destinations: [
+        {
+          location_id: 'tolbert_street_center',
+          name: 'Tolbert Street Center',
+          address: '351 Tolbert Street',
+          phone: '(770) 781-2176',
+          directions_url: 'https://maps.example.test/tolbert',
+        },
+      ],
+    },
+  });
+
+  assert.equal(prediction.jurisdiction_id, 'forsyth_county_ga');
+  assert.equal(prediction.local_guidance?.rule_id, 'fc_electronics');
+  assert.equal(prediction.local_guidance?.fees?.line_items[0].amount, 2);
+  assert.equal(prediction.local_guidance?.sources.length, 1);
+  assert.equal(
+    prediction.local_guidance?.destinations[0].location_id,
+    'tolbert_street_center',
+  );
 });
 
 test('endpoint validators enforce acknowledgements and safe location defaults', () => {

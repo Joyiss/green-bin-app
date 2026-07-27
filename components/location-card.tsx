@@ -7,6 +7,7 @@ export type LocationCardProps = {
   address: string;
   status: string;
   distance: string;
+  phone?: string | null;
   accent: string;
   mapStyle: 'grid' | 'building' | 'pin';
   onPress?: () => void;
@@ -38,6 +39,7 @@ export function LocationCard({
   address,
   status,
   distance,
+  phone,
   accent,
   mapStyle,
   onPress,
@@ -52,6 +54,7 @@ export function LocationCard({
           </View>
           <Text style={styles.name}>{name}</Text>
           <Text style={styles.address}>{address}</Text>
+          {phone ? <Text style={styles.phone}>{phone}</Text> : null}
         </View>
         <MapPreview accent={accent} mapStyle={mapStyle} />
       </View>
@@ -128,6 +131,11 @@ const styles = StyleSheet.create({
     color: '#78726C',
     fontSize: 14,
     lineHeight: 20,
+  },
+  phone: {
+    color: '#66605B',
+    fontSize: 13,
+    fontWeight: '600',
   },
   metaRow: {
     flexDirection: 'row',

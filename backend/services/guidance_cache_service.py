@@ -187,6 +187,8 @@ def build_source_grounded_cache_context(
     retrieval_inputs: dict[str, Any],
     retrieval_results: list[dict[str, Any]],
     llm_context: dict[str, Any],
+    jurisdiction_id: str | None = None,
+    local_rules_version: str | None = None,
 ) -> dict[str, Any] | None:
     retrieved_chunk_ids = _retrieved_chunk_ids(retrieval_results)
     if not retrieved_chunk_ids:
@@ -244,6 +246,11 @@ def build_source_grounded_cache_context(
         "prompt_version": GUIDANCE_PROMPT_VERSION,
         "cache_policy": SOURCE_GROUNDED_CACHE_POLICY,
     }
+    if jurisdiction_id:
+        cache_key_input["jurisdiction_id"] = normalize_guidance_key(jurisdiction_id)
+        cache_key_input["local_rules_version"] = normalize_guidance_key(
+            local_rules_version
+        )
 
     return {
         "cache_key": _hash_payload(cache_key_input),

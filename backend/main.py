@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ try:
         is_clip_warmup_enabled,
     )
     from .services.earth911_material_resolver import resolve_earth911_material
+    from .services.local_guidance_source_loader import get_local_rule
 except ImportError:
     from materials import MATERIAL_LABELS
     from repositories import cache_repository
@@ -33,6 +35,7 @@ except ImportError:
         is_clip_warmup_enabled,
     )
     from services.earth911_material_resolver import resolve_earth911_material
+    from services.local_guidance_source_loader import get_local_rule
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -222,6 +225,17 @@ def _format_status(location: dict[str, Any], details: dict[str, Any] | None = No
     return "Check hours before visiting"
 
 
+def _format_phone(
+    location: dict[str, Any], details: dict[str, Any] | None = None
+) -> str | None:
+    phone = _first_value(
+        location.get("phone"),
+        details.get("phone") if details else None,
+        details.get("public_phone") if details else None,
+    )
+    return str(phone) if phone else None
+
+
 def _location_type(location: dict[str, Any], details: dict[str, Any] | None = None) -> str:
     return str(
         _first_value(
@@ -337,10 +351,13 @@ def _normalize_location(location: dict[str, Any], index: int) -> dict[str, Any]:
         "name": _location_name(location, details),
         "address": _format_address(location, details),
         "status": _format_status(location, details),
+        "phone": _format_phone(location, details),
         "distance": _format_distance(location.get("distance")),
         "accent": LOCATION_CARD_ACCENTS[index % len(LOCATION_CARD_ACCENTS)],
         "mapStyle": LOCATION_CARD_MAP_STYLES[index % len(LOCATION_CARD_MAP_STYLES)],
         "directionsUrl": _build_directions_url(location, details),
+        "source": "earth911",
+        "official": False,
     }
 
 
@@ -368,6 +385,99 @@ def _search_locations_for_material(lat: float, lon: float, material_id: int) -> 
             normalized_locations.append(_normalize_location(location, index))
 
     return normalized_locations
+
+
+def _normalized_location_name(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _location_alias_matches(candidate_name: Any, alias: Any) -> bool:
+    candidate = _normalized_location_name(candidate_name)
+    normalized_alias = _normalized_location_name(alias)
+    if not candidate or not normalized_alias:
+        return False
+    if normalized_alias in candidate or candidate in normalized_alias:
+        return True
+    generic_terms = {
+        "center",
+        "county",
+        "forsyth",
+        "recycling",
+        "street",
+    }
+    distinctive_terms = [
+        term for term in normalized_alias.split() if term not in generic_terms
+    ]
+    return bool(distinctive_terms) and all(term in candidate.split() for term in distinctive_terms)
+
+
+def _filter_local_rule_locations(
+    locations: list[dict[str, Any]],
+    *,
+    allowed_locations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    allowed_ids = {
+        str(location_id)
+        for location in allowed_locations
+        for location_id in location.get("earth911_location_ids") or []
+        if str(location_id).strip()
+    }
+    aliases = [
+        alias
+        for location in allowed_locations
+        for alias in [
+            location.get("name"),
+            *(location.get("earth911_name_aliases") or []),
+        ]
+        if isinstance(alias, str) and alias.strip()
+    ]
+    return [
+        location
+        for location in locations
+        if (
+            str(location.get("id")) in allowed_ids
+            or any(
+                _location_alias_matches(location.get("name"), alias)
+                for alias in aliases
+            )
+        )
+    ]
+
+
+def _official_local_locations(
+    dataset: dict[str, Any],
+    rule: dict[str, Any],
+) -> list[dict[str, Any]]:
+    program = dataset["program_index"].get(rule.get("program_id")) or {}
+    locations: list[dict[str, Any]] = []
+    for index, location_id in enumerate(rule.get("allowed_location_ids") or []):
+        location = dataset["location_index"].get(location_id)
+        if not isinstance(location, dict):
+            continue
+        address = str(location.get("address") or "").strip()
+        directions_url = (
+            f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(address)}"
+            if address
+            else None
+        )
+        locations.append(
+            {
+                "id": f"local-{location_id}",
+                "type": "Forsyth County Convenience Center",
+                "name": location.get("name") or "Forsyth County destination",
+                "address": address or "Address unavailable",
+                "status": program.get("hours") or "Check hours before visiting",
+                "phone": location.get("phone"),
+                "distance": "Distance unavailable",
+                "accent": LOCATION_CARD_ACCENTS[index % len(LOCATION_CARD_ACCENTS)],
+                "mapStyle": LOCATION_CARD_MAP_STYLES[index % len(LOCATION_CARD_MAP_STYLES)],
+                "directionsUrl": directions_url,
+                "source": "forsyth_county",
+                "official": True,
+            }
+        )
+    return locations
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -431,9 +541,30 @@ def nearby_locations(
     broad_category: str | None = None,
     disposal_category: str | None = None,
     material_category: str | None = None,
+    jurisdiction_id: str | None = None,
+    local_rule_id: str | None = None,
 ) -> dict[str, Any]:
     try:
-        resolver_label = normalized_item.strip() if normalized_item and normalized_item.strip() else item
+        local_rule_context = get_local_rule(jurisdiction_id, local_rule_id)
+        dataset: dict[str, Any] | None = None
+        local_rule: dict[str, Any] | None = None
+        allowed_locations: list[dict[str, Any]] = []
+        if local_rule_context is not None:
+            dataset, local_rule = local_rule_context
+            allowed_locations = [
+                dataset["location_index"][location_id]
+                for location_id in local_rule.get("allowed_location_ids") or []
+                if location_id in dataset["location_index"]
+            ]
+        local_material_label = (
+            str(local_rule.get("earth911_material_label") or "").strip()
+            if local_rule is not None
+            else ""
+        )
+        resolver_label = (
+            local_material_label
+            or (normalized_item.strip() if normalized_item and normalized_item.strip() else item)
+        )
         recognition_details = {
             key: value
             for key, value in {
@@ -472,22 +603,35 @@ def nearby_locations(
         )
 
         if material_id is None:
+            official_locations = (
+                _official_local_locations(dataset, local_rule)
+                if dataset is not None and local_rule is not None
+                else []
+            )
             return {
                 "item": item,
                 "material_id": None,
-                "locations": [],
-                "reason": "unsupported_material",
+                "locations": official_locations,
+                "reason": None if official_locations else "unsupported_material",
                 "earth911_search_skipped": True,
                 "material_resolution": material_resolution,
             }
 
+        locations = _search_locations_for_material(lat, lon, material_id)
+        if dataset is not None and local_rule is not None:
+            locations = _filter_local_rule_locations(
+                locations,
+                allowed_locations=allowed_locations,
+            )
+            if not locations:
+                locations = _official_local_locations(dataset, local_rule)
         return {
             "item": item,
             "material_id": material_id,
             "reason": None,
             "earth911_search_skipped": False,
             "material_resolution": material_resolution,
-            "locations": _search_locations_for_material(lat, lon, material_id),
+            "locations": locations,
         }
     except HTTPException:
         raise

@@ -66,6 +66,16 @@ def _applicable_chunk_ids(guidance: dict[str, Any]) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _applicable_local_rule_ids(guidance: dict[str, Any]) -> list[str]:
+    metadata = guidance.get("guidance_metadata")
+    if not isinstance(metadata, dict):
+        return []
+    value = metadata.get("applicable_local_rule_ids")
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def _trusted_static_guidance(
     classification: dict[str, Any], guidance: dict[str, Any]
 ) -> bool:
@@ -96,6 +106,7 @@ def validate_guidance_consistency(
     condition_flags = _condition_flags(classification)
     special_flags = _special_flags(classification)
     applicable_chunk_ids = _applicable_chunk_ids(guidance)
+    applicable_local_rule_ids = _applicable_local_rule_ids(guidance)
     contradictions: list[str] = []
     resolution = "conditional_guidance"
 
@@ -105,6 +116,7 @@ def validate_guidance_consistency(
     if (
         _requires_applicable_evidence(action)
         and not applicable_chunk_ids
+        and not applicable_local_rule_ids
         and not _trusted_static_guidance(classification, guidance)
     ):
         contradictions.append("strong_action_without_applicable_evidence")
@@ -122,6 +134,7 @@ def validate_guidance_consistency(
             "condition_flags": sorted(condition_flags & _INCOMPATIBLE_REUSE_FLAGS),
             "special_handling_flags": sorted(unresolved_special_handling),
             "applicable_chunk_ids": applicable_chunk_ids,
+            "applicable_local_rule_ids": applicable_local_rule_ids,
             "guidance_source": guidance.get("guidance_source"),
             "cache_hit": guidance.get("cache_hit") is True,
         },

@@ -8,13 +8,13 @@ from typing import Any
 try:
     from ..materials import resolve_material_label
     from ..rules import get_rules
-    from . import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, request_context
+    from . import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, local_guidance_matcher, request_context
     from .guidance_key_service import normalize_guidance_phrase
     from .recognition_clarification_service import evaluate_clarification
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
-    from services import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, request_context
+    from services import guidance_cache_service, guidance_consistency_service, guidance_llm_service, guidance_retrieval_service, local_guidance_matcher, request_context
     from services.guidance_key_service import normalize_guidance_phrase
     from services.recognition_clarification_service import evaluate_clarification
 
@@ -1545,6 +1545,9 @@ def _build_guidance_confidence(
     metadata = guidance.get("guidance_metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     applicable_ids = list(metadata.get("applicable_chunk_ids") or [])
+    applicable_local_rule_ids = list(
+        metadata.get("applicable_local_rule_ids") or []
+    )
     conditional_ids = list(metadata.get("conditional_chunk_ids") or [])
     not_applicable_ids = list(metadata.get("not_applicable_chunk_ids") or [])
     source = str(guidance.get("guidance_source") or "unknown")
@@ -1559,6 +1562,22 @@ def _build_guidance_confidence(
         level = "low"
         score = 0.25
         reason_codes.append("no_disposal_action_selected")
+    elif source == "local_rules" and applicable_local_rule_ids:
+        local_applicability = str(
+            metadata.get("local_rule_applicability") or ""
+        ).casefold()
+        if local_applicability == "applicable":
+            level = "high"
+            score = 0.94
+            reason_codes.append("approved_local_rule")
+        elif local_applicability == "conditional":
+            level = "medium"
+            score = 0.7
+            reason_codes.append("local_rule_condition_unresolved")
+        else:
+            level = "high"
+            score = 0.9
+            reason_codes.append("explicit_local_exclusion")
     elif source == "json_rag_llm_generated" and applicable_ids:
         if metadata.get("requires_location_check") is True:
             level = "medium"
@@ -1610,16 +1629,20 @@ def _build_guidance_confidence(
     if guidance.get("cache_hit") is True:
         reason_codes.append("condition_matched_cache_hit")
 
+    applicability = {
+        "applicable_chunk_ids": applicable_ids,
+        "conditional_chunk_ids": conditional_ids,
+        "not_applicable_chunk_ids": not_applicable_ids,
+    }
+    if applicable_local_rule_ids:
+        applicability["applicable_local_rule_ids"] = applicable_local_rule_ids
+
     return {
         "level": level,
         "score": round(score, 3),
         "reason_codes": list(dict.fromkeys(reason_codes)),
         "source": source,
-        "applicability": {
-            "applicable_chunk_ids": applicable_ids,
-            "conditional_chunk_ids": conditional_ids,
-            "not_applicable_chunk_ids": not_applicable_ids,
-        },
+        "applicability": applicability,
     }
 
 
@@ -2040,6 +2063,7 @@ def _resolve_guidance(
     classification: dict[str, Any],
     *,
     clarification_decision: dict[str, Any] | None = None,
+    jurisdiction_id: str | None = None,
 ) -> dict[str, Any]:
     decision = clarification_decision or evaluate_clarification(classification)
     if decision.get("required") is True:
@@ -2052,6 +2076,20 @@ def _resolve_guidance(
             reason_codes=list(decision.get("reason_codes") or []),
         )
         return guidance
+
+    local_result = local_guidance_matcher.match_local_guidance(
+        classification,
+        jurisdiction_id,
+    )
+    local_guidance = local_result.get("guidance")
+    if isinstance(local_guidance, dict):
+        _log_guidance_selected(
+            local_guidance,
+            item=_first_non_empty_string(classification.get("item")),
+            category=_first_non_empty_string(classification.get("category")),
+            reason=f"local_rule_{local_result.get('status')}",
+        )
+        return local_guidance
 
     retrieval_inputs = _build_retrieval_inputs(classification)
     _log_resolution_started(classification, retrieval_inputs)
@@ -2079,6 +2117,8 @@ def _resolve_guidance(
             retrieval_inputs=retrieval_inputs,
             retrieval_results=source_results,
             llm_context=llm_context,
+            jurisdiction_id=jurisdiction_id,
+            local_rules_version=local_result.get("rules_version"),
         )
         _log_guidance_timing(
             "cache_context",
@@ -2392,11 +2432,16 @@ def _apply_final_consistency_guard(
     return replacement, clarification_decision
 
 
-def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
+def build_prediction_response(
+    classification: dict[str, Any],
+    *,
+    jurisdiction_id: str | None = None,
+) -> dict[str, Any]:
     clarification_decision = evaluate_clarification(classification)
     guidance = _resolve_guidance(
         classification,
         clarification_decision=clarification_decision,
+        jurisdiction_id=jurisdiction_id,
     )
     guidance, clarification_decision = _apply_final_consistency_guard(
         classification,
@@ -2413,6 +2458,8 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
             final_path = "direct_rag_fallback"
         elif guidance_metadata.get("deterministic_fallback_used") is True:
             final_path = "deterministic_fallback"
+        elif source == "local_rules":
+            final_path = "local_rules"
         elif source in {"safe_fallback", "legacy_rules_fallback"}:
             final_path = "legacy_safe_fallback"
         else:
@@ -2443,6 +2490,11 @@ def build_prediction_response(classification: dict[str, Any]) -> dict[str, Any]:
 
     if isinstance(guidance_metadata, dict) and guidance_metadata:
         response["guidance_metadata"] = guidance_metadata
+
+    local_guidance = guidance.get("local_guidance")
+    if isinstance(local_guidance, dict):
+        response["jurisdiction_id"] = jurisdiction_id
+        response["local_guidance"] = local_guidance
 
     response["guidance_confidence"] = _build_guidance_confidence(
         guidance,

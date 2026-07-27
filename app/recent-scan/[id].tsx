@@ -135,6 +135,8 @@ function getNearbyContext(scan: RecentScan) {
     disposalAction: snapshot.disposalAction,
     requiresLocationCheck,
     supportsDonationReuse,
+    jurisdictionId: snapshot.jurisdictionId,
+    localRuleId: snapshot.localRuleId,
   };
 }
 
@@ -257,6 +259,8 @@ export default function RecentScanDetailScreen() {
         requiresLocationCheck: String(nearbyContext.requiresLocationCheck),
         scanSessionId,
         supportsDonationReuse: String(nearbyContext.supportsDonationReuse),
+        jurisdictionId: nearbyContext.jurisdictionId ?? undefined,
+        localRuleId: nearbyContext.localRuleId ?? undefined,
       },
     });
   };
