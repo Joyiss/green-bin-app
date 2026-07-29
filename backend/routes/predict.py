@@ -47,6 +47,11 @@ async def predict(
     file: UploadFile | None = File(None),
     selected_item: str | None = Form(None),
     jurisdiction_id: str | None = Form(None),
+    city: str | None = Form(None, max_length=120),
+    county: str | None = Form(None, max_length=120),
+    state: str | None = Form(None, max_length=120),
+    country: str | None = Form(None, max_length=120),
+    waste_provider: str | None = Form(None, max_length=120),
     x_request_id: str | None = Header(None, alias="X-Request-ID"),
     x_original_request_id: str | None = Header(None, alias="X-Original-Request-ID"),
     x_greenbin_client_id: str | None = Header(None, alias="X-GreenBin-Client-Id"),
@@ -58,6 +63,12 @@ async def predict(
         else f"predict-{uuid.uuid4().hex[:12]}"
     )
     if not _has_predict_input(file, selected_item):
+        logger.info(
+            "tavily_local_guidance request_id=%s status=tavily_disabled called=False "
+            "skip_reason=invalid_request duration_ms=0.0 result_count=0 "
+            "trusted_source_count=0 reported_credit_usage=None",
+            request_id,
+        )
         raise HTTPException(
             status_code=400,
             detail={"error": "Image file or selected_item is required."},
@@ -106,6 +117,21 @@ async def predict(
             else None
         )
         classification = await recognize_item(file=file, selected_item=selected_item)
+        coarse_location = {
+            key: normalized
+            for key, value in {
+                "city": city,
+                "county": county,
+                "state": state,
+                "country": country,
+                "waste_provider": waste_provider,
+            }.items()
+            if isinstance(value, str) and (normalized := value.strip())
+        }
+        if coarse_location:
+            # Only coarse jurisdiction fields are attached. Coordinates, complete
+            # addresses, and other reverse-geocoder data never enter Tavily.
+            classification["location"] = coarse_location
         guidance_started = perf_counter()
         try:
             response = build_prediction_response(

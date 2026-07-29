@@ -74,11 +74,62 @@ class PredictRouteTests(unittest.TestCase):
     def test_predict_invalid_request_does_not_consume_daily_scan(self):
         client = TestClient(app)
 
-        with patch("routes.predict.scan_rate_limit_service.consume_daily_scan") as mock_consume:
+        with (
+            patch("routes.predict.scan_rate_limit_service.consume_daily_scan") as mock_consume,
+            patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance"
+            ) as mock_tavily,
+        ):
             response = client.post("/predict")
 
         self.assertEqual(response.status_code, 400)
         mock_consume.assert_not_called()
+        mock_tavily.assert_not_called()
+
+    def test_predict_passes_only_coarse_location_into_guidance(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Battery",
+            "category": "Battery",
+            "status": "confident",
+            "candidates": [],
+        }
+        with (
+            patch(
+                "routes.predict.recognize_item",
+                AsyncMock(return_value=classification),
+            ),
+            patch(
+                "routes.predict.build_prediction_response",
+                return_value={"item": "Battery"},
+            ) as mock_guidance,
+        ):
+            response = client.post(
+                "/predict",
+                data={
+                    "selected_item": "Battery",
+                    "city": "Raleigh",
+                    "county": "Wake County",
+                    "state": "North Carolina",
+                    "country": "United States",
+                    "waste_provider": "City of Raleigh Solid Waste",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        passed_classification = mock_guidance.call_args.args[0]
+        self.assertEqual(
+            passed_classification["location"],
+            {
+                "city": "Raleigh",
+                "county": "Wake County",
+                "state": "North Carolina",
+                "country": "United States",
+                "waste_provider": "City of Raleigh Solid Waste",
+            },
+        )
+        self.assertNotIn("latitude", passed_classification["location"])
+        self.assertNotIn("longitude", passed_classification["location"])
 
     def test_predict_success_includes_scan_limit_metadata_when_available(self):
         client = TestClient(app)

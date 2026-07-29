@@ -83,10 +83,20 @@ import {
   shouldShowGuidanceFeedback,
   type FeedbackUpdate,
 } from '@/app/feedback-flow';
+import {
+  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+  DEVELOPMENT_LOCATION_TOOLS_ENABLED,
+  loadDevelopmentLocationSettings,
+  resetToDeviceLocation,
+  resolveDevelopmentPredictionLocation,
+  shouldShowDevelopmentLocation,
+  type DevelopmentLocationSettings,
+} from '@/app/development-location';
 import { getAppLocationContext } from '@/app/location-context';
 import {
+  appendCoarseDisposalLocation,
   appendJurisdictionId,
-  resolveJurisdictionForPrediction,
+  type CoarseDisposalLocation,
 } from '@/app/jurisdiction';
 import {
   saveRecentScan,
@@ -194,6 +204,8 @@ type ActiveScanSession = {
   hasSavedRecord: boolean;
   originalRequestId: string | null;
   jurisdictionId: string | null;
+  coarseDisposalLocation: CoarseDisposalLocation | null;
+  developmentOverrideActive: boolean;
 };
 
 async function sendFeedbackRequestRaw(requestId: string, update: FeedbackUpdate) {
@@ -438,6 +450,8 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
     hasSavedRecord: false,
     originalRequestId: null,
     jurisdictionId: null,
+    coarseDisposalLocation: null,
+    developmentOverrideActive: false,
   };
 }
 
@@ -1102,6 +1116,10 @@ export default function ScannerScreen() {
   const [scanLimitWarning, setScanLimitWarning] = useState<ScanLimitResponse | null>(null);
   const [itemFeedback, setItemFeedback] = useState<boolean | null>(null);
   const [guidanceFeedback, setGuidanceFeedback] = useState<boolean | null>(null);
+  const [developmentLocationSettings, setDevelopmentLocationSettings] =
+    useState<DevelopmentLocationSettings>(
+      DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+    );
   const sheetAnimation = useRef(new Animated.Value(windowHeight)).current;
   const bottomNavOffset = Math.max(insets.bottom, BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET);
   const resultSheetBottomOffset =
@@ -1148,6 +1166,21 @@ export default function ScannerScreen() {
       materialLabelsAbortControllerRef.current?.abort();
     };
   }, [refreshCameraPermission]);
+
+  useEffect(() => {
+    if (!DEVELOPMENT_LOCATION_TOOLS_ENABLED || !isScreenFocused) {
+      return;
+    }
+    let isActive = true;
+    void loadDevelopmentLocationSettings().then((settings) => {
+      if (isActive && isMountedRef.current) {
+        setDevelopmentLocationSettings(settings);
+      }
+    });
+    return () => {
+      isActive = false;
+    };
+  }, [isScreenFocused]);
 
   useEffect(() => {
     if (visibleSheetState !== 'uncertain') {
@@ -1388,6 +1421,19 @@ export default function ScannerScreen() {
     }
   };
 
+  const handleUseDeviceLocationForTesting = async () => {
+    try {
+      const settings = await resetToDeviceLocation();
+      setDevelopmentLocationSettings(settings);
+      resetScanner();
+    } catch {
+      Alert.alert(
+        'Could not clear testing location',
+        'Open Profile and select Use Device Location.',
+      );
+    }
+  };
+
   const persistConfidentRecentScan = async (
     prediction: PredictionResponse,
     requestSource: PredictionRequestSource
@@ -1574,18 +1620,55 @@ export default function ScannerScreen() {
     setRequestState('loading');
 
     let jurisdictionId = activeScanSessionRef.current?.jurisdictionId ?? null;
+    let coarseDisposalLocation =
+      activeScanSessionRef.current?.coarseDisposalLocation ?? null;
+    let developmentOverrideActive =
+      activeScanSessionRef.current?.developmentOverrideActive ?? false;
     if (requestSource === 'image') {
-      jurisdictionId = await resolveJurisdictionForPrediction(getAppLocationContext);
+      const developmentSettings = DEVELOPMENT_LOCATION_TOOLS_ENABLED
+        ? await loadDevelopmentLocationSettings()
+        : DEFAULT_DEVELOPMENT_LOCATION_SETTINGS;
+      if (DEVELOPMENT_LOCATION_TOOLS_ENABLED && isMountedRef.current) {
+        setDevelopmentLocationSettings(developmentSettings);
+      }
+
+      let deviceJurisdictionId: string | null = null;
+      let deviceLocation: CoarseDisposalLocation | null = null;
+      if (
+        !DEVELOPMENT_LOCATION_TOOLS_ENABLED ||
+        !developmentSettings.location.enabled
+      ) {
+        try {
+          const locationContext = await getAppLocationContext();
+          deviceJurisdictionId = locationContext.jurisdictionId;
+          deviceLocation = locationContext.coarseDisposalLocation;
+        } catch {
+          deviceJurisdictionId = null;
+          deviceLocation = null;
+        }
+      }
+      const predictionLocation = resolveDevelopmentPredictionLocation({
+        deviceLocation,
+        deviceJurisdictionId,
+        settings: developmentSettings,
+      });
+      jurisdictionId = predictionLocation.jurisdictionId;
+      coarseDisposalLocation = predictionLocation.coarseDisposalLocation;
+      developmentOverrideActive =
+        predictionLocation.developmentOverrideActive;
       if (activeScanSessionRef.current) {
         activeScanSessionRef.current = {
           ...activeScanSessionRef.current,
           jurisdictionId,
+          coarseDisposalLocation,
+          developmentOverrideActive,
         };
       }
     }
 
     const formData = new FormData();
     appendJurisdictionId(formData, jurisdictionId);
+    appendCoarseDisposalLocation(formData, coarseDisposalLocation);
     if (selectedItem) {
       formData.append('selected_item', selectedItem);
     }
@@ -1938,6 +2021,10 @@ export default function ScannerScreen() {
     260,
     windowHeight - insets.top - insets.bottom - BOTTOM_NAV_BAR_TOTAL_HEIGHT - 64,
   );
+  const showDevelopmentLocationBanner = shouldShowDevelopmentLocation(
+    DEVELOPMENT_LOCATION_TOOLS_ENABLED,
+    developmentLocationSettings.location,
+  );
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
@@ -1973,6 +2060,44 @@ export default function ScannerScreen() {
             <ActivityIndicator color="#FFFFFF" size="small" />
           </View>
         )}
+
+        {showDevelopmentLocationBanner ? (
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.developmentLocationBanner,
+              { top: insets.top + 66 },
+            ]}
+          >
+            <View style={styles.developmentLocationBannerText}>
+              <Text style={styles.developmentLocationEyebrow}>DEV LOCATION</Text>
+              <Text style={styles.developmentLocationLabel}>
+                {[
+                  developmentLocationSettings.location.city,
+                  developmentLocationSettings.location.county,
+                  developmentLocationSettings.location.state,
+                  developmentLocationSettings.location.country,
+                ]
+                  .filter(Boolean)
+                  .join(', ')}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void handleUseDeviceLocationForTesting();
+              }}
+              style={({ pressed }) => [
+                styles.developmentLocationReset,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Text style={styles.developmentLocationResetText}>
+                Use Device Location
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         <View pointerEvents="box-none" style={styles.sheetOverlay}>
           {visibleSheetState !== 'idle' ? (
@@ -2552,6 +2677,56 @@ const styles = StyleSheet.create({
   loadingShimmerGradientBand: {
     height: 22,
     width: LOADING_SHIMMER_BAND_WIDTH,
+  },
+  developmentLocationBanner: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: '#FFF4D6',
+    borderColor: '#E4B85A',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    left: 16,
+    maxWidth: 560,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    position: 'absolute',
+    right: 16,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    zIndex: 30,
+  },
+  developmentLocationBannerText: {
+    flex: 1,
+    gap: 2,
+  },
+  developmentLocationEyebrow: {
+    color: '#7A4E00',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 1.3,
+  },
+  developmentLocationLabel: {
+    color: '#4D3304',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 16,
+  },
+  developmentLocationReset: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D9AE50',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  developmentLocationResetText: {
+    color: '#5E3C00',
+    fontSize: 10,
+    fontWeight: '900',
   },
   sheetWrap: {
     left: 16,

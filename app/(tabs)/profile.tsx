@@ -11,10 +11,22 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import {
+  createDevelopmentLocationOverride,
+  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+  DEVELOPMENT_LOCATION_PRESETS,
+  DEVELOPMENT_LOCATION_TOOLS_ENABLED,
+  getDevelopmentLocationPresetId,
+  loadDevelopmentLocationSettings,
+  saveDevelopmentLocationSettings,
+  type DevelopmentLocationPreset,
+  type DevelopmentLocationSettings,
+} from '@/app/development-location';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { getRecentScans, type RecentScan } from '@/storage/recentScans';
 import {
@@ -169,6 +181,204 @@ function getProfileStatsSummary(scans: RecentScan[]): ProfileStatsSummary {
     statusMessage,
     totalScans,
   };
+}
+
+function LocationTestingSection() {
+  const [settings, setSettings] = useState<DevelopmentLocationSettings>(
+    DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+  );
+  const [selectedPreset, setSelectedPreset] =
+    useState<DevelopmentLocationPreset['id']>('real');
+  const [customCity, setCustomCity] = useState('');
+  const [customCounty, setCustomCounty] = useState('');
+  const [customState, setCustomState] = useState('');
+  const [customCountry, setCustomCountry] = useState('United States');
+  const customOverride = createDevelopmentLocationOverride(
+    customCity,
+    customCounty,
+    customState,
+    customCountry,
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      void loadDevelopmentLocationSettings().then((storedSettings) => {
+        if (!isActive) {
+          return;
+        }
+        setSettings(storedSettings);
+        const presetId = getDevelopmentLocationPresetId(storedSettings.location);
+        setSelectedPreset(presetId);
+        if (presetId === 'custom') {
+          setCustomCity(storedSettings.location.city);
+          setCustomCounty(storedSettings.location.county ?? '');
+          setCustomState(storedSettings.location.state);
+          setCustomCountry(storedSettings.location.country);
+        }
+      });
+      return () => {
+        isActive = false;
+      };
+    }, []),
+  );
+
+  const persistSettings = useCallback(
+    async (nextSettings: DevelopmentLocationSettings) => {
+      try {
+        const storedSettings =
+          await saveDevelopmentLocationSettings(nextSettings);
+        setSettings(storedSettings);
+      } catch {
+        Alert.alert(
+          'Could not save testing location',
+          'Try selecting the location again.',
+        );
+      }
+    },
+    [],
+  );
+
+  const handlePresetPress = useCallback(
+    (preset: DevelopmentLocationPreset) => {
+      setSelectedPreset(preset.id);
+      if (preset.id === 'custom' || !preset.location) {
+        return;
+      }
+      void persistSettings({ location: preset.location });
+    },
+    [persistSettings],
+  );
+
+  const handleApplyCustomLocation = useCallback(() => {
+    if (!customOverride) {
+      return;
+    }
+    void persistSettings({ location: customOverride });
+  }, [customOverride, persistSettings]);
+
+  const selectedLocationLabel = settings.location.enabled
+    ? [
+        settings.location.city,
+        settings.location.county,
+        settings.location.state,
+        settings.location.country,
+      ]
+        .filter(Boolean)
+        .join(', ')
+    : 'Automatic device location';
+
+  return (
+    <View style={styles.devSection}>
+      <View style={styles.devHeadingRow}>
+        <View style={styles.devIcon}>
+          <Ionicons color="#7A4E00" name="construct-outline" size={19} />
+        </View>
+        <View style={styles.devHeadingText}>
+          <Text style={styles.devTitle}>Location Testing</Text>
+          <Text style={styles.devDescription}>
+            Development-only override for testing local Tavily guidance.
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.devCurrentLocation}>
+        <Text style={styles.devCurrentLocationLabel}>Currently selected</Text>
+        <Text style={styles.devCurrentLocationValue}>{selectedLocationLabel}</Text>
+      </View>
+
+      <View style={styles.devPresetList}>
+        {DEVELOPMENT_LOCATION_PRESETS.map((preset) => {
+          const selected = selectedPreset === preset.id;
+          return (
+            <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected }}
+              key={preset.id}
+              onPress={() => handlePresetPress(preset)}
+              style={({ pressed }) => [
+                styles.devPreset,
+                selected && styles.devPresetSelected,
+                pressed && styles.cardPressed,
+              ]}
+            >
+              <Ionicons
+                color={selected ? '#2E6B47' : '#9A948C'}
+                name={selected ? 'radio-button-on' : 'radio-button-off'}
+                size={18}
+              />
+              <Text
+                style={[
+                  styles.devPresetText,
+                  selected && styles.devPresetTextSelected,
+                ]}
+              >
+                {preset.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {selectedPreset === 'custom' ? (
+        <View style={styles.devCustomFields}>
+          <TextInput
+            accessibilityLabel="Custom test city"
+            autoCapitalize="words"
+            onChangeText={setCustomCity}
+            placeholder="City"
+            placeholderTextColor="#9A948C"
+            style={styles.devInput}
+            value={customCity}
+          />
+          <TextInput
+            accessibilityLabel="Custom test county"
+            autoCapitalize="words"
+            onChangeText={setCustomCounty}
+            placeholder="County (optional)"
+            placeholderTextColor="#9A948C"
+            style={styles.devInput}
+            value={customCounty}
+          />
+          <TextInput
+            accessibilityLabel="Custom test state"
+            autoCapitalize="words"
+            onChangeText={setCustomState}
+            placeholder="State"
+            placeholderTextColor="#9A948C"
+            style={styles.devInput}
+            value={customState}
+          />
+          <TextInput
+            accessibilityLabel="Custom test country"
+            autoCapitalize="words"
+            onChangeText={setCustomCountry}
+            placeholder="Country"
+            placeholderTextColor="#9A948C"
+            style={styles.devInput}
+            value={customCountry}
+          />
+          <Pressable
+            accessibilityRole="button"
+            disabled={!customOverride}
+            onPress={handleApplyCustomLocation}
+            style={({ pressed }) => [
+              styles.devApplyButton,
+              !customOverride && styles.devApplyButtonDisabled,
+              pressed && customOverride && styles.cardPressed,
+            ]}
+          >
+            <Text style={styles.devApplyButtonText}>Use Custom Location</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      <Text style={styles.devNote}>
+        This changes only the coarse location sent with prediction requests.
+        Precise device coordinates are never included.
+      </Text>
+    </View>
+  );
 }
 
 export default function ProfileScreen() {
@@ -367,6 +577,10 @@ export default function ProfileScreen() {
             <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
           </Pressable>
         </View>
+
+        {DEVELOPMENT_LOCATION_TOOLS_ENABLED ? (
+          <LocationTestingSection />
+        ) : null}
 
         <View style={styles.infoCard}>
           <View style={styles.infoIcon}>
@@ -692,5 +906,124 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingHorizontal: 16,
     paddingVertical: 14,
+  },
+  devSection: {
+    backgroundColor: '#FFF9ED',
+    borderColor: '#EBCF96',
+    borderRadius: 24,
+    borderWidth: 1,
+    gap: 14,
+    padding: 16,
+  },
+  devHeadingRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  devIcon: {
+    alignItems: 'center',
+    backgroundColor: '#FBE7BC',
+    borderRadius: 14,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  devHeadingText: {
+    flex: 1,
+    gap: 4,
+  },
+  devTitle: {
+    color: '#4F3200',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  devDescription: {
+    color: '#765A26',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  devCurrentLocation: {
+    backgroundColor: '#FBEFD3',
+    borderRadius: 12,
+    gap: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  devCurrentLocationLabel: {
+    color: '#80683B',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  devCurrentLocationValue: {
+    color: '#4F3200',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  devPresetList: {
+    gap: 7,
+  },
+  devPreset: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E8DFD0',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  devPresetSelected: {
+    backgroundColor: '#F1F8EF',
+    borderColor: '#76A882',
+  },
+  devPresetText: {
+    color: '#5F5A54',
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  devPresetTextSelected: {
+    color: '#234C31',
+  },
+  devCustomFields: {
+    gap: 8,
+  },
+  devInput: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DDD4C5',
+    borderRadius: 12,
+    borderWidth: 1,
+    color: '#171717',
+    fontSize: 14,
+    minHeight: 44,
+    paddingHorizontal: 12,
+  },
+  devApplyButton: {
+    alignItems: 'center',
+    backgroundColor: '#2E6B47',
+    borderRadius: 12,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 14,
+  },
+  devApplyButtonDisabled: {
+    backgroundColor: '#AFA89E',
+    opacity: 0.65,
+  },
+  devApplyButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  devNote: {
+    color: '#765A26',
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 16,
   },
 });

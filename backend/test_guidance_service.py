@@ -200,6 +200,13 @@ class GuidanceServiceTests(unittest.TestCase):
                 "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
                 return_value={"guidance": llm_guidance, "failure_reason": None},
             ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
+            ),
             patch("services.guidance_service.get_rules") as mock_rules,
         ):
             response = build_prediction_response(classification)
@@ -422,6 +429,13 @@ class GuidanceServiceTests(unittest.TestCase):
             patch(
                 "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
                 return_value={"guidance": None, "failure_reason": "invalid_json"},
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
+            patch(
+                "services.guidance_service.guidance_cache_service.write_source_grounded_guidance_if_cacheable",
             ),
         ):
             response = build_prediction_response(classification)

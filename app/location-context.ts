@@ -1,6 +1,10 @@
 import * as Location from 'expo-location';
 
-import { detectJurisdiction } from '@/app/jurisdiction';
+import {
+  detectJurisdiction,
+  extractCoarseDisposalLocation,
+  type CoarseDisposalLocation,
+} from '@/app/jurisdiction';
 
 const LOCATION_CACHE_MS = 5 * 60 * 1000;
 const POSITION_TIMEOUT_MS = 15_000;
@@ -13,6 +17,7 @@ export type AppCoordinates = {
 export type AppLocationContext = {
   coordinates: AppCoordinates;
   jurisdictionId: string | null;
+  coarseDisposalLocation: CoarseDisposalLocation | null;
 };
 
 export class LocationPermissionError extends Error {
@@ -82,14 +87,17 @@ export async function getAppLocationContext({
     longitude: position.coords.longitude,
   };
   let jurisdictionId: string | null = null;
+  let coarseDisposalLocation: CoarseDisposalLocation | null = null;
   try {
     const addresses = await Location.reverseGeocodeAsync(coordinates);
     jurisdictionId = detectJurisdiction(addresses);
+    coarseDisposalLocation = extractCoarseDisposalLocation(addresses);
   } catch {
     jurisdictionId = null;
+    coarseDisposalLocation = null;
   }
 
-  const value = { coordinates, jurisdictionId };
+  const value = { coordinates, jurisdictionId, coarseDisposalLocation };
   cachedContext = {
     value,
     expiresAt: Date.now() + LOCATION_CACHE_MS,

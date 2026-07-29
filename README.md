@@ -48,6 +48,11 @@ From the **repository root** (`green-bin-app/`):
    GUIDANCE_LLM_PROVIDER=groq
    GUIDANCE_LLM_MODEL=llama-3.1-8b-instant
    GROQ_API_KEY=your-groq-api-key
+   ENABLE_TAVILY_LOCAL_GUIDANCE=true
+   TAVILY_API_KEY=your-tavily-api-key
+   TAVILY_TIMEOUT_SECONDS=10
+   TAVILY_DAILY_CREDIT_LIMIT=100
+   TAVILY_MONTHLY_CREDIT_LIMIT=1000
    DAILY_SCAN_LIMIT=40
    REQUIRE_SCAN_CLIENT_ID=false
    ENABLE_CLIP_WARMUP=true
@@ -58,13 +63,18 @@ From the **repository root** (`green-bin-app/`):
 
    `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
    `GUIDANCE_LLM_MODEL` defaults to `llama-3.1-8b-instant` if you omit it.
+   `ENABLE_TAVILY_LOCAL_GUIDANCE` defaults to `true`, but searches remain disabled unless `TAVILY_API_KEY` and the Supabase budget migration are configured.
+   `TAVILY_TIMEOUT_SECONDS` defaults to `10`. Each eligible scan makes at most one basic Search request and never retries it.
+   `TAVILY_DAILY_CREDIT_LIMIT` and `TAVILY_MONTHLY_CREDIT_LIMIT` default to `100` and `1000`. Reservations are fail-closed and reset at UTC day/month boundaries.
    `DAILY_SCAN_LIMIT` defaults to `40` if omitted or invalid.
    `REQUIRE_SCAN_CLIENT_ID` defaults to `false` for local development. Set it to `true` for production or closed testing so `/predict` rejects requests missing `X-GreenBin-Client-Id` before recognition work.
    `ENABLE_CLIP_WARMUP` defaults to `true`; set it to `false` to disable background CLIP initialization.
    `ENABLE_NEAREST_PHASH_LOOKUP` defaults to `false`; enable it only when approximate pHash matching is worth the full-cache scan cost.
    `SUPABASE_KEY` is used by backend Supabase repositories, including closed-testing feedback storage, and must never be included in the mobile app.
 
-4. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
+4. Apply `backend/migrations/004_tavily_search_budget.sql` before enabling Tavily local guidance. Its atomic RPC enforces the daily and monthly limits across concurrent backend instances and stores no user or request data.
+
+5. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
 
 The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
 

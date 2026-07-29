@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -36,11 +37,24 @@ import {
   requestJson,
 } from '../api/request.ts';
 import {
+  appendCoarseDisposalLocation,
   appendJurisdictionId,
   detectJurisdiction,
+  extractCoarseDisposalLocation,
   FORSYTH_COUNTY_JURISDICTION_ID,
   resolveJurisdictionForPrediction,
 } from '../app/jurisdiction.ts';
+import {
+  areDevelopmentLocationToolsEnabled,
+  createDevelopmentLocationOverride,
+  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+  DEVELOPMENT_LOCATION_PRESETS,
+  loadDevelopmentLocationSettings,
+  resetToDeviceLocation,
+  resolveDevelopmentPredictionLocation,
+  saveDevelopmentLocationSettings,
+  shouldShowDevelopmentLocation,
+} from '../app/development-location.ts';
 
 test('jurisdiction detection requires a Georgia county-level Forsyth match', () => {
   assert.equal(
@@ -105,6 +119,240 @@ test('prediction form includes only a resolved stable jurisdiction id', () => {
   assert.deepEqual(appended, [
     ['jurisdiction_id', FORSYTH_COUNTY_JURISDICTION_ID],
   ]);
+});
+
+test('prediction form includes only coarse disposal location fields', () => {
+  const location = extractCoarseDisposalLocation([
+    {
+      city: 'Raleigh',
+      subregion: 'Wake County',
+      region: 'North Carolina',
+      country: 'United States',
+    },
+  ]);
+  assert.deepEqual(location, {
+    city: 'Raleigh',
+    county: 'Wake County',
+    state: 'North Carolina',
+    country: 'United States',
+  });
+
+  const appended = [];
+  appendCoarseDisposalLocation(
+    {
+      append(name, value) {
+        appended.push([name, value]);
+      },
+    },
+    location,
+  );
+  assert.deepEqual(appended, [
+    ['city', 'Raleigh'],
+    ['county', 'Wake County'],
+    ['state', 'North Carolina'],
+    ['country', 'United States'],
+  ]);
+});
+
+test('automatic prediction location preserves reverse-geocoded device context', () => {
+  const deviceLocation = {
+    city: 'Cumming',
+    county: 'Forsyth County',
+    state: 'Georgia',
+    country: 'United States',
+  };
+  assert.deepEqual(
+    resolveDevelopmentPredictionLocation({
+      deviceLocation,
+      deviceJurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+      settings: DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+      toolsEnabled: true,
+    }),
+    {
+      coarseDisposalLocation: deviceLocation,
+      jurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+      developmentOverrideActive: false,
+    },
+  );
+});
+
+test('selected test location replaces device fields sent to prediction', () => {
+  const austin = DEVELOPMENT_LOCATION_PRESETS.find(
+    (preset) => preset.id === 'austin',
+  );
+  assert.ok(austin?.location);
+  const context = resolveDevelopmentPredictionLocation({
+    deviceLocation: {
+      city: 'Cumming',
+      county: 'Forsyth County',
+      state: 'Georgia',
+      country: 'United States',
+    },
+    deviceJurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+    settings: { location: austin.location },
+    toolsEnabled: true,
+  });
+  const fields = [];
+  const formData = {
+    append(name, value) {
+      fields.push([name, value]);
+    },
+  };
+  appendJurisdictionId(formData, context.jurisdictionId);
+  appendCoarseDisposalLocation(formData, context.coarseDisposalLocation);
+
+  assert.deepEqual(fields, [
+    ['city', 'Austin'],
+    ['county', 'Travis County'],
+    ['state', 'Texas'],
+    ['country', 'United States'],
+  ]);
+  assert.equal(context.jurisdictionId, null);
+  assert.equal(JSON.stringify(fields).includes('latitude'), false);
+  assert.equal(JSON.stringify(fields).includes('longitude'), false);
+});
+
+test('non-Forsyth custom test location cannot inherit the Forsyth jurisdiction', () => {
+  const atlanta = createDevelopmentLocationOverride(
+    'Atlanta',
+    'Fulton County',
+    'Georgia',
+    'United States',
+  );
+  assert.ok(atlanta);
+  assert.equal(atlanta.jurisdictionId, null);
+  const context = resolveDevelopmentPredictionLocation({
+    deviceLocation: {
+      city: 'Cumming',
+      county: 'Forsyth County',
+      state: 'Georgia',
+      country: 'United States',
+    },
+    deviceJurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+    settings: { location: atlanta },
+    toolsEnabled: true,
+  });
+  assert.equal(context.jurisdictionId, null);
+  assert.equal(context.coarseDisposalLocation?.county, 'Fulton County');
+});
+
+test('stored override resets to the automatic device workflow', async () => {
+  const values = new Map();
+  const storage = {
+    async getItem(key) {
+      return values.get(key) ?? null;
+    },
+    async setItem(key, value) {
+      values.set(key, value);
+    },
+    async removeItem(key) {
+      values.delete(key);
+    },
+  };
+  const seattle = DEVELOPMENT_LOCATION_PRESETS.find(
+    (preset) => preset.id === 'seattle',
+  );
+  assert.ok(seattle?.location);
+  await saveDevelopmentLocationSettings(
+    { location: seattle.location },
+    storage,
+  );
+  assert.equal(
+    (await loadDevelopmentLocationSettings(storage)).location.city,
+    'Seattle',
+  );
+  const reset = await resetToDeviceLocation(storage);
+  assert.equal(reset.location.enabled, false);
+  assert.equal(
+    (await loadDevelopmentLocationSettings(storage)).location.enabled,
+    false,
+  );
+
+  const deviceLocation = {
+    city: 'Raleigh',
+    county: 'Wake County',
+    state: 'North Carolina',
+    country: 'United States',
+  };
+  assert.deepEqual(
+    resolveDevelopmentPredictionLocation({
+      deviceLocation,
+      deviceJurisdictionId: null,
+      settings: reset,
+      toolsEnabled: true,
+    }).coarseDisposalLocation,
+    deviceLocation,
+  );
+});
+
+test('location switcher and stored overrides are unavailable in production', () => {
+  const austin = DEVELOPMENT_LOCATION_PRESETS.find(
+    (preset) => preset.id === 'austin',
+  );
+  assert.ok(austin?.location);
+  assert.equal(areDevelopmentLocationToolsEnabled(false), false);
+  assert.equal(shouldShowDevelopmentLocation(false, austin.location), false);
+  assert.deepEqual(
+    resolveDevelopmentPredictionLocation({
+      deviceLocation: {
+        city: 'Cumming',
+        county: 'Forsyth County',
+        state: 'Georgia',
+        country: 'United States',
+      },
+      deviceJurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+      settings: { location: austin.location },
+      toolsEnabled: false,
+    }),
+    {
+      coarseDisposalLocation: {
+        city: 'Cumming',
+        county: 'Forsyth County',
+        state: 'Georgia',
+        country: 'United States',
+      },
+      jurisdictionId: FORSYTH_COUNTY_JURISDICTION_ID,
+      developmentOverrideActive: false,
+    },
+  );
+});
+
+test('custom test locations require city, state, and country', () => {
+  assert.equal(
+    createDevelopmentLocationOverride('', 'Wake County', 'North Carolina', 'US'),
+    null,
+  );
+  assert.equal(
+    createDevelopmentLocationOverride('Raleigh', 'Wake County', '', 'US'),
+    null,
+  );
+  assert.equal(
+    createDevelopmentLocationOverride(
+      'Raleigh',
+      'Wake County',
+      'North Carolina',
+      '',
+    ),
+    null,
+  );
+});
+
+test('location override files contain no legacy search integration', async () => {
+  const legacyName = ['d', 'd', 'g', 's'].join('');
+  const sourceFiles = [
+    '../app/development-location.ts',
+    '../app/jurisdiction.ts',
+    '../app/(tabs)/index.tsx',
+    '../app/(tabs)/profile.tsx',
+  ];
+  const sources = await Promise.all(
+    sourceFiles.map((path) =>
+      readFile(new URL(path, import.meta.url), 'utf8'),
+    ),
+  );
+  for (const source of sources) {
+    assert.equal(source.toLowerCase().includes(legacyName), false);
+  }
 });
 
 test('explicit clarification overrides a confident legacy status', () => {
