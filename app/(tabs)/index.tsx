@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
@@ -115,17 +116,29 @@ import {
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
 const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
-const ANALYZING_STATUS_INTERVAL_MS = 1400;
+const ANALYZING_STATUS_INTERVAL_MS = 2000;
 const ANALYZING_STATUS_MESSAGES = [
-  'Connecting to Green Bin',
-  'Preparing image',
-  'Checking for barcode or text',
-  'Identifying the item',
-  'Finding disposal guidance',
-  'Building your result',
-  'Almost ready',
+  'Got your photo',
+  'Taking a closer look',
+  'Checking a few possibilities',
+  'Matching the item',
+  'Looking up local disposal rules',
+  'Making sure the guidance fits',
+  'Putting your result together',
+  'Ready in a moment',
 ] as const;
 const LOADING_SHIMMER_BAND_WIDTH = 110;
+
+async function normalizeCapturedPhotoOrientation(uri: string) {
+  const context = ImageManipulator.manipulate(uri);
+  const renderedImage = await context.renderAsync();
+
+  return renderedImage.saveAsync({
+    compress: 1,
+    format: SaveFormat.JPEG,
+  });
+}
+
 const ANALYZING_PIXEL_COORDINATES = [
   { left: 2, size: 3, top: 1 },
   { left: 10, size: 4, top: 0 },
@@ -818,10 +831,10 @@ function ShimmerLoadingText({ children }: { children: string }) {
     shimmerProgress.value = withRepeat(
       withSequence(
         withTiming(1, {
-          duration: 2200,
+          duration: 2000,
           easing: Easing.bezier(0.4, 0, 0.2, 1),
         }),
-        withDelay(750, withTiming(0, { duration: 0 })),
+        withDelay(50, withTiming(0, { duration: 0 })),
       ),
       -1,
       false,
@@ -1053,7 +1066,7 @@ function CameraArea({
                   accessibilityRole="button"
                   hitSlop={6}
                   onPress={onToggleTorch}
-                  style={styles.iconActionButton}>
+                  style={[styles.iconActionButton, isLoading && styles.buttonDisabled]}>
                   <Ionicons
                     color="#FFFFFF"
                     name={isTorchOn ? 'flash' : 'flash-outline'}
@@ -1837,7 +1850,8 @@ export default function ScannerScreen() {
         return;
       }
 
-      await sendPredictionRequest({ imageUri: photo.uri });
+      const normalizedPhoto = await normalizeCapturedPhotoOrientation(photo.uri);
+      await sendPredictionRequest({ imageUri: normalizedPhoto.uri });
     } catch {
       Alert.alert(
         'Could not take photo',

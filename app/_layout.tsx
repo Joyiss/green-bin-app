@@ -1,6 +1,6 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import * as NavigationBar from 'expo-navigation-bar';
-import { Stack, useSegments } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect } from 'react';
 import { AppState, InteractionManager, Platform } from 'react-native';
@@ -58,15 +58,15 @@ function useAndroidNavigationBar(isScanScreen: boolean) {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const segments = useSegments();
-  const isScanScreen = segments.length === 1 && segments[0] === '(tabs)';
+  const pathname = usePathname();
+  const isScanScreen = pathname === '/';
   const statusBarStyle = isScanScreen ? 'light' : 'dark';
   useAndroidNavigationBar(isScanScreen);
 
   return (
     <GestureHandlerRootView style={{ backgroundColor: '#F3F1EE', flex: 1 }}>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <StatusBar style={statusBarStyle} />
+        <StatusBar backgroundColor="transparent" style={statusBarStyle} translucent />
         <Stack
           screenOptions={{
             navigationBarColor: 'transparent',

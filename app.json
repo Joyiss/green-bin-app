@@ -35,6 +35,12 @@
       "barStyle": "dark-content",
       "enforceContrast": false
     },
+    "androidStatusBar": {
+      "backgroundColor": "#00000000",
+      "barStyle": "light-content",
+      "hidden": false,
+      "translucent": true
+    },
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
