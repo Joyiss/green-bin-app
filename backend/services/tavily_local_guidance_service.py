@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -33,6 +34,12 @@ DEFAULT_TAVILY_DAILY_CREDIT_LIMIT = 100
 DEFAULT_TAVILY_MONTHLY_CREDIT_LIMIT = 1000
 DEFAULT_TAVILY_TIMEOUT_SECONDS = 10.0
 MAX_QUERY_LENGTH = 399
+MAX_DIAGNOSTIC_CONTENT_CHARS = 12000
+MAX_RAW_CONTENT_CHARS_FOR_EXTRACTION = 50000
+MAX_TAVILY_SOURCE_CONTEXT_CHARS = 2400
+MAX_TAVILY_CONCISE_CONTENT_CHARS = 1000
+MAX_TAVILY_RAW_EXCERPT_CHARS = 1500
+RAW_EXCERPT_WINDOW_CHARS = 360
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _LOCATION_FIELDS = ("city", "county", "state", "country", "waste_provider")
@@ -96,6 +103,81 @@ _BATTERY_CHEMISTRY_TERMS = (
     "lithium-ion",
     "nickel cadmium",
     "nimh",
+)
+_EXTRACTION_RELATED_TERMS_BY_CATEGORY = {
+    "battery": (
+        "alkaline",
+        "button cell",
+        "lead acid",
+        "lead-acid",
+        "lithium",
+        "lithium ion",
+        "lithium-ion",
+        "rechargeable",
+        "drop-off",
+        "accepted",
+        "prohibited",
+        "household hazardous waste",
+    ),
+    "electronics": (
+        "electronics",
+        "e-waste",
+        "drop-off",
+        "accepted",
+        "prohibited",
+        "recycle",
+    ),
+    "plastic": (
+        "plastic",
+        "bottle",
+        "container",
+        "accepted",
+        "prohibited",
+        "empty",
+        "clean",
+        "dry",
+    ),
+    "textile": (
+        "clothing",
+        "textile",
+        "donate",
+        "reuse",
+        "recycle",
+        "drop-off",
+        "accepted",
+    ),
+    "organic": (
+        "compost",
+        "yard waste",
+        "food scraps",
+        "accepted",
+        "prohibited",
+    ),
+}
+_EXTRACTION_ACTION_TERMS = (
+    "accept",
+    "accepted",
+    "drop off",
+    "drop-off",
+    "prohibit",
+    "prohibited",
+    "not accepted",
+    "recycle",
+    "trash",
+    "curbside",
+    "collection",
+    "convenience center",
+    "household hazardous waste",
+)
+_BOILERPLATE_LINE_PATTERNS = (
+    r"^\s*(skip to|go to|back to|breadcrumb|section menu|quick links|popular pages|related tags)\b",
+    r"^\s*(contact|connect|mobile apps|social media|privacy policy|terms of use)\s*$",
+    r"^\s*(copyright|©|\(c\))\b",
+    r"^\s*(accept cookies|reject cookies|we use cookies)\b",
+    r"^\s*(print this page|share this page|search)\b",
+    r"^\s*\[[^\]]{0,80}\]\([^)]*\)\s*$",
+    r"^\s*!\[[^\]]*\]\([^)]*\)\s*$",
+    r"^\s*(\*|\+|-)\s*\[[^\]]{0,80}\]\([^)]*\)\s*$",
 )
 _UNTRUSTED_INSTRUCTION_TERMS = (
     "ignore previous",
@@ -261,6 +343,7 @@ class _SourceRecord:
     snippet: str
     content: str
     relevance_score: float
+    raw_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -354,6 +437,92 @@ def _enabled() -> bool:
     if value in _FALSE_VALUES:
         return False
     return value in _TRUE_VALUES
+
+
+def _development_diagnostics_enabled() -> bool:
+    if str(os.getenv("TAVILY_DIAGNOSTIC_CONTENT_LOGGING") or "").strip().casefold() in _FALSE_VALUES:
+        return False
+    for name in ("APP_ENV", "ENVIRONMENT", "NODE_ENV", "FLASK_ENV", "FASTAPI_ENV"):
+        if str(os.getenv(name) or "").strip().casefold() in {"development", "dev", "local"}:
+            return True
+    return str(os.getenv("DEBUG") or "").strip().casefold() in _TRUE_VALUES
+
+
+def _truncate_for_diagnostic_log(value: Any, *, max_chars: int = MAX_DIAGNOSTIC_CONTENT_CHARS) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}...[truncated {len(text) - max_chars} chars]"
+
+
+def _redact_url_for_diagnostic_log(value: Any) -> str:
+    url = "" if value is None else str(value).strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "[redacted_invalid_url]"
+    sensitive = (
+        "access_token",
+        "apikey",
+        "api_key",
+        "auth",
+        "authorization",
+        "client_id",
+        "client_secret",
+        "code",
+        "key",
+        "password",
+        "secret",
+        "session",
+        "sig",
+        "signature",
+        "token",
+    )
+    if not parsed.query:
+        return url
+    query_parts = []
+    for part in parsed.query.split("&"):
+        key, separator, value_part = part.partition("=")
+        if any(term in key.casefold() for term in sensitive):
+            query_parts.append(f"{key}{separator}[redacted]")
+        else:
+            query_parts.append(f"{key}{separator}{value_part}" if separator else key)
+    return parsed._replace(query="&".join(query_parts)).geturl()
+
+
+def _redact_content_for_diagnostic_log(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\x00", " ")
+    text = re.sub(
+        r"[-+]?\d{1,3}\.\d{3,}\s*[,/]\s*[-+]?\d{1,3}\.\d{3,}",
+        "[redacted_coordinates]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(authorization|api[_-]?key|access[_-]?token|client[_-]?secret|secret|password)\b\s*[:=]\s*\S+",
+        r"\1=[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[redacted_email]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return _truncate_for_diagnostic_log(text)
+
+
+def _log_diagnostic(label: str, payload: dict[str, Any]) -> None:
+    if not _development_diagnostics_enabled():
+        return
+    safe_payload = {"request_id": request_context.get_predict_request_id(), **payload}
+    logger.info(
+        "%s %s",
+        label,
+        json.dumps(safe_payload, ensure_ascii=True, sort_keys=True),
+    )
 
 
 def _text(value: Any, *, max_length: int = 120) -> str | None:
@@ -613,19 +782,242 @@ def _host(url: str) -> str:
         return ""
 
 
-def _sanitize_untrusted_content(value: Any) -> str:
+def _sanitize_untrusted_content(
+    value: Any,
+    *,
+    max_length: int = 6000,
+) -> str:
     if not isinstance(value, str):
         return ""
     safe_lines: list[str] = []
+    current_length = 0
     for line in value.replace("\x00", " ").splitlines():
         normalized = re.sub(r"\s+", " ", line).strip()
         lowered = normalized.casefold()
         if not normalized or any(term in lowered for term in _UNTRUSTED_INSTRUCTION_TERMS):
             continue
         safe_lines.append(normalized)
-        if sum(len(item) for item in safe_lines) >= 6000:
+        current_length += len(normalized)
+        if current_length >= max_length:
             break
-    return "\n".join(safe_lines)[:6000]
+    return "\n".join(safe_lines)[:max_length]
+
+
+def _is_boilerplate_line(line: str) -> bool:
+    normalized = re.sub(r"\s+", " ", line).strip()
+    if not normalized:
+        return True
+    if len(normalized) <= 2:
+        return True
+    if re.fullmatch(r"https?://\S+", normalized):
+        return True
+    if any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in _BOILERPLATE_LINE_PATTERNS):
+        return True
+    words = re.findall(r"[A-Za-z]{3,}", normalized)
+    if len(words) <= 2 and any(marker in normalized for marker in ("[", "](", "http")):
+        return True
+    return False
+
+
+def _clean_content_for_llm(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in value.replace("\x00", " ").splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        lowered = normalized.casefold()
+        if (
+            not normalized
+            or any(term in lowered for term in _UNTRUSTED_INSTRUCTION_TERMS)
+            or _is_boilerplate_line(normalized)
+        ):
+            continue
+        compact = re.sub(r"https?://\S+", "", normalized).strip()
+        compact = re.sub(r"\[[^\]]{0,80}\]\([^)]*\)", "", compact).strip()
+        compact = re.sub(r"\s+", " ", compact)
+        key = normalize_guidance_phrase(compact) or compact.casefold()
+        if not compact or key in seen:
+            continue
+        seen.add(key)
+        lines.append(compact)
+    return "\n".join(lines)
+
+
+def _truncate_cleanly(value: str, max_length: int) -> str:
+    if len(value) <= max_length:
+        return value
+    trimmed = value[:max_length].rstrip()
+    boundary = max(trimmed.rfind("\n"), trimmed.rfind(". "), trimmed.rfind("; "))
+    if boundary >= max_length // 2:
+        trimmed = trimmed[: boundary + 1].rstrip()
+    return trimmed
+
+
+def _context_terms_for_extraction(classification: dict[str, Any]) -> list[str]:
+    details = _normalized_details(classification)
+    candidates: list[Any] = [
+        _normalized_item(classification),
+        _specific_item_for_query(classification),
+        _material(classification),
+        _category(classification),
+        classification.get("category"),
+        classification.get("recognized_material_category"),
+        details.get("disposal_category"),
+        details.get("broad_category"),
+        *_condition_flags(classification),
+    ]
+    terms: list[str] = []
+    for candidate in candidates:
+        normalized = normalize_guidance_phrase(candidate)
+        if not normalized:
+            continue
+        terms.append(normalized)
+        terms.extend(token for token in normalized.split() if len(token) >= 4)
+    normalized_category = normalize_guidance_phrase(_category(classification) or classification.get("category"))
+    normalized_material = normalize_guidance_phrase(_material(classification))
+    for key, related_terms in _EXTRACTION_RELATED_TERMS_BY_CATEGORY.items():
+        if key in {normalized_category, normalized_material} or key in " ".join(terms):
+            terms.extend(related_terms)
+    terms.extend(_EXTRACTION_ACTION_TERMS)
+    return _dedupe_query_terms(terms)
+
+
+def _line_score(line: str, terms: list[str]) -> tuple[int, list[str]]:
+    normalized = normalize_guidance_phrase(line) or ""
+    matched = [
+        term
+        for term in terms
+        if term and re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalized)
+    ]
+    if not matched:
+        return 0, []
+    action_matches = set(matched) & set(_EXTRACTION_ACTION_TERMS)
+    item_matches = set(matched) - set(_EXTRACTION_ACTION_TERMS)
+    score = len(item_matches) * 3 + len(action_matches)
+    return score, matched
+
+
+def _relevant_raw_excerpts(
+    raw_content: str,
+    *,
+    terms: list[str],
+    concise_content: str,
+    max_chars: int = MAX_TAVILY_RAW_EXCERPT_CHARS,
+) -> tuple[str, list[str]]:
+    cleaned = _clean_content_for_llm(raw_content)
+    if not cleaned:
+        return "", ["no_clean_raw_content"]
+    lines = [line for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return "", ["no_clean_raw_content"]
+
+    concise_key = normalize_guidance_phrase(concise_content) or ""
+    scored: list[tuple[int, int, list[str]]] = []
+    for index, line in enumerate(lines):
+        score, matched = _line_score(line, terms)
+        if score <= 0:
+            continue
+        normalized_line = normalize_guidance_phrase(line) or ""
+        if concise_key and normalized_line and normalized_line in concise_key:
+            score -= 1
+        scored.append((score, index, matched))
+    if not scored:
+        return "", ["no_term_matches_in_raw_content"]
+
+    selected_blocks: list[str] = []
+    selected_reasons: list[str] = []
+    used_indexes: set[int] = set()
+    for score, index, matched in sorted(scored, key=lambda value: (-value[0], value[1])):
+        if len("\n\n".join(selected_blocks)) >= max_chars:
+            break
+        start = max(0, index - 2)
+        end = min(len(lines), index + 3)
+        block_lines: list[str] = []
+        for line_index in range(start, end):
+            if line_index in used_indexes:
+                continue
+            line = lines[line_index]
+            nearby_score, _ = _line_score(line, terms)
+            is_short_heading = (
+                line_index < index
+                and len(line) <= 80
+                and not re.search(r"[.!?]$", line)
+                and any(_line_score(lines[next_index], terms)[0] > 0 for next_index in range(line_index + 1, end))
+            )
+            if line_index == index or nearby_score > 0 or is_short_heading:
+                block_lines.append(line)
+        if not block_lines:
+            continue
+        block = _truncate_cleanly("\n".join(block_lines), RAW_EXCERPT_WINDOW_CHARS)
+        if not block:
+            continue
+        selected_blocks.append(block)
+        used_indexes.update(range(start, end))
+        selected_reasons.append(
+            f"centered_on_terms:{','.join(matched[:6])}:line={index + 1}:score={score}"
+        )
+
+    excerpt = "\n\n".join(selected_blocks)
+    return _truncate_cleanly(excerpt, max_chars), selected_reasons or ["selected_relevant_raw_excerpt"]
+
+
+def _prepare_source_context_for_llm(
+    record: _SourceRecord,
+    *,
+    validation: _SourceValidation,
+    classification: dict[str, Any],
+) -> tuple[str, str, list[str]]:
+    snippet = _clean_content_for_llm(record.snippet)
+    concise = _truncate_cleanly(snippet, MAX_TAVILY_CONCISE_CONTENT_CHARS)
+    terms = _context_terms_for_extraction(classification)
+    raw_excerpt, raw_reasons = _relevant_raw_excerpts(
+        record.raw_content or record.content,
+        terms=terms,
+        concise_content=concise,
+    )
+    parts = [part for part in (concise, raw_excerpt) if part]
+    final_content = _truncate_cleanly(
+        "\n\n".join(parts) or validation.excerpt or validation.title or "",
+        MAX_TAVILY_SOURCE_CONTEXT_CHARS,
+    )
+    reasons: list[str] = []
+    if concise:
+        reasons.append("tavily_content_primary")
+    if raw_excerpt:
+        reasons.extend(raw_reasons)
+    if len("\n\n".join(parts)) > len(final_content):
+        reasons.append("source_context_truncated_to_limit")
+    if not raw_excerpt:
+        reasons.extend(raw_reasons)
+    return final_content, concise, list(dict.fromkeys(reasons))
+
+
+def _log_prepared_source_context(
+    *,
+    record: _SourceRecord,
+    validation: _SourceValidation,
+    final_content: str,
+    original_snippet: str,
+    reasons: list[str],
+) -> None:
+    _log_diagnostic(
+        "TAVILY_EXTRACTED_CONTEXT",
+        {
+            "position": record.position,
+            "title": validation.title,
+            "url": _redact_url_for_diagnostic_log(validation.url),
+            "domain": validation.domain,
+            "trust_level": validation.trust_level,
+            "applicability_label": validation.applicability_label,
+            "original_snippet": _redact_content_for_diagnostic_log(original_snippet),
+            "final_excerpt": _redact_content_for_diagnostic_log(final_content),
+            "selection_reasons": reasons,
+            "original_snippet_chars": len(original_snippet),
+            "original_raw_chars": len(record.raw_content or record.content),
+            "final_excerpt_chars": len(final_content),
+        },
+    )
 
 
 def _organization(title: str, host: str, location: dict[str, str]) -> str:
@@ -639,17 +1031,96 @@ def _organization(title: str, host: str, location: dict[str, str]) -> str:
     return host
 
 
+def _log_raw_result(position: int, raw_result: Any) -> None:
+    if not isinstance(raw_result, dict):
+        _log_diagnostic(
+            "TAVILY_RAW_RESULT",
+            {
+                "position": position,
+                "raw_result_type": type(raw_result).__name__,
+                "title": None,
+                "url": None,
+                "domain": None,
+                "tavily_score": None,
+                "content": "",
+                "raw_content": "",
+            },
+        )
+        return
+    url = _redact_url_for_diagnostic_log(raw_result.get("url"))
+    _log_diagnostic(
+        "TAVILY_RAW_RESULT",
+        {
+            "position": position,
+            "title": str(raw_result.get("title") or ""),
+            "url": url,
+            "domain": _host(url),
+            "tavily_score": raw_result.get("score"),
+            "content": _redact_content_for_diagnostic_log(raw_result.get("content")),
+            "raw_content": _redact_content_for_diagnostic_log(raw_result.get("raw_content")),
+        },
+    )
+
+
+def _log_source_record_rejected(
+    *,
+    position: int,
+    title: str | None,
+    url: str,
+    domain: str,
+    reasons: list[str],
+) -> None:
+    _log_diagnostic(
+        "TAVILY_FILTERED_RESULT",
+        {
+            "position": position,
+            "title": title,
+            "url": _redact_url_for_diagnostic_log(url),
+            "domain": domain,
+            "trust_level": REJECTED,
+            "applicability_label": "invalid_source",
+            "accepted": False,
+            "rejection_reasons": reasons,
+        },
+    )
+
+
 def _source_records(raw_results: list[Any], location: dict[str, str]) -> list[_SourceRecord]:
     records: list[_SourceRecord] = []
     for position, raw_result in enumerate(raw_results[:5], start=1):
+        _log_raw_result(position, raw_result)
         if not isinstance(raw_result, dict):
+            _log_source_record_rejected(
+                position=position,
+                title=None,
+                url="",
+                domain="",
+                reasons=["invalid_result_shape"],
+            )
             continue
         title = _text(raw_result.get("title"), max_length=200)
         url = str(raw_result.get("url") or "").strip()
         domain = _host(url)
-        if not title or not url.startswith("https://") or not domain:
+        rejection_reasons: list[str] = []
+        if not title:
+            rejection_reasons.append("missing_or_unsafe_title")
+        if not url.startswith("https://"):
+            rejection_reasons.append("non_https_url")
+        if not domain:
+            rejection_reasons.append("missing_domain")
+        if rejection_reasons:
+            _log_source_record_rejected(
+                position=position,
+                title=title,
+                url=url,
+                domain=domain,
+                reasons=rejection_reasons,
+            )
             continue
-        raw_content = _sanitize_untrusted_content(raw_result.get("raw_content"))
+        raw_content = _sanitize_untrusted_content(
+            raw_result.get("raw_content"),
+            max_length=MAX_RAW_CONTENT_CHARS_FOR_EXTRACTION,
+        )
         snippet = _sanitize_untrusted_content(raw_result.get("content"))[:1000]
         content = (raw_content or snippet or title)[:6000]
         try:
@@ -666,6 +1137,7 @@ def _source_records(raw_results: list[Any], location: dict[str, str]) -> list[_S
                 snippet=snippet,
                 content=content,
                 relevance_score=relevance_score,
+                raw_content=raw_content,
             )
         )
     return records
@@ -945,6 +1417,18 @@ def _accepted_result_to_evidence(
         validation.location_matches.get(field)
         for field in ("city", "county", "waste_provider")
     )
+    source_content, source_excerpt, extraction_reasons = _prepare_source_context_for_llm(
+        record,
+        validation=validation,
+        classification=classification,
+    )
+    _log_prepared_source_context(
+        record=record,
+        validation=validation,
+        final_content=source_content,
+        original_snippet=record.snippet,
+        reasons=extraction_reasons,
+    )
 
     chunk = {
         "id": source_id,
@@ -970,9 +1454,9 @@ def _accepted_result_to_evidence(
             ],
             "condition_flags": _condition_flags(classification),
         },
-        "source_excerpt": validation.excerpt,
-        "source_claim": validation.excerpt,
-        "content": validation.content,
+        "source_excerpt": source_excerpt or validation.excerpt,
+        "source_claim": source_excerpt or validation.excerpt,
+        "content": source_content,
         "disposal_actions_supported": list(_CORE_DISPOSAL_ACTIONS),
         "warnings": [],
         "limitations": [],
@@ -990,6 +1474,9 @@ def _accepted_result_to_evidence(
         "decision_signals": {
             "tavily_trust_level": validation.trust_level,
             "applicability_label": validation.applicability_label,
+            "source_context_extraction_reasons": extraction_reasons,
+            "source_context_original_chars": len(record.raw_content or record.content),
+            "source_context_final_chars": len(source_content),
         },
         "source_metadata": source_metadata,
     }
@@ -1092,6 +1579,10 @@ def _log_outcome(outcome: dict[str, Any]) -> None:
 
 def _log_query(query: str) -> None:
     if _safe_query_to_log(query):
+        _log_diagnostic(
+            "TAVILY_SEARCH_REQUEST",
+            {"search_query": query},
+        )
         logger.info(
             "tavily_local_guidance_query request_id=%s query=%s",
             request_context.get_predict_request_id(),
@@ -1100,6 +1591,20 @@ def _log_query(query: str) -> None:
 
 
 def _log_validation_result(position: int, validation: _SourceValidation) -> None:
+    _log_diagnostic(
+        "TAVILY_FILTERED_RESULT",
+        {
+            "position": position,
+            "title": validation.title,
+            "url": _redact_url_for_diagnostic_log(validation.url),
+            "domain": validation.domain,
+            "trust_level": validation.trust_level,
+            "applicability_label": validation.applicability_label,
+            "accepted": validation.trust_level != REJECTED,
+            "rejection_reasons": list(validation.rejection_reasons),
+            "tavily_score": validation.relevance_score,
+        },
+    )
     logger.info(
         "tavily_local_guidance_result request_id=%s position=%s domain=%s "
         "trust_level=%s applicability_label=%s accepted=%s "

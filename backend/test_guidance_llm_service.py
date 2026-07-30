@@ -101,7 +101,10 @@ class BasicValidatorTests(unittest.TestCase):
             "Disassemble the laptop before recycling.",
             "Pry open the case.",
             "Force open the case.",
+            "Open the phone before drop-off.",
             "Remove the built-in battery.",
+            "Remove the battery.",
+            "Remove internal parts.",
             "Puncture the battery.",
             "Burn the laptop.",
             "Pour it down the drain.",
@@ -116,10 +119,16 @@ class BasicValidatorTests(unittest.TestCase):
     def test_negated_safety_warnings_are_allowed(self):
         warnings = [
             "Do not disassemble the laptop.",
+            "Do not dismantle the phone.",
             "Do not pry open the case.",
             "Do not remove built-in batteries.",
+            "Do not remove the battery.",
             "Avoid puncturing the battery.",
+            "Avoid dismantling the phone.",
             "Never burn the laptop.",
+            "Keep the device intact.",
+            "- Do not dismantle the phone.",
+            "Please do not open the phone.",
         ]
         validated, errors = validate_guidance_basic(_payload(warnings=warnings), self.context())
         self.assertIsNotNone(validated)
@@ -130,6 +139,36 @@ class BasicValidatorTests(unittest.TestCase):
             _payload(warnings=["Do not wait; disassemble the laptop."]), self.context()
         )
         self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+
+    def test_negated_battery_safety_steps_are_allowed(self):
+        validated, errors = validate_guidance_basic(
+            _payload(
+                steps=[
+                    "Keep the phone intact and do not remove the battery.",
+                    "Take it to an electronics drop-off.",
+                ],
+                warnings=["Do not dismantle the phone or puncture the battery."],
+            ),
+            self.context(),
+        )
+
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+
+    def test_genuinely_dangerous_part_removal_is_rejected(self):
+        cases = [
+            "Dismantle the phone before taking it in.",
+            "Open the device and remove the battery.",
+            "Keep the device intact; then puncture the battery.",
+            "Avoid delays and remove the battery.",
+        ]
+        for instruction in cases:
+            with self.subTest(instruction=instruction):
+                _, errors = validate_guidance_basic(
+                    _payload(steps=[instruction, "Use electronics drop-off."]),
+                    self.context(),
+                )
+                self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
 
     def test_source_names_in_main_guidance_are_nonblocking_warnings(self):
         validated, errors = validate_guidance_basic(

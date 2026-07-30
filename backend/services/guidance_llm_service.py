@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_GUIDANCE_LLM_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS = 10.0
 MAX_LLM_SOURCE_CHUNKS = 3
+MAX_DIAGNOSTIC_CONTENT_CHARS = 12000
+MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS = 7200
 MAX_SUMMARY_LENGTH = 240
 GUIDANCE_PROMPT_VERSION = "groq_applicability_guidance_v4"
 
@@ -65,16 +67,23 @@ _ABSOLUTE_CLAIMS = (
 _DANGEROUS_PATTERNS = (
     r"\bpry\s+open\b",
     r"\bforce\s+open\b",
+    r"\bopen\s+(?:the\s+)?(?:case|device|phone|laptop|tablet|battery|batter(?:y|ies)\s+case)\b",
     r"\bdismantl(?:e|ing)\b",
     r"\bdisassembl(?:e|ing)\b",
-    r"\bremove\s+(?:the\s+)?built[- ]in\s+batter(?:y|ies)\b",
+    r"\bremove\s+(?:the\s+)?(?:built[- ]in\s+)?batter(?:y|ies)\b",
+    r"\bremove\s+(?:internal\s+)?(?:parts?|components?)\b",
     r"\bcut\s+(?:the\s+)?batter(?:y|ies)\b",
     r"\bpunctur(?:e|ing)\b",
     r"\bburn(?:ing)?\b",
     r"\bpour(?:ing)?\s+(?:it\s+|this\s+|the\s+contents?\s+)?down\s+(?:the\s+)?drain\b",
 )
 _SAFE_NEGATION_PREFIX = re.compile(
-    r"^\s*(?:do\s+not|don't|don’t|never|avoid)\b", re.IGNORECASE
+    r"^\s*(?:do\s+not|don't|never|avoid)\b",
+    re.IGNORECASE,
+)
+_SAFE_DANGEROUS_INSTRUCTION_PREFIX = re.compile(
+    r"(?:^|\b)(?:please\s+)?(?:do\s+not|don't|never|avoid|you\s+should\s+not|keep\s+(?:the\s+)?(?:device|phone|laptop|tablet|item|battery|batteries)\s+intact\s+and\s+do\s+not)\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -210,6 +219,77 @@ def _sanitize_response_preview(value: Any, *, max_length: int = 500) -> str | No
     return preview if len(preview) <= max_length else preview[:max_length].rstrip() + "..."
 
 
+def _development_diagnostics_enabled() -> bool:
+    if str(os.getenv("TAVILY_DIAGNOSTIC_CONTENT_LOGGING") or "").strip().casefold() in {"0", "false", "no", "off"}:
+        return False
+    for name in ("APP_ENV", "ENVIRONMENT", "NODE_ENV", "FLASK_ENV", "FASTAPI_ENV"):
+        if str(os.getenv(name) or "").strip().casefold() in {"development", "dev", "local"}:
+            return True
+    return str(os.getenv("DEBUG") or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _truncate_for_diagnostic_log(value: Any, *, max_chars: int = MAX_DIAGNOSTIC_CONTENT_CHARS) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}...[truncated {len(text) - max_chars} chars]"
+
+
+def _redact_url_for_diagnostic_log(value: Any) -> str:
+    url = "" if value is None else str(value).strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "[redacted_invalid_url]"
+    sensitive = (
+        "access_token",
+        "apikey",
+        "api_key",
+        "auth",
+        "authorization",
+        "client_id",
+        "client_secret",
+        "code",
+        "key",
+        "password",
+        "secret",
+        "session",
+        "sig",
+        "signature",
+        "token",
+    )
+    if not parsed.query:
+        return url
+    query_parts = []
+    for part in parsed.query.split("&"):
+        key, separator, value_part = part.partition("=")
+        if any(term in key.casefold() for term in sensitive):
+            query_parts.append(f"{key}{separator}[redacted]")
+        else:
+            query_parts.append(f"{key}{separator}{value_part}" if separator else key)
+    return parsed._replace(query="&".join(query_parts)).geturl()
+
+
+def _domain_from_url(value: Any) -> str:
+    try:
+        return (urlparse(str(value or "")).hostname or "").casefold().removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def _log_diagnostic(label: str, payload: dict[str, Any]) -> None:
+    if not _development_diagnostics_enabled():
+        return
+    safe_payload = {"request_id": request_context.get_predict_request_id(), **payload}
+    logger.info(
+        "%s %s",
+        label,
+        json.dumps(safe_payload, ensure_ascii=True, sort_keys=True),
+    )
+
+
 def _groq_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
     endpoint = "https://api.groq.com/openai/v1/chat/completions"
     request_started = perf_counter()
@@ -324,6 +404,67 @@ def _chunk_ids(chunks: list[dict[str, Any]]) -> list[str]:
     ]
 
 
+def _source_context_chars(chunks: list[dict[str, Any]]) -> int:
+    return sum(len(_normalize_optional_string(chunk.get("content")) or "") for chunk in chunks)
+
+
+def _enforce_total_source_context_limit(chunks: list[dict[str, Any]]) -> None:
+    remaining = MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS
+    for chunk in chunks:
+        content = _normalize_optional_string(chunk.get("content")) or ""
+        if len(content) <= remaining:
+            remaining -= len(content)
+            continue
+        chunk["content"] = content[: max(0, remaining)].rstrip()
+        signals = chunk.get("decision_signals")
+        if not isinstance(signals, dict):
+            signals = {}
+        signals["source_context_total_limit_applied"] = True
+        signals["source_context_total_limit_chars"] = MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS
+        chunk["decision_signals"] = signals
+        remaining = 0
+
+
+def _log_source_grounded_context(
+    chunks: list[dict[str, Any]],
+    tavily_chunks: list[dict[str, Any]],
+) -> None:
+    for chunk in tavily_chunks:
+        content = _normalize_optional_string(chunk.get("content")) or ""
+        _log_diagnostic(
+            "TAVILY_ACCEPTED_CONTEXT",
+            {
+                "source_id": _normalize_optional_string(chunk.get("id")),
+                "title": _normalize_optional_string(chunk.get("title")),
+                "domain": _domain_from_url(chunk.get("source_url")),
+                "source_url": _redact_url_for_diagnostic_log(chunk.get("source_url")),
+                "content_length": len(content),
+                "content": _truncate_for_diagnostic_log(content),
+                "selection_reasons": (
+                    chunk.get("decision_signals", {}).get("source_context_extraction_reasons")
+                    if isinstance(chunk.get("decision_signals"), dict)
+                    else []
+                ),
+            },
+        )
+    _log_diagnostic(
+        "GUIDANCE_LLM_CONTEXT_SOURCES",
+        {
+            "total_source_context_chars": _source_context_chars(chunks),
+            "max_total_source_context_chars": MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS,
+            "sources": [
+                {
+                    "source_id": _normalize_optional_string(chunk.get("id")),
+                    "title": _normalize_optional_string(chunk.get("title")),
+                    "domain": _domain_from_url(chunk.get("source_url")),
+                    "content_length": len(_normalize_optional_string(chunk.get("content")) or ""),
+                }
+                for chunk in chunks
+            ],
+        },
+    )
+
+
 def _normalized_duplicate_key(step: str) -> str:
     text = step.casefold().strip()
     text = re.sub(r"[^\w\s]", "", text, flags=re.UNICODE)
@@ -342,7 +483,20 @@ def _dangerous_instruction(text: str) -> str | None:
             if match is None:
                 continue
             prefix = clause[: match.start()]
-            if _SAFE_NEGATION_PREFIX.match(prefix):
+            normalized_prefix = (
+                prefix.replace("\u00e2\u20ac\u2122", "'")
+                .replace("\u2019", "'")
+                .replace("`", "'")
+            )
+            normalized_prefix = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", normalized_prefix)
+            normalized_prefix = re.sub(r"\s+", " ", normalized_prefix).strip()
+            lowered_prefix = normalized_prefix.casefold()
+            clause_wide_negation = re.match(
+                r"^(?:please\s+)?(?:do\s+not|don't|never|you\s+should\s+not)\b",
+                lowered_prefix,
+            )
+            local_avoid_negation = _SAFE_DANGEROUS_INSTRUCTION_PREFIX.search(normalized_prefix)
+            if clause_wide_negation or local_avoid_negation:
                 continue
             return match.group(0).casefold()
     return None
@@ -934,6 +1088,15 @@ def _generate_with_retry(
     )
     try:
         raw_response = _groq_request(prompt, settings=settings, mode=mode)
+        _log_diagnostic(
+            "GUIDANCE_LLM_RAW_OUTPUT",
+            {
+                "mode": mode,
+                "attempt": 1,
+                "raw_output_chars": len(raw_response),
+                "raw_output": _truncate_for_diagnostic_log(raw_response),
+            },
+        )
         parsed = _extract_json_object(raw_response)
     except requests.RequestException as exc:
         reason = "timeout" if isinstance(exc, requests.Timeout) else "request_error"
@@ -1011,10 +1174,12 @@ def try_generate_source_grounded_guidance(
     if skip:
         return _llm_result(guidance=None, failure_reason=skip)
     chunks: list[dict[str, Any]] = []
+    tavily_chunks: list[dict[str, Any]] = []
     for result in retrieval_results[:MAX_LLM_SOURCE_CHUNKS]:
-        if not isinstance(result.get("chunk"), dict):
+        raw_chunk = result.get("chunk")
+        if not isinstance(raw_chunk, dict):
             continue
-        chunk = _strip_chunk_for_llm(result["chunk"])
+        chunk = _strip_chunk_for_llm(raw_chunk)
         chunk.update(
             {
                 "applicability": result.get("applicability") or "applicable",
@@ -1028,8 +1193,11 @@ def try_generate_source_grounded_guidance(
             }
         )
         chunks.append(chunk)
+        if raw_chunk.get("dynamic_source") == "tavily":
+            tavily_chunks.append(chunk)
     if not chunks:
         return _llm_result(guidance=None, failure_reason="no_chunks")
+    _enforce_total_source_context_limit(chunks)
     allowed_actions = {
         action
         for chunk in chunks
@@ -1056,6 +1224,7 @@ def try_generate_source_grounded_guidance(
         candidates=list(candidates or []), location=location,
         chunks=chunks, allowed_disposal_actions=sorted(allowed_actions),
     )
+    _log_source_grounded_context(chunks, tavily_chunks)
     context = {"allowed_disposal_actions": allowed_actions, "retrieved_chunks": chunks}
     return _generate_with_retry(
         mode="source_grounded", prompt=prompt, settings=settings, context=context,

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 from repositories.tavily_budget_repository import TavilyBudgetReservation
-from services import guidance_service, tavily_local_guidance_service as tavily
+from services import guidance_llm_service, guidance_service, tavily_local_guidance_service as tavily
 
 
 def _classification(
@@ -69,6 +69,7 @@ def _result(
     title="Household Hazardous Waste | City of Raleigh",
     url="https://raleighnc.gov/trash-recycling-and-clean/household-hazardous-waste",
     content="City of Raleigh accepts household batteries at its household hazardous waste drop-off.",
+    raw_content=None,
     score=0.94,
 ):
     return {
@@ -76,7 +77,7 @@ def _result(
         "url": url,
         "score": score,
         "content": content[:160],
-        "raw_content": content,
+        "raw_content": content if raw_content is None else raw_content,
     }
 
 
@@ -464,6 +465,265 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(validation.trust_level, tavily.LOCAL_PRIMARY)
         self.assertEqual(validation.content, "Solid Waste | City of Raleigh")
+
+    def test_extracted_context_preserves_relevant_middle_and_late_raw_content(self):
+        raw_content = "\n".join(
+            [
+                "Skip to Main Content",
+                "Popular Pages",
+                *[f"Department link {index}" for index in range(80)],
+                "Accepted Items",
+                "Rechargeable batteries are accepted at the Raleigh household hazardous waste drop-off.",
+                "Unrelated parks and recreation schedules are published elsewhere.",
+                *[f"Footer link {index}" for index in range(80)],
+                "Lithium and lead-acid batteries are prohibited from curbside recycling carts.",
+                "Copyright 2026 City of Raleigh",
+            ]
+        )
+        records = tavily._source_records(
+            [
+                _result(
+                    content="City of Raleigh household hazardous waste accepts batteries.",
+                    raw_content=raw_content,
+                )
+            ],
+            {"city": "Raleigh", "state": "North Carolina"},
+        )
+        validation = tavily._validation_result(
+            records[0],
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+        evidence = tavily._accepted_result_to_evidence(
+            records[0],
+            validation,
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+
+        content = evidence["chunk"]["content"]
+        self.assertIn("City of Raleigh household hazardous waste accepts batteries.", content)
+        self.assertIn("Rechargeable batteries are accepted", content)
+        self.assertIn("Lithium and lead-acid batteries are prohibited", content)
+        self.assertNotIn("Skip to Main Content", content)
+        self.assertNotIn("Popular Pages", content)
+        self.assertNotIn("Copyright 2026", content)
+
+    def test_extracted_context_excludes_unrelated_sections_and_keeps_concise_content(self):
+        raw_content = "\n".join(
+            [
+                "Section Menu",
+                "Water Department",
+                "Stormwater billing and sewer maintenance updates.",
+                "Parks Department",
+                "Athletic field reservations and picnic shelters.",
+                "Household Hazardous Waste",
+                "Button cell batteries and rechargeable batteries require drop-off.",
+                "Accepted battery types include alkaline, lithium, and lead-acid batteries.",
+                "Mobile Apps",
+            ]
+        )
+        concise = "Raleigh accepts household batteries at household hazardous waste drop-off."
+        records = tavily._source_records(
+            [_result(content=concise, raw_content=raw_content)],
+            {"city": "Raleigh", "state": "North Carolina"},
+        )
+        validation = tavily._validation_result(
+            records[0],
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+        evidence = tavily._accepted_result_to_evidence(
+            records[0],
+            validation,
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+
+        chunk = evidence["chunk"]
+        self.assertIn(concise, chunk["content"])
+        self.assertIn("Button cell batteries", chunk["content"])
+        self.assertIn("alkaline, lithium, and lead-acid batteries", chunk["content"])
+        self.assertNotIn("Stormwater billing", chunk["content"])
+        self.assertNotIn("Athletic field", chunk["content"])
+        self.assertEqual(chunk["source_claim"], concise)
+
+    def test_extracted_context_stays_within_configured_source_limit(self):
+        repeated_rules = "\n".join(
+            f"Battery rule {index}: rechargeable lithium batteries are accepted at drop-off and prohibited in carts."
+            for index in range(300)
+        )
+        records = tavily._source_records(
+            [
+                _result(
+                    content="Raleigh household battery drop-off guidance.",
+                    raw_content=repeated_rules,
+                )
+            ],
+            {"city": "Raleigh", "state": "North Carolina"},
+        )
+        validation = tavily._validation_result(
+            records[0],
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+        evidence = tavily._accepted_result_to_evidence(
+            records[0],
+            validation,
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+
+        content = evidence["chunk"]["content"]
+        self.assertLessEqual(len(content), tavily.MAX_TAVILY_SOURCE_CONTEXT_CHARS)
+        self.assertIn("Raleigh household battery drop-off guidance.", content)
+
+    def test_total_llm_source_context_stays_within_configured_limit(self):
+        oversize = "battery accepted drop-off " * 500
+        retrieval_results = [
+            {
+                "chunk": {
+                    "id": f"tavily-{index}",
+                    "title": f"LOCAL_PRIMARY: Battery Source {index}",
+                    "source_name": "Nashville.gov",
+                    "source_url": "https://www.nashville.gov/batteries",
+                    "content": oversize,
+                    "source_excerpt": "battery accepted",
+                    "source_claim": "battery accepted",
+                    "requires_location_check": False,
+                    "disposal_actions_supported": ["check local guidance"],
+                    "dynamic_source": "tavily",
+                    "decision_signals": {},
+                },
+                "applicability": "applicable",
+            }
+            for index in range(3)
+        ]
+        captured = {}
+
+        def fake_groq(prompt, *, settings, mode):
+            captured["prompt"] = prompt
+            return json.dumps(
+                {
+                    "disposal_action": "check local guidance",
+                    "summary": "Check Nashville battery guidance before disposal.",
+                    "steps": ["Keep batteries intact.", "Use local drop-off guidance."],
+                    "warnings": [],
+                    "confidence": "medium",
+                    "sources_used": ["tavily-0"],
+                }
+            )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ENABLE_LLM_GUIDANCE": "true",
+                    "GUIDANCE_LLM_PROVIDER": "groq",
+                    "GROQ_API_KEY": "test-key",
+                },
+                clear=True,
+            ),
+            patch("services.guidance_llm_service._groq_request", side_effect=fake_groq),
+        ):
+            guidance_llm_service.try_generate_source_grounded_guidance(
+                recognized_item="Battery",
+                normalized_item_label="battery",
+                material="Battery",
+                broad_category="Battery",
+                condition_flags=[],
+                special_flags=["battery"],
+                location={"city": "Nashville", "state": "Tennessee"},
+                retrieval_results=retrieval_results,
+            )
+
+        prompt_context = json.loads(captured["prompt"].split("Context:\n", 1)[1])
+        prompt_chunks = prompt_context["retrieved_chunks"]
+        self.assertLessEqual(
+            sum(len(chunk["content"]) for chunk in prompt_chunks),
+            guidance_llm_service.MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS,
+        )
+        self.assertLessEqual(
+            captured["prompt"].count("battery accepted drop-off") * len("battery accepted drop-off"),
+            guidance_llm_service.MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS,
+        )
+
+    def test_nashville_battery_prompt_includes_battery_specific_tennessee_rules(self):
+        raw_content = "\n".join(
+            [
+                "Skip to Main Content",
+                "Popular Pages",
+                *[f"Unrelated department link {index}" for index in range(120)],
+                "Household Hazardous Waste Collection",
+                "Batteries: Alkaline batteries are accepted at Nashville convenience centers.",
+                "Rechargeable lithium and lead-acid batteries must be taken to household hazardous waste drop-off.",
+                "Batteries are prohibited in curbside recycling carts.",
+                "Copyright 2026 Official website of Metro Nashville & Davidson County",
+            ]
+        )
+        client, env = self._search(
+            {
+                "results": [
+                    _result(
+                        title="Household Hazardous Waste Collection | Nashville.gov",
+                        url="https://www.nashville.gov/departments/waste-services/convenience-centers/household-hazardous-waste",
+                        content="Nashville household hazardous waste accepts some battery types at convenience centers.",
+                        raw_content=raw_content,
+                    )
+                ],
+                "usage": {"credits": 1},
+            }
+        )
+        captured = {}
+
+        def fake_groq(prompt, *, settings, mode):
+            captured["prompt"] = prompt
+            return json.dumps(
+                {
+                    "disposal_action": "check local guidance",
+                    "summary": "Use Nashville battery drop-off guidance.",
+                    "steps": ["Keep the battery intact.", "Use a Nashville convenience center."],
+                    "warnings": [],
+                    "confidence": "medium",
+                    "sources_used": [],
+                }
+            )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    **env,
+                    "ENABLE_LLM_GUIDANCE": "true",
+                    "GUIDANCE_LLM_PROVIDER": "groq",
+                    "GROQ_API_KEY": "test-key",
+                },
+                clear=True,
+            ),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ),
+            patch("services.guidance_llm_service._groq_request", side_effect=fake_groq),
+        ):
+            response = guidance_service.build_prediction_response(
+                _classification(
+                    "Battery",
+                    location={"city": "Nashville", "state": "Tennessee"},
+                )
+            )
+
+        self.assertEqual(response["guidance_metadata"]["local_guidance_status"], "tavily_verified_local")
+        self.assertIn("Alkaline batteries are accepted", captured["prompt"])
+        self.assertIn("Rechargeable lithium and lead-acid batteries", captured["prompt"])
+        self.assertIn("prohibited in curbside recycling carts", captured["prompt"])
+        self.assertNotIn("Popular Pages", captured["prompt"])
+        self.assertNotIn("Unrelated department link 90", captured["prompt"])
 
     def test_forsyth_manual_rule_has_priority_and_makes_zero_tavily_calls(self):
         classification = _classification(
