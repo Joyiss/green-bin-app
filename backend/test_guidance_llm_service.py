@@ -131,11 +131,16 @@ class BasicValidatorTests(unittest.TestCase):
         )
         self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
 
-    def test_source_names_are_rejected_only_in_main_guidance(self):
-        _, errors = validate_guidance_basic(
+    def test_source_names_in_main_guidance_are_nonblocking_warnings(self):
+        validated, errors = validate_guidance_basic(
             _payload(steps=["Follow EPA guidance.", "Use electronics drop-off."]), self.context()
         )
-        self.assertTrue(any(error.startswith("source_name_in_main_guidance:") for error in errors))
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
+        self.assertIn(
+            "source_name_in_main_guidance:epa",
+            validated["validation_warnings"],
+        )
         validated, errors = validate_guidance_basic(_payload(), self.context())
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
@@ -248,14 +253,12 @@ class GenerationFlowTests(unittest.TestCase):
         request.assert_called_once()
 
     @patch("services.guidance_llm_service._groq_request")
-    def test_duplicate_triggers_one_repair(self, request):
-        request.side_effect = [
-            json.dumps(_payload(steps=["Use drop-off.", "Use drop-off."])),
-            json.dumps(_payload(steps=["Keep the laptop intact.", "Use electronics drop-off."])),
-        ]
-        guidance = self.source_call()["guidance"]
-        self.assertEqual(request.call_count, 2)
-        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "repaired_llm")
+    def test_duplicate_fails_without_repair(self, request):
+        request.return_value = json.dumps(_payload(steps=["Use drop-off.", "Use drop-off."]))
+        result = self.source_call()
+        request.assert_called_once()
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "duplicate_steps")
 
     @patch("services.guidance_llm_service._groq_request")
     def test_style_imperfection_does_not_repair_or_fallback(self, request):
@@ -265,32 +268,53 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
 
     @patch("services.guidance_llm_service._groq_request")
-    def test_failed_repair_uses_observable_deterministic_fallback(self, request):
+    def test_source_name_warning_does_not_trigger_repair(self, request):
+        request.return_value = json.dumps(
+            _payload(
+                summary="EPA says to use electronics drop-off.",
+                steps=["Keep the laptop intact.", "Use electronics drop-off."],
+            )
+        )
+
+        guidance = self.source_call()["guidance"]
+
+        request.assert_called_once()
+        self.assertEqual(guidance["summary"], "EPA says to use electronics drop-off.")
+        self.assertEqual(
+            guidance["guidance_metadata"]["final_generation_path"],
+            "original_llm",
+        )
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_unsafe_output_fails_without_repair_or_deterministic_fallback(self, request):
         request.return_value = json.dumps(_payload(steps=["Disassemble the laptop.", "Use drop-off."]))
         with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
-            guidance = self.source_call()["guidance"]
-        self.assertEqual(request.call_count, 2)
-        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "deterministic_fallback")
+            result = self.source_call()
+        request.assert_called_once()
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "dangerous_instruction:disassemble")
         combined = " ".join(logs.output)
         self.assertIn("original_llm_output=", combined)
         self.assertIn("validation_reason=", combined)
-        self.assertIn("repair_attempted=True", combined)
-        self.assertIn("deterministic_fallback_used=true", combined)
+        self.assertIn("repair_attempted=False", combined)
+        self.assertIn("deterministic_fallback_used=false", combined)
 
     @patch("services.guidance_llm_service._groq_request", side_effect=requests.Timeout())
-    def test_request_failure_uses_fallback_without_repair(self, request):
+    def test_request_failure_returns_no_guidance_without_repair(self, request):
         with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
-            guidance = self.source_call()["guidance"]
+            result = self.source_call()
         request.assert_called_once()
-        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "deterministic_fallback")
-        self.assertIn("repair_attempted=False", " ".join(logs.output))
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "timeout")
+        self.assertIn("result=request_exception", " ".join(logs.output))
 
     @patch("services.guidance_llm_service._groq_request")
-    def test_invalid_json_gets_one_repair(self, request):
-        request.side_effect = ["not json", json.dumps(_payload())]
-        guidance = self.source_call()["guidance"]
-        self.assertEqual(request.call_count, 2)
-        self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "repaired_llm")
+    def test_invalid_json_fails_without_repair(self, request):
+        request.return_value = "not json"
+        result = self.source_call()
+        request.assert_called_once()
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "invalid_json")
 
     def test_prompt_marks_examples_as_non_templates(self):
         prompt = _build_source_grounded_prompt(

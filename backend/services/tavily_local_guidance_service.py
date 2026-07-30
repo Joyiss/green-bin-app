@@ -564,9 +564,6 @@ def _material_adds_specificity(item: str, material: str | None) -> bool:
 def _item_phrase_for_query(classification: dict[str, Any]) -> str:
     item = _remove_brand_terms(_specific_item_for_query(classification), classification)
     parts = [item]
-    material = _material(classification)
-    if _material_adds_specificity(item, material):
-        parts.insert(0, normalize_guidance_phrase(material) or "")
     item_tokens = _query_tokens(item)
     for flag in _condition_flags(classification):
         if flag in _QUERY_CONDITION_TERMS and flag not in item_tokens:

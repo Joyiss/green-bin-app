@@ -406,7 +406,9 @@ def _attach_tavily_outcome(
             if isinstance(source, dict)
         ]
 
-    if status == "tavily_verified_local":
+    if status == "tavily_verified_local" and _guidance_uses_verified_local_source(
+        guidance
+    ):
         guidance["impact_level"] = "Verified Local Guidance"
     else:
         metadata["guidance_fallback_status"] = "general_fallback"
@@ -423,6 +425,63 @@ def _attach_tavily_outcome(
         )
 
     return _with_metadata(guidance, metadata)
+
+
+def _guidance_uses_verified_local_source(guidance: dict[str, Any]) -> bool:
+    metadata = guidance.get("guidance_metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("requires_location_check") is True:
+        return False
+    if guidance.get("guidance_source") != "json_rag_llm_generated":
+        return False
+    source_ids = {
+        str(value)
+        for value in (
+            metadata.get("retrieved_chunk_ids")
+            or metadata.get("sources_used")
+            or []
+        )
+        if value
+    }
+    applicable_ids = {
+        str(value) for value in metadata.get("applicable_chunk_ids") or [] if value
+    }
+    candidate_ids = source_ids & applicable_ids if source_ids else applicable_ids
+    if not candidate_ids:
+        return False
+
+    matched_fields = metadata.get("matched_fields")
+    matched_fields = matched_fields if isinstance(matched_fields, dict) else {}
+    applicability = metadata.get("applicability_by_chunk")
+    applicability = applicability if isinstance(applicability, dict) else {}
+    local_tokens = {
+        "location_exact",
+        "city_exact",
+        "county_exact",
+        "provider_exact",
+        "statewide",
+        "statewide_rule",
+    }
+    for chunk_id in candidate_ids:
+        if applicability.get(chunk_id) != "applicable":
+            continue
+        fields = {
+            str(field)
+            for field in (
+                matched_fields.get(chunk_id)
+                if isinstance(matched_fields.get(chunk_id), list)
+                else []
+            )
+        }
+        if fields & local_tokens:
+            return True
+
+    return any(
+        isinstance(source, dict)
+        and source.get("local") is True
+        and str(source.get("trust_level") or "") == "LOCAL_PRIMARY"
+        for source in metadata.get("trusted_local_sources") or []
+    )
 
 
 def _local_web_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -678,52 +737,78 @@ def _is_open_recognition_classification(classification: dict[str, Any]) -> bool:
     return isinstance(classification.get("recognition_details"), dict)
 
 
+def _general_fallback_guidance(
+    classification: dict[str, Any] | None = None,
+    *,
+    reason: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    item = _first_non_empty_string(
+        classification.get("item") if isinstance(classification, dict) else None
+    )
+    recognized_material = _first_non_empty_string(
+        _normalized_open_value(classification, "material") if isinstance(classification, dict) else None,
+        _normalized_open_value(classification, "material_category") if isinstance(classification, dict) else None,
+        classification.get("recognized_material_category") if isinstance(classification, dict) else None,
+        classification.get("category") if isinstance(classification, dict) else None,
+    )
+
+    subject = f"the {item.lower()}" if item else "this item"
+    steps = [
+        f"Keep {subject} out of curbside recycling unless your local program explicitly accepts it.",
+        "Check your city, county, or waste-provider disposal guidance before choosing recycling, compost, hazardous-waste, or drop-off options.",
+        "If no verified local option is available, follow local trash guidance or ask your waste provider.",
+    ]
+    if recognized_material and recognized_material != UNKNOWN_CATEGORY:
+        steps.append(
+            f"Use the detected material/category only as context: {recognized_material}."
+        )
+
+    guidance = {
+        "disposal_action": "check local guidance",
+        "material_code": None,
+        "impact_level": "Low Confidence Guidance",
+        "summary": (
+            f"Verified local guidance is unavailable for {subject}, so use conservative general disposal guidance."
+        ),
+        "steps": steps,
+        "guidance_source": "safe_fallback",
+        "warnings": [_COMMON_LOW_RISK_WARNING],
+        "guidance_metadata": {
+            "final_generation_path": "general_fallback",
+            "guidance_fallback_status": "general_fallback",
+            "fallback_reason": reason or "no_usable_source_grounded_guidance",
+            "confidence": "low",
+            "source_names": [],
+            "source_urls": [],
+            "retrieved_chunk_ids": [],
+            "requires_location_check": True,
+        },
+    }
+    return _with_metadata(guidance, extra_metadata)
+
+
 def _open_guidance_unavailable(
     classification: dict[str, Any],
     *,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    recognized_material = _first_non_empty_string(
-        _normalized_open_value(classification, "material"),
-        _normalized_open_value(classification, "material_category"),
-        _normalized_open_value(classification, "broad_category"),
-        classification.get("recognized_material_category"),
-        classification.get("recognized_broad_category"),
+    return _general_fallback_guidance(
+        classification,
+        reason="open_guidance_unavailable",
+        extra_metadata=extra_metadata,
     )
-
-    steps = []
-    if recognized_material and recognized_material != UNKNOWN_CATEGORY:
-        steps.append(f"Detected material category: {recognized_material}.")
-    steps.append(
-        "Use local guidance or scan a supported item for trusted disposal instructions."
-    )
-
-    guidance = {
-        "disposal_action": None,
-        "material_code": None,
-        "impact_level": "Trusted Guidance Unavailable",
-        "summary": "Trusted disposal guidance is not available yet for this recognized item.",
-        "steps": steps,
-        "guidance_source": "safe_fallback",
-    }
-    return _with_metadata(guidance, extra_metadata)
 
 
 def _default_safe_guidance(
     *,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    guidance = {
-        "disposal_action": None,
-        "material_code": None,
-        "impact_level": "Trusted Guidance Unavailable",
-        "summary": "Trusted disposal guidance is not available yet.",
-        "steps": [
-            "Use local guidance or scan a supported item for trusted disposal instructions."
-        ],
-        "guidance_source": "safe_fallback",
-    }
-    return _with_metadata(guidance, extra_metadata)
+    return _general_fallback_guidance(
+        None,
+        reason="default_safe_fallback",
+        extra_metadata=extra_metadata,
+    )
 
 
 def _normalized_phrase(value: Any) -> str:
@@ -1722,6 +1807,10 @@ def _build_guidance_confidence(
             if applicable_ids
             else "direct_rag_without_applicable_evidence"
         )
+    elif source in {"general_fallback", "safe_fallback"}:
+        level = "low"
+        score = 0.35
+        reason_codes.append("general_fallback")
     elif source == "llm_general_fallback":
         recognition = classification.get("recognition_confidence")
         recognition_level = (
@@ -2321,10 +2410,30 @@ def _resolve_guidance(
         )
         llm_guidance = llm_result.get("guidance")
         if isinstance(llm_guidance, dict):
+            llm_metadata = llm_guidance.get("guidance_metadata")
+            llm_metadata = llm_metadata if isinstance(llm_metadata, dict) else {}
+            used_chunk_ids = {
+                str(chunk_id)
+                for chunk_id in (
+                    llm_metadata.get("retrieved_chunk_ids")
+                    or llm_metadata.get("sources_used")
+                    or []
+                )
+                if chunk_id
+            }
+            metadata_results = (
+                [
+                    result
+                    for result in source_results
+                    if str(result.get("chunk_id") or "") in used_chunk_ids
+                ]
+                if used_chunk_ids
+                else []
+            ) or source_results
             llm_guidance["guidance_metadata"] = _merge_guidance_metadata(
-                _build_json_guidance_metadata(source_results),
-                llm_guidance.get("guidance_metadata"),
-                _build_retrieval_applicability_metadata(retrieval_results),
+                _build_json_guidance_metadata(metadata_results),
+                llm_metadata,
+                _build_retrieval_applicability_metadata(metadata_results),
             )
             _log_guidance_selected(
                 llm_guidance,
@@ -2350,145 +2459,39 @@ def _resolve_guidance(
             logger.info("LLM guidance skipped. reason=%s", llm_fallback_reason)
         elif llm_fallback_reason:
             logger.info(
-                "LLM guidance validation failed. reason=%s fallback=%s",
+                "LLM guidance unavailable. reason=%s fallback=%s",
                 llm_fallback_reason,
-                "json_rag_direct_generated",
+                "general_fallback",
             )
-        if applicable_results:
-            guidance = _guidance_from_json_retrieval(
-                applicable_results,
-                extra_metadata=(
-                    {"llm_fallback_reason": llm_fallback_reason}
-                    if llm_fallback_reason and llm_fallback_reason not in _LLM_SKIP_REASONS
-                    else None
-                ),
-                recognized_item=llm_context["recognized_item"],
-                material=llm_context["material"],
-                broad_category=llm_context["broad_category"],
-                condition_flags=llm_context["condition_flags"],
-                special_flags=llm_context["special_flags"],
-                visual_evidence=llm_context["visual_evidence"],
-                visual_observations=llm_context["visual_observations"],
-                candidates=llm_context["candidates"],
-            ) or _default_safe_guidance()
-            _attach_retrieval_applicability(guidance, retrieval_results)
-            _log_guidance_selected(
-                guidance,
-                chunk_ids=guidance.get("guidance_metadata", {}).get("retrieved_chunk_ids"),
-                requires_location_check=bool(
-                    guidance.get("guidance_metadata", {}).get("requires_location_check")
-                ),
-            )
-            cache_write_started = perf_counter()
-            guidance_cache_service.write_source_grounded_guidance_if_cacheable(
-                classification=classification,
-                guidance=guidance,
-                cache_context=cache_context,
-                retrieval_inputs=retrieval_inputs,
-                retrieval_results=applicable_results,
-                llm_context=llm_context,
-            )
-            _log_guidance_timing("cache_write", cache_write_started, attempted=True)
-            return _attach_tavily_outcome(guidance, tavily_outcome)
+        guidance = _general_fallback_guidance(
+            classification,
+            reason=llm_fallback_reason or "source_grounded_llm_unavailable",
+            extra_metadata=_build_retrieval_applicability_metadata(source_results),
+        )
+        _log_guidance_selected(
+            guidance,
+            item=_first_non_empty_string(classification.get("item")),
+            category=_first_non_empty_string(classification.get("category")),
+            reason="source_grounded_llm_unavailable",
+        )
+        return _attach_tavily_outcome(guidance, tavily_outcome)
 
     logger.info(
         "Source-grounded guidance unavailable. reason=%s conditional_chunks=%s not_applicable_chunks=%s",
-        "no_applicable_chunks",
+        "no_usable_sources",
         len([result for result in source_results if _retrieval_applicability(result) == "conditional"]),
         len(retrieval_results) - len(source_results),
     )
-
-    low_risk_evaluation = _evaluate_low_risk_open_item(classification)
-    low_risk_eligible = bool(low_risk_evaluation["eligible"])
-    if low_risk_eligible:
-        llm_started = perf_counter()
-        llm_result = guidance_llm_service.try_generate_general_safe_guidance(
-            recognized_item=llm_context["recognized_item"],
-            normalized_item_label=llm_context["normalized_item_label"],
-            material=llm_context["material"],
-            broad_category=llm_context["broad_category"],
-            condition_flags=llm_context["condition_flags"],
-            special_flags=llm_context["special_flags"],
-            visual_evidence=llm_context["visual_evidence"],
-            visual_observations=llm_context["visual_observations"],
-            candidates=llm_context["candidates"],
-            low_risk_reason=_first_non_empty_string(low_risk_evaluation.get("reason")),
-            matched_terms=list(low_risk_evaluation.get("matched_terms") or []),
-        )
-        _log_guidance_timing(
-            "llm_general_safe",
-            llm_started,
-            guidance_returned=isinstance(llm_result.get("guidance"), dict),
-            failure_reason=llm_result.get("failure_reason"),
-            low_risk_reason=low_risk_evaluation.get("reason"),
-        )
-        llm_guidance = llm_result.get("guidance")
-        if isinstance(llm_guidance, dict):
-            _attach_retrieval_applicability(llm_guidance, retrieval_results)
-            _log_guidance_selected(
-                llm_guidance,
-                item=_first_non_empty_string(classification.get("item")),
-                low_risk_eligible=True,
-            )
-            return _attach_tavily_outcome(llm_guidance, tavily_outcome)
-
-        failure_reason = _first_non_empty_string(llm_result.get("failure_reason"))
-        if failure_reason in _LLM_SKIP_REASONS:
-            logger.info("LLM guidance skipped. reason=%s", failure_reason)
-        elif failure_reason:
-            logger.info(
-                "LLM guidance validation failed. reason=%s fallback=%s",
-                failure_reason,
-                "llm_general_fallback",
-            )
-        guidance = _deterministic_low_risk_guidance(
-            classification,
-            low_risk_evaluation=low_risk_evaluation,
-            failure_reason=failure_reason or "llm_unavailable",
-        )
-        _attach_retrieval_applicability(guidance, retrieval_results)
-        logger.info(
-            "Deterministic low-risk fallback used. item=%s group=%s reason=%s low_risk_reason=%s",
-            _first_non_empty_string(classification.get("item")),
-            guidance.get("guidance_metadata", {}).get("fallback_group"),
-            failure_reason,
-            low_risk_evaluation.get("reason"),
-        )
-        _log_guidance_selected(
-            guidance,
-            item=_first_non_empty_string(classification.get("item")),
-            low_risk_eligible=True,
-            reason=f"deterministic_low_risk_fallback:{low_risk_evaluation['reason']}",
-        )
-        return _attach_tavily_outcome(guidance, tavily_outcome)
-
-    if _legacy_rules_allowed(classification):
-        legacy_guidance = _guidance_from_legacy_rules(classification)
-        if legacy_guidance is not None:
-            _attach_retrieval_applicability(legacy_guidance, retrieval_results)
-            _log_guidance_selected(
-                legacy_guidance,
-                item=_first_non_empty_string(classification.get("item")),
-                category=_first_non_empty_string(classification.get("category")),
-            )
-            return _attach_tavily_outcome(legacy_guidance, tavily_outcome)
-
-    if _is_open_recognition_classification(classification):
-        guidance = _open_guidance_unavailable(classification)
-        _log_guidance_selected(
-            guidance,
-            item=_first_non_empty_string(classification.get("item")),
-            low_risk_eligible=False,
-            reason=low_risk_evaluation["reason"],
-        )
-        return _attach_tavily_outcome(guidance, tavily_outcome)
-
-    guidance = _default_safe_guidance()
+    guidance = _general_fallback_guidance(
+        classification,
+        reason="no_usable_sources",
+        extra_metadata=_build_retrieval_applicability_metadata(retrieval_results),
+    )
     _log_guidance_selected(
         guidance,
         item=_first_non_empty_string(classification.get("item")),
         category=_first_non_empty_string(classification.get("category")),
-        reason="no_json_no_legacy_match",
+        reason="no_usable_sources",
     )
     return _attach_tavily_outcome(guidance, tavily_outcome)
 
@@ -2517,7 +2520,10 @@ def _apply_final_consistency_guard(
     )
     guard_metadata = _consistency_guard_metadata(validation, guidance)
 
-    if validation.get("resolution") == "clarification":
+    if (
+        validation.get("resolution") == "clarification"
+        or "trash_conflicts_with_special_handling_evidence" in contradiction_codes
+    ):
         decision = _consistency_clarification_decision(validation)
         replacement = _clarification_guidance(decision)
         original_metadata = guidance.get("guidance_metadata")
@@ -2531,69 +2537,53 @@ def _apply_final_consistency_guard(
         )
         return replacement, decision
 
-    if "strong_action_without_applicable_evidence" in contradiction_codes:
-        replacement = (
-            _open_guidance_unavailable(classification)
-            if _is_open_recognition_classification(classification)
-            else _default_safe_guidance()
+    if any(
+        code
+        in {
+            "reuse_conflicts_with_explicit_condition",
+            "strong_action_without_applicable_evidence",
+        }
+        for code in contradiction_codes
+    ):
+        original_metadata = guidance.get("guidance_metadata")
+        original_metadata = (
+            original_metadata if isinstance(original_metadata, dict) else {}
         )
-    else:
-        low_risk_evaluation = _evaluate_low_risk_open_item(classification)
-        if low_risk_evaluation.get("eligible") is True:
-            replacement = _deterministic_low_risk_guidance(
-                classification,
-                low_risk_evaluation=low_risk_evaluation,
-                failure_reason="consistency_guard",
-            )
-        else:
-            replacement = (
-                _open_guidance_unavailable(classification)
-                if _is_open_recognition_classification(classification)
-                else _default_safe_guidance()
-            )
+        replacement = _general_fallback_guidance(
+            classification,
+            reason="consistency_guard",
+            extra_metadata=_merge_guidance_metadata(
+                {
+                    "applicability_by_chunk": original_metadata.get(
+                        "applicability_by_chunk", {}
+                    ),
+                    "applicability_reason_codes": original_metadata.get(
+                        "applicability_reason_codes", {}
+                    ),
+                    "applicable_chunk_ids": list(
+                        original_metadata.get("applicable_chunk_ids") or []
+                    ),
+                    "conditional_chunk_ids": list(
+                        original_metadata.get("conditional_chunk_ids") or []
+                    ),
+                    "not_applicable_chunk_ids": list(
+                        original_metadata.get("not_applicable_chunk_ids") or []
+                    ),
+                },
+                _local_web_metadata(original_metadata),
+                guard_metadata,
+            ),
+        )
+        return replacement, clarification_decision
 
     original_metadata = guidance.get("guidance_metadata")
     original_metadata = original_metadata if isinstance(original_metadata, dict) else {}
-    replacement["guidance_metadata"] = _merge_guidance_metadata(
-        {
-            "applicability_by_chunk": original_metadata.get(
-                "applicability_by_chunk", {}
-            ),
-            "applicability_reason_codes": original_metadata.get(
-                "applicability_reason_codes", {}
-            ),
-            "applicable_chunk_ids": list(
-                original_metadata.get("applicable_chunk_ids") or []
-            ),
-            "conditional_chunk_ids": list(
-                original_metadata.get("conditional_chunk_ids") or []
-            ),
-            "not_applicable_chunk_ids": list(
-                original_metadata.get("not_applicable_chunk_ids") or []
-            ),
-        },
-        _local_web_metadata(original_metadata),
-        replacement.get("guidance_metadata"),
+    guidance["guidance_metadata"] = _merge_guidance_metadata(
+        original_metadata,
         guard_metadata,
+        {"consistency_guard_non_blocking": True},
     )
-
-    fallback_validation = guidance_consistency_service.validate_guidance_consistency(
-        classification,
-        replacement,
-    )
-    if fallback_validation.get("valid") is not True:
-        replacement = (
-            _open_guidance_unavailable(classification)
-            if _is_open_recognition_classification(classification)
-            else _default_safe_guidance()
-        )
-        replacement["guidance_metadata"] = _merge_guidance_metadata(
-            replacement.get("guidance_metadata"),
-            guard_metadata,
-            {"consistency_secondary_fallback": True},
-        )
-
-    return replacement, clarification_decision
+    return guidance, clarification_decision
 
 
 def build_prediction_response(

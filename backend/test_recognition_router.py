@@ -86,7 +86,7 @@ class RecognitionRouterTests(unittest.TestCase):
         )
         mock_phash.assert_not_called()
 
-    def test_contradictory_open_container_is_downgraded_and_broadened(self):
+    def test_secondary_observations_do_not_broaden_confident_primary_identity(self):
         result = _build_open_vlm_classification(
             {
                 "recognition_details": {
@@ -123,10 +123,93 @@ class RecognitionRouterTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["status"], "uncertain")
-        self.assertEqual(result["item"], "Personal care container")
-        self.assertEqual(result["recognition_confidence"]["level"], "low")
-        self.assertFalse(_should_cache_open_vlm_classification(result))
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["item"], "Ceramic mug")
+        self.assertEqual(result["recognition_confidence"]["suggested_label"], None)
+        self.assertTrue(_should_cache_open_vlm_classification(result))
+
+    def test_strong_normalized_calculator_is_not_replaced_by_container_observations(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "calculator",
+                    "likely_material": "plastic",
+                    "broad_category": "electronics",
+                    "candidates": [
+                        {"label": "calculator", "confidence": 1.0}
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "packaging_use",
+                            "value": "rigid container",
+                            "confidence": 0.91,
+                            "evidence": "Rectangular body visible.",
+                        },
+                        {
+                            "aspect": "form_factor",
+                            "value": "rigid plastic container",
+                            "confidence": 0.92,
+                            "evidence": "Plastic shell is visible.",
+                        },
+                        {
+                            "aspect": "construction",
+                            "value": "rigid plastic body",
+                            "confidence": 0.9,
+                            "evidence": "Molded plastic housing.",
+                        },
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["item"], "Calculator")
+        self.assertEqual(result["category"], "Electronics")
+        self.assertTrue(result["trusted_guidance_available"])
+        self.assertEqual(result["trusted_guidance_label"], "Calculator")
+        self.assertEqual(result["recognition_confidence"]["suggested_label"], None)
+
+    def test_strong_normalized_toothpaste_tube_is_not_replaced_by_personal_care(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "toothpaste tube",
+                    "likely_material": "plastic",
+                    "broad_category": "personal care container",
+                    "candidates": [
+                        {"label": "toothpaste tube", "confidence": 1.0}
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "packaging_use",
+                            "value": "personal care container",
+                            "confidence": 0.93,
+                            "evidence": "Toothpaste branding is visible.",
+                        },
+                        {
+                            "aspect": "form_factor",
+                            "value": "flexible squeeze tube",
+                            "confidence": 0.94,
+                            "evidence": "Crimped end and cap are visible.",
+                        },
+                        {
+                            "aspect": "construction",
+                            "value": "plastic laminate tube",
+                            "confidence": 0.88,
+                            "evidence": "Flexible tube wall is visible.",
+                        },
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["item"], "Toothpaste Tube")
+        self.assertEqual(result["recognition_confidence"]["suggested_label"], None)
 
     def test_generic_personal_care_broadening_does_not_erase_electronic_item(self):
         result = _build_open_vlm_classification(
@@ -175,7 +258,7 @@ class RecognitionRouterTests(unittest.TestCase):
         self.assertEqual(result["recognized_broad_category"], "electronics")
         self.assertEqual(result["status"], "confident")
 
-    def test_matching_personal_care_bottles_can_broaden_safely(self):
+    def test_matching_personal_care_bottles_keep_specific_primary_identity(self):
         for raw_label in ("lotion bottle", "face cleanser bottle"):
             with self.subTest(raw_label=raw_label):
                 result = _build_open_vlm_classification(
@@ -213,9 +296,101 @@ class RecognitionRouterTests(unittest.TestCase):
                 )
 
                 self.assertIsNotNone(result)
-                self.assertEqual(result["item"], "Personal care container")
+                expected_item = "Lotion Bottle" if raw_label == "lotion bottle" else "Face Cleanser Bottle"
+                self.assertEqual(result["item"], expected_item)
                 self.assertEqual(result["status"], "confident")
                 self.assertFalse(result["recognition_confidence"]["blocking"])
+
+    def test_weak_primary_recognition_still_allows_clarification_without_renaming(self):
+        result = _build_open_vlm_classification(
+            {
+                "recognition_details": {
+                    "status": "confident",
+                    "raw_item_label": "metal cylinder",
+                    "likely_material": "metal",
+                    "broad_category": "household",
+                    "candidates": [
+                        {"label": "metal cylinder", "confidence": 0.61},
+                        {"label": "AA battery", "confidence": 0.52},
+                    ],
+                    "visual_observations": [
+                        {
+                            "aspect": "power_source",
+                            "value": "battery-like cell",
+                            "confidence": 0.66,
+                            "evidence": "Raised terminal visible.",
+                        },
+                        {
+                            "aspect": "form_factor",
+                            "value": "small cylindrical cell",
+                            "confidence": 0.82,
+                            "evidence": "Cylindrical casing.",
+                        },
+                    ],
+                }
+            }
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["item"], "Metal Cylinder")
+        self.assertTrue(result["recognition_confidence"]["blocking"])
+
+    def test_battery_and_laptop_behavior_remains_unchanged(self):
+        cases = (
+            (
+                "battery",
+                "Battery",
+                "battery",
+                [
+                    {
+                        "aspect": "form_factor",
+                        "value": "cylindrical battery",
+                        "confidence": 0.94,
+                        "evidence": "Battery terminals are visible.",
+                    }
+                ],
+            ),
+            (
+                "laptop",
+                "Laptop",
+                "electronics",
+                [
+                    {
+                        "aspect": "form_factor",
+                        "value": "folding computer",
+                        "confidence": 0.93,
+                        "evidence": "Keyboard and screen hinge are visible.",
+                    },
+                    {
+                        "aspect": "power_source",
+                        "value": "powered electronic device",
+                        "confidence": 0.9,
+                        "evidence": "Charging port is visible.",
+                    },
+                ],
+            ),
+        )
+        for raw_label, expected_item, broad_category, observations in cases:
+            with self.subTest(raw_label=raw_label):
+                result = _build_open_vlm_classification(
+                    {
+                        "recognition_details": {
+                            "status": "confident",
+                            "raw_item_label": raw_label,
+                            "likely_material": broad_category,
+                            "broad_category": broad_category,
+                            "candidates": [
+                                {"label": raw_label, "confidence": 0.96}
+                            ],
+                            "visual_observations": observations,
+                        }
+                    }
+                )
+
+                self.assertIsNotNone(result)
+                self.assertEqual(result["status"], "confident")
+                self.assertEqual(result["item"], expected_item)
 
     def test_nonblocking_medium_open_recognition_remains_confident(self):
         result = _build_open_vlm_classification(

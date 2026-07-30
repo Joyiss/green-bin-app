@@ -325,46 +325,19 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload.pop("request_id").startswith("predict-"))
+        self.assertEqual(payload["item"], "Calculator")
+        self.assertEqual(payload["category"], "Electronics")
+        self.assertEqual(payload["status"], "confident")
+        self.assertEqual(payload["candidates"][0]["label"], "Calculator")
+        self.assertEqual(payload["disposal_action"], "check local guidance")
+        self.assertEqual(payload["guidance_source"], "safe_fallback")
         self.assertEqual(
-            payload,
-            {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [
-                    {
-                        "label": "Calculator",
-                        "selected_item": "Calculator",
-                        "guidance_supported": True,
-                        "score": 0.98,
-                    }
-                ],
-                "disposal_action": "e-waste recycling",
-                "material_code": None,
-                "impact_level": "High Impact",
-                "summary": "Calculator is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
-                "steps": [
-                    "Do not place electronics in household trash.",
-                    "Wipe any personal data before disposal.",
-                    "Take the item to an e-waste center or retailer drop-off.",
-                ],
-                "guidance_source": "legacy_rules_fallback",
-                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
-                "guidance_confidence": {
-                    "level": "medium",
-                    "score": 0.62,
-                    "reason_codes": ["static_category_guidance"],
-                    "source": "legacy_rules_fallback",
-                    "applicability": {
-                        "applicable_chunk_ids": [],
-                        "conditional_chunk_ids": [],
-                        "not_applicable_chunk_ids": [],
-                    },
-                },
-                "cache_hit": True,
-                "recognition_source": "phash_cache",
-            },
+            payload["guidance_metadata"]["final_generation_path"],
+            "general_fallback",
         )
+        self.assertEqual(payload["guidance_confidence"]["level"], "low")
+        self.assertTrue(payload["cache_hit"])
+        self.assertEqual(payload["recognition_source"], "phash_cache")
 
     def test_predict_accepts_real_multipart_uploads_through_recognition_flow(self):
         client = TestClient(app)
@@ -465,9 +438,9 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(payload["item"], "Water Bottle")
         self.assertEqual(payload["status"], "confident")
         self.assertEqual(payload["disposal_action"], "check local guidance")
-        self.assertEqual(payload["guidance_source"], "llm_general_fallback")
-        self.assertIn("reuse", payload["summary"].casefold())
-        self.assertIn("trash", payload["summary"].casefold())
+        self.assertEqual(payload["guidance_source"], "safe_fallback")
+        self.assertIn("verified local guidance is unavailable", payload["summary"].casefold())
+        self.assertIn("trash", " ".join(payload["steps"]).casefold())
         self.assertNotIn(payload["disposal_action"], {"recycle", "donate/reuse"})
         self.assertEqual(
             payload["recognition_details"]["normalized"],
@@ -627,7 +600,7 @@ class PredictRouteTests(unittest.TestCase):
             response.json()["recognition_source"], "user_confirmed_selection"
         )
         self.assertNotIn("clarification", response.json())
-        self.assertNotEqual(response.json()["guidance_source"], "safe_fallback")
+        self.assertEqual(response.json()["guidance_source"], "safe_fallback")
         self.assertEqual(
             response.json()["candidates"],
             [
@@ -648,7 +621,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.json()["item"], "Plastic Water Bottle")
         self.assertEqual(response.json()["category"], "Plastic")
         self.assertEqual(response.json()["status"], "confident")
-        self.assertNotEqual(response.json()["guidance_source"], "safe_fallback")
+        self.assertEqual(response.json()["guidance_source"], "safe_fallback")
 
     def test_selected_item_unmapped_label_stays_unknown(self):
         client = TestClient(app)
@@ -710,12 +683,12 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response.json()["guidance_source"], "safe_fallback")
         self.assertEqual(response.json()["disposal_action"], "check local guidance")
         self.assertIn("pencil", response.json()["summary"].lower())
         self.assertEqual(
-            response.json()["guidance_metadata"]["llm_fallback_reason"],
-            "missing_summary",
+            response.json()["guidance_metadata"]["fallback_reason"],
+            "no_usable_sources",
         )
 
     def test_predict_open_supported_match_can_use_existing_trusted_guidance(self):
@@ -748,41 +721,22 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload.pop("request_id").startswith("predict-"))
+        self.assertEqual(payload["item"], "Charging Cable")
+        self.assertEqual(payload["category"], "Electronics")
+        self.assertEqual(payload["status"], "confident")
         self.assertEqual(
-            payload,
-            {
-                "item": "Charging Cable",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [
-                    {"label": "Cable", "selected_item": "Cable", "guidance_supported": True}
-                ],
-                "disposal_action": "e-waste recycling",
-                "material_code": None,
-                "impact_level": "High Impact",
-                "summary": "Charging Cable is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
-                "steps": [
-                    "Do not place electronics in household trash.",
-                    "Wipe any personal data before disposal.",
-                    "Take the item to an e-waste center or retailer drop-off.",
-                ],
-                "guidance_source": "legacy_rules_fallback",
-                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
-                "guidance_confidence": {
-                    "level": "medium",
-                    "score": 0.62,
-                    "reason_codes": ["static_category_guidance"],
-                    "source": "legacy_rules_fallback",
-                    "applicability": {
-                        "applicable_chunk_ids": [],
-                        "conditional_chunk_ids": [],
-                        "not_applicable_chunk_ids": [],
-                    },
-                },
-                "cache_hit": False,
-                "recognition_source": "vlm_open",
-            },
+            payload["candidates"],
+            [{"label": "Cable", "selected_item": "Cable", "guidance_supported": True}],
         )
+        self.assertEqual(payload["disposal_action"], "check local guidance")
+        self.assertEqual(payload["guidance_source"], "safe_fallback")
+        self.assertEqual(
+            payload["guidance_metadata"]["final_generation_path"],
+            "general_fallback",
+        )
+        self.assertEqual(payload["guidance_confidence"]["level"], "low")
+        self.assertFalse(payload["cache_hit"])
+        self.assertEqual(payload["recognition_source"], "vlm_open")
 
     def test_predict_open_high_risk_item_without_chunks_stays_non_prescriptive(self):
         client = TestClient(app)
@@ -829,11 +783,8 @@ class PredictRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["guidance_source"], "safe_fallback")
-        self.assertIsNone(response.json()["disposal_action"])
-        self.assertEqual(
-            response.json()["summary"],
-            "Trusted disposal guidance is not available yet for this recognized item.",
-        )
+        self.assertEqual(response.json()["disposal_action"], "check local guidance")
+        self.assertIn("Verified local guidance is unavailable", response.json()["summary"])
 
     def test_predict_unknown_open_result_stays_safe(self):
         client = TestClient(app)
@@ -936,46 +887,19 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload.pop("request_id").startswith("predict-"))
+        self.assertEqual(payload["item"], "Calculator")
+        self.assertEqual(payload["category"], "Electronics")
+        self.assertEqual(payload["status"], "confident")
+        self.assertEqual(payload["candidates"][0]["label"], "Calculator")
+        self.assertEqual(payload["disposal_action"], "check local guidance")
+        self.assertEqual(payload["guidance_source"], "safe_fallback")
         self.assertEqual(
-            payload,
-            {
-                "item": "Calculator",
-                "category": "Electronics",
-                "status": "confident",
-                "candidates": [
-                    {
-                        "label": "Calculator",
-                        "selected_item": "Calculator",
-                        "guidance_supported": True,
-                        "score": 0.98,
-                    }
-                ],
-                "disposal_action": "e-waste recycling",
-                "material_code": None,
-                "impact_level": "High Impact",
-                "summary": "Calculator is categorized as electronics and should be handled through e-waste recycling guidance in your area.",
-                "steps": [
-                    "Do not place electronics in household trash.",
-                    "Wipe any personal data before disposal.",
-                    "Take the item to an e-waste center or retailer drop-off.",
-                ],
-                "guidance_source": "legacy_rules_fallback",
-                "guidance_metadata": {"final_generation_path": "legacy_safe_fallback"},
-                "guidance_confidence": {
-                    "level": "medium",
-                    "score": 0.62,
-                    "reason_codes": ["static_category_guidance"],
-                    "source": "legacy_rules_fallback",
-                    "applicability": {
-                        "applicable_chunk_ids": [],
-                        "conditional_chunk_ids": [],
-                        "not_applicable_chunk_ids": [],
-                    },
-                },
-                "cache_hit": True,
-                "recognition_source": "phash_cache",
-            },
+            payload["guidance_metadata"]["final_generation_path"],
+            "general_fallback",
         )
+        self.assertEqual(payload["guidance_confidence"]["level"], "low")
+        self.assertTrue(payload["cache_hit"])
+        self.assertEqual(payload["recognition_source"], "phash_cache")
         mock_clip.assert_not_called()
         mock_vlm.assert_not_called()
 

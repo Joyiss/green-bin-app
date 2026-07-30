@@ -390,6 +390,34 @@ def _has_positive_curbside_claim(text: str) -> bool:
     return False
 
 
+def _has_verified_local_claim(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bverified\s+local\b|\bofficial\s+local\b|\blocal\s+rules?\s+(?:say|confirm|require|allow|accept)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _chunks_support_verified_local(chunks: list[dict[str, Any]]) -> bool:
+    for chunk in chunks:
+        if chunk.get("requires_location_check") is True:
+            continue
+        metadata = chunk.get("source_metadata")
+        if isinstance(metadata, dict) and metadata.get("local") is True:
+            return True
+        signals = chunk.get("decision_signals")
+        if (
+            isinstance(signals, dict)
+            and signals.get("tavily_trust_level") == "LOCAL_PRIMARY"
+        ):
+            return True
+        if chunk.get("source_type") in {"official_local_web", "manual_local_rule"}:
+            return True
+    return False
+
+
 def validate_guidance_basic(
     payload: Any,
     context: dict[str, Any],
@@ -432,10 +460,11 @@ def validate_guidance_basic(
         errors.append("unsupported_disposal_action")
 
     main_text = " ".join([summary or "", *steps]).casefold()
-    for source_name in _SOURCE_NAMES:
-        if re.search(rf"(?<![a-z0-9]){re.escape(source_name)}(?![a-z0-9])", main_text):
-            errors.append(f"source_name_in_main_guidance:{source_name}")
-            break
+    source_name_warnings = [
+        f"source_name_in_main_guidance:{source_name}"
+        for source_name in _SOURCE_NAMES
+        if re.search(rf"(?<![a-z0-9]){re.escape(source_name)}(?![a-z0-9])", main_text)
+    ]
 
     all_user_text = [summary or "", *steps, *_normalize_string_list(payload.get("warnings"))]
     for text in all_user_text:
@@ -456,6 +485,9 @@ def validate_guidance_basic(
     if _has_positive_curbside_claim(main_text):
         if not _chunks_support_curbside(chunks):
             errors.append("unsupported_curbside_claim")
+    if _has_verified_local_claim(main_text):
+        if not _chunks_support_verified_local(chunks):
+            errors.append("unsupported_local_verification_claim")
 
     if errors:
         return None, list(dict.fromkeys(errors))
@@ -473,6 +505,7 @@ def validate_guidance_basic(
         "warnings": _normalize_string_list(payload.get("warnings")),
         "confidence": _normalize_optional_string(payload.get("confidence")) or "medium",
         "sources_used": sources_used,
+        "validation_warnings": source_name_warnings,
     }, []
 
 
@@ -815,7 +848,10 @@ def _build_source_guidance(
     validated: dict[str, Any], chunks: list[dict[str, Any]], settings: dict[str, Any],
     *, repaired: bool,
 ) -> dict[str, Any]:
-    used_ids = validated["sources_used"] or _chunk_ids(chunks)
+    default_chunks = [
+        chunk for chunk in chunks if chunk.get("requires_location_check") is not True
+    ] or chunks
+    used_ids = validated["sources_used"] or _chunk_ids(default_chunks)
     used_chunks = [chunk for chunk in chunks if chunk.get("id") in used_ids]
     guidance = {
         "disposal_action": validated["disposal_action"],
@@ -885,123 +921,81 @@ def _generate_with_retry(
     item: str | None, deterministic_builder: Callable[[str], dict[str, Any]],
     accepted_builder: Callable[[dict[str, Any], bool], dict[str, Any]],
 ) -> dict[str, Any]:
-    original_output: Any = None
-    validation_errors: list[str] = []
-    current_prompt = prompt
-    for attempt in range(2):
-        attempt_started = perf_counter()
+    del deterministic_builder
+    attempt_started = perf_counter()
+    logger.info(
+        "guidance_llm_attempt request_id=%s mode=%s item=%s attempt=1 provider=%s model=%s timeout_seconds=%s repair_attempt=False",
+        request_context.get_predict_request_id(),
+        mode,
+        item,
+        settings.get("provider"),
+        settings.get("model"),
+        settings.get("timeout_seconds"),
+    )
+    try:
+        raw_response = _groq_request(prompt, settings=settings, mode=mode)
+        parsed = _extract_json_object(raw_response)
+    except requests.RequestException as exc:
+        reason = "timeout" if isinstance(exc, requests.Timeout) else "request_error"
+        _log_guidance_llm_timing(
+            "attempt_total",
+            attempt_started,
+            mode=mode,
+            attempt=1,
+            result="request_exception",
+            reason=reason,
+        )
+        return _llm_result(guidance=None, failure_reason=reason)
+    except (ValueError, json.JSONDecodeError):
+        _log_guidance_llm_timing(
+            "attempt_total",
+            attempt_started,
+            mode=mode,
+            attempt=1,
+            result="invalid_json",
+        )
+        return _llm_result(guidance=None, failure_reason="invalid_json")
+
+    validated, validation_errors = validate_guidance_basic(parsed, context)
+    if validated is not None:
         logger.info(
-            "guidance_llm_attempt request_id=%s mode=%s item=%s attempt=%s provider=%s model=%s timeout_seconds=%s repair_attempt=%s",
-            request_context.get_predict_request_id(),
+            "LLM guidance validation succeeded. mode=%s item=%s disposal_action=%s final_generation_path=original_llm",
             mode,
             item,
-            attempt + 1,
-            settings.get("provider"),
-            settings.get("model"),
-            settings.get("timeout_seconds"),
-            attempt > 0,
-        )
-        try:
-            raw_response = _groq_request(current_prompt, settings=settings, mode=mode)
-            if attempt == 0:
-                original_output = raw_response
-            parsed = _extract_json_object(raw_response)
-        except requests.RequestException as exc:
-            reason = "timeout" if isinstance(exc, requests.Timeout) else "request_error"
-            fallback = deterministic_builder(reason)
-            _log_deterministic_fallback(
-                mode=mode, item=item, original_output=original_output,
-                reasons=[reason], repair_attempted=attempt > 0,
-            )
-            _log_guidance_llm_timing(
-                "attempt_total",
-                attempt_started,
-                mode=mode,
-                attempt=attempt + 1,
-                result="request_exception",
-                reason=reason,
-            )
-            return _llm_result(guidance=fallback, failure_reason=None)
-        except (ValueError, json.JSONDecodeError):
-            validation_errors = ["invalid_json"]
-            if attempt == 0:
-                _log_guidance_llm_timing(
-                    "attempt_total",
-                    attempt_started,
-                    mode=mode,
-                    attempt=attempt + 1,
-                    result="invalid_json_repair_scheduled",
-                )
-                current_prompt = _build_repair_prompt(
-                    original_prompt=prompt,
-                    validation_errors=validation_errors,
-                    previous_response=raw_response,
-                )
-                continue
-            fallback = deterministic_builder("invalid_json")
-            _log_deterministic_fallback(
-                mode=mode, item=item, original_output=original_output,
-                reasons=validation_errors, repair_attempted=True,
-            )
-            _log_guidance_llm_timing(
-                "attempt_total",
-                attempt_started,
-                mode=mode,
-                attempt=attempt + 1,
-                result="invalid_json_fallback",
-            )
-            return _llm_result(guidance=fallback, failure_reason=None)
-
-        validated, validation_errors = validate_guidance_basic(parsed, context)
-        if validated is not None:
-            logger.info(
-                "LLM guidance validation succeeded. mode=%s item=%s disposal_action=%s final_generation_path=%s",
-                mode, item, validated["disposal_action"],
-                "repaired_llm" if attempt else "original_llm",
-            )
-            _log_guidance_llm_timing(
-                "attempt_total",
-                attempt_started,
-                mode=mode,
-                attempt=attempt + 1,
-                result="validated",
-                repair_attempt=attempt > 0,
-            )
-            return _llm_result(guidance=accepted_builder(validated, attempt > 0), failure_reason=None)
-
-        logger.info(
-            "LLM guidance validation failed. mode=%s item=%s original_llm_output=%s validation_reason=%s repair_attempted=%s deterministic_fallback_used=false",
-            mode, item, _sanitize_response_preview(original_output), validation_errors, attempt > 0,
-        )
-        if attempt == 0:
-            _log_guidance_llm_timing(
-                "attempt_total",
-                attempt_started,
-                mode=mode,
-                attempt=attempt + 1,
-                result="validation_repair_scheduled",
-                validation_errors=",".join(validation_errors),
-            )
-            current_prompt = _build_repair_prompt(
-                original_prompt=prompt, validation_errors=validation_errors,
-                previous_response=parsed,
-            )
-            continue
-        fallback = deterministic_builder(validation_errors[0] if validation_errors else "validation_failed")
-        _log_deterministic_fallback(
-            mode=mode, item=item, original_output=original_output,
-            reasons=validation_errors, repair_attempted=True,
+            validated["disposal_action"],
         )
         _log_guidance_llm_timing(
             "attempt_total",
             attempt_started,
             mode=mode,
-            attempt=attempt + 1,
-            result="validation_fallback",
-            validation_errors=",".join(validation_errors),
+            attempt=1,
+            result="validated",
+            repair_attempt=False,
         )
-        return _llm_result(guidance=fallback, failure_reason=None)
-    return _llm_result(guidance=None, failure_reason="validation_failed")
+        return _llm_result(
+            guidance=accepted_builder(validated, False),
+            failure_reason=None,
+        )
+
+    logger.info(
+        "LLM guidance validation failed. mode=%s item=%s original_llm_output=%s validation_reason=%s repair_attempted=False deterministic_fallback_used=false",
+        mode,
+        item,
+        _sanitize_response_preview(raw_response),
+        validation_errors,
+    )
+    _log_guidance_llm_timing(
+        "attempt_total",
+        attempt_started,
+        mode=mode,
+        attempt=1,
+        result="validation_failed",
+        validation_errors=",".join(validation_errors),
+    )
+    return _llm_result(
+        guidance=None,
+        failure_reason=validation_errors[0] if validation_errors else "validation_failed",
+    )
 
 
 def try_generate_source_grounded_guidance(

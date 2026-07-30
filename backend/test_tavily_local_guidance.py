@@ -121,6 +121,22 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             "Official local disposal rules for television in Austin, Texas",
         )
 
+    def test_simple_query_does_not_prepend_material_to_specific_item(self):
+        query = tavily.build_search_query(
+            _classification(
+                "Calculator",
+                material_category="Plastic",
+                category="Electronics",
+            ),
+            {"city": "Seattle", "county": "King County", "state": "Washington"},
+        )
+
+        self.assertEqual(
+            query,
+            "Official local disposal rules for calculator in Seattle, Washington",
+        )
+        self.assertNotIn("plastic calculator", query)
+
     def test_simple_query_uses_county_only_when_city_is_unavailable(self):
         query = tavily.build_search_query(
             _classification("Household batteries"),

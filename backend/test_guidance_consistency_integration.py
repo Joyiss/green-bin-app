@@ -64,8 +64,8 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["disposal_action"], "trash")
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertTrue(
             response["guidance_metadata"]["consistency_guard_triggered"]
         )
@@ -83,7 +83,7 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertIsNone(response["disposal_action"])
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertIn(
             "strong_action_without_applicable_evidence",

@@ -253,10 +253,10 @@ class GuidanceClarificationTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         mock_retrieve.assert_called_once()
-        mock_general_llm.assert_called_once()
+        mock_general_llm.assert_not_called()
         self.assertEqual(response["status"], "confident")
         self.assertNotIn("clarification", response)
-        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_user_confirmed_selection_continues_to_guidance(self):
         classification = {
@@ -282,7 +282,7 @@ class GuidanceClarificationTests(unittest.TestCase):
         mock_retrieve.assert_called_once()
         self.assertEqual(response["status"], "confident")
         self.assertNotIn("clarification", response)
-        self.assertEqual(response["disposal_action"], "e-waste recycling")
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_strong_recognition_preserves_existing_response_contract(self):
         classification = {

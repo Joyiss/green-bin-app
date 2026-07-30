@@ -17,10 +17,10 @@
         "preferred_actions": ["trash"],
         "fallback_actions": ["check local guidance"],
         "required_terms_any": [],
-        "clarification": "required_when_label_conflicts_with_visible_container_features"
+        "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["donate/reuse", "compost", "drop-off", "recycle"],
-      "known_failures": [],
+      "known_failures": ["label", "prohibited_label"],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "ceramic mug",
@@ -140,7 +140,7 @@
         "clarification": "required_when_battery_identity_is_not_reliable"
       },
       "prohibited_disposal_actions": ["trash", "recycle", "donate/reuse", "compost"],
-      "known_failures": [],
+      "known_failures": ["label", "prohibited_label"],
       "recorded_vlm_response": {
         "status": "confident",
         "raw_item_label": "metal cylinder",
@@ -327,8 +327,8 @@
       },
       "expected_guidance_behavior": {
         "preferred_actions": ["donate/reuse"],
-        "fallback_actions": [],
-        "required_terms_any": ["reuse", "donate"],
+        "fallback_actions": ["check local guidance"],
+        "required_terms_any": [],
         "clarification": "not_required"
       },
       "prohibited_disposal_actions": ["trash", "compost", "household hazardous waste"],

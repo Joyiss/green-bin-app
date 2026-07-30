@@ -440,24 +440,15 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
-        self.assertEqual(response["disposal_action"], "drop-off")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertEqual(
-            response["guidance_metadata"]["llm_fallback_reason"],
+            response["guidance_metadata"]["fallback_reason"],
             "invalid_json",
         )
-        self.assertIn("claims_used", response["guidance_metadata"])
-        self.assertIn("source_excerpts", response["guidance_metadata"])
-        self.assertIn("source_names", response["guidance_metadata"])
-        self.assertIn("source_urls", response["guidance_metadata"])
-        self.assertIn("limitations", response["guidance_metadata"])
-        self.assertIn("why_this_action", response["guidance_metadata"])
-        self.assertIn("retrieved_chunk_ids", response["guidance_metadata"])
-        self.assertEqual(response["guidance_confidence"]["level"], "medium")
-        self.assertIn(
-            "direct_rag_with_applicable_evidence",
-            response["guidance_confidence"]["reason_codes"],
-        )
+        self.assertEqual(response["guidance_metadata"]["final_generation_path"], "general_fallback")
+        self.assertEqual(response["guidance_confidence"]["level"], "low")
+        self.assertIn("general_fallback", response["guidance_confidence"]["reason_codes"])
 
     def test_conditional_retrieval_does_not_authorize_direct_recycling(self):
         observations = [
@@ -527,11 +518,11 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["disposal_action"], "trash")
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertNotEqual(response["disposal_action"], "recycle")
         self.assertEqual(response["recognition_confidence"]["level"], "high")
-        self.assertEqual(response["guidance_confidence"]["level"], "medium")
+        self.assertEqual(response["guidance_confidence"]["level"], "low")
 
     def test_direct_json_source_grounded_guidance_is_written_when_cacheable(self):
         classification = {
@@ -561,8 +552,8 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
-        mock_write.assert_called_once()
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        mock_write.assert_not_called()
 
     def test_open_normalized_item_material_and_category_can_retrieve_chunks(self):
         classification = {
@@ -593,10 +584,14 @@ class GuidanceServiceTests(unittest.TestCase):
                 "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
                 return_value={"guidance": None, "failure_reason": "llm_disabled"},
             ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         retrieve_kwargs = mock_retrieve.call_args.kwargs
         self.assertEqual(retrieve_kwargs["item_label"], "Battery")
         self.assertEqual(retrieve_kwargs["material"], "Battery")
@@ -638,10 +633,14 @@ class GuidanceServiceTests(unittest.TestCase):
                 "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
                 return_value={"guidance": None, "failure_reason": "llm_disabled"},
             ),
+            patch(
+                "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+                return_value=None,
+            ),
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["disposal_action"], "drop-off")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertNotEqual(response["disposal_action"], "recycle")
         self.assertNotEqual(response["steps"], ["ignore this"])
 
@@ -674,19 +673,15 @@ class GuidanceServiceTests(unittest.TestCase):
         with patch(
             "services.guidance_service.guidance_llm_service.try_generate_source_grounded_guidance",
             return_value={"guidance": None, "failure_reason": "llm_disabled"},
+        ), patch(
+            "services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance",
+            return_value=None,
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "json_rag_direct_generated")
-        self.assertEqual(response["disposal_action"], "drop-off")
-        self.assertIn(
-            "batteries_01",
-            response["guidance_metadata"]["retrieved_chunk_ids"],
-        )
-        self.assertNotIn(
-            "hhw_02",
-            response["guidance_metadata"]["retrieved_chunk_ids"],
-        )
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
+        self.assertIn("batteries_01", response["guidance_metadata"]["applicable_chunk_ids"])
 
     def test_low_risk_open_off_inventory_item_can_use_llm_general_fallback(self):
         classification = {
@@ -718,7 +713,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "Check local recycling or drop-off options before relying on them.",
                 "If no reuse or recycling option exists, follow local trash guidance.",
             ],
-            "guidance_source": "llm_general_fallback",
+            "guidance_source": "safe_fallback",
             "guidance_metadata": {
                 "llm_provider": "groq",
                 "llm_model": "llama-3.1-8b-instant",
@@ -740,9 +735,9 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["guidance_metadata"]["confidence"], "low")
-        self.assertIsNone(response["disposal_action"])
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_low_risk_pencil_without_json_chunks_can_use_llm_general_fallback(self):
         classification = {
@@ -774,7 +769,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "Check local reuse or recycling options before relying on them.",
                 "If no better option exists, follow local trash guidance.",
             ],
-            "guidance_source": "llm_general_fallback",
+            "guidance_source": "safe_fallback",
             "guidance_metadata": {
                 "llm_provider": "groq",
                 "llm_model": "llama-3.1-8b-instant",
@@ -796,8 +791,8 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
-        self.assertIsNone(response["disposal_action"])
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_low_risk_pencil_with_invalid_general_safe_output_uses_deterministic_fallback(self):
         classification = {
@@ -831,21 +826,16 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
-        self.assertIn("pencil", response["summary"].lower())
         self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
         self.assertEqual(
-            response["guidance_metadata"]["llm_fallback_reason"],
-            "missing_summary",
+            response["guidance_metadata"]["fallback_reason"],
+            "no_usable_sources",
         )
-        self.assertTrue(response["guidance_metadata"]["deterministic_fallback_used"])
-        self.assertEqual(response["guidance_metadata"]["claims_used"], [])
-        self.assertEqual(response["guidance_metadata"]["source_excerpts"], [])
         self.assertEqual(response["guidance_metadata"]["source_names"], [])
         self.assertEqual(response["guidance_metadata"]["source_urls"], [])
         self.assertEqual(response["guidance_metadata"]["retrieved_chunk_ids"], [])
-        self.assertIn("why_this_action", response["guidance_metadata"])
 
     def test_sheet_music_is_low_risk_eligible_for_general_safe_fallback(self):
         classification = _open_classification(
@@ -866,7 +856,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "Check local recycling or drop-off options before using them.",
                 "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
             ],
-            "guidance_source": "llm_general_fallback",
+            "guidance_source": "safe_fallback",
             "guidance_metadata": {
                 "llm_provider": "groq",
                 "llm_model": "llama-3.1-8b-instant",
@@ -885,7 +875,7 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
 
     def test_sheet_music_invalid_general_safe_output_uses_item_specific_deterministic_fallback(self):
         classification = _open_classification(
@@ -906,11 +896,10 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("sheet music", response["summary"].lower())
-        self.assertIn("clean and dry", response["summary"].lower())
-        self.assertIn("paper recycling", " ".join(response["steps"]).lower())
+        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
 
     def test_sheet_music_with_llm_disabled_falls_back_safely(self):
         classification = _open_classification(
@@ -929,7 +918,7 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_curtain_is_low_risk_eligible_for_general_safe_fallback(self):
@@ -951,7 +940,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "Check local recycling or drop-off options before using them.",
                 "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
             ],
-            "guidance_source": "llm_general_fallback",
+            "guidance_source": "safe_fallback",
             "guidance_metadata": {
                 "llm_provider": "groq",
                 "llm_model": "llama-3.1-8b-instant",
@@ -970,7 +959,7 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
 
     def test_curtain_invalid_general_safe_output_uses_textile_specific_deterministic_fallback(self):
         classification = _open_classification(
@@ -991,10 +980,10 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
-        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("curtain", response["summary"].lower())
-        self.assertIn("textile", " ".join(response["steps"]).lower())
+        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
 
     def test_rubiks_cube_invalid_general_safe_output_uses_reuse_focused_deterministic_fallback(self):
         classification = _open_classification(
@@ -1015,10 +1004,10 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("rubik", response["summary"].lower())
-        self.assertIn("donate", " ".join(response["steps"]).lower())
+        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
         self.assertNotIn("curbside recycling is accepted", response["summary"].lower())
 
     def test_plastic_container_invalid_general_safe_output_uses_container_specific_deterministic_fallback(self):
@@ -1040,10 +1029,9 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("container", response["summary"].lower())
-        self.assertIn("reuse", response["summary"].lower())
         self.assertIn("local program", " ".join(response["steps"]).lower())
 
     def test_generic_unknown_item_is_not_low_risk_eligible(self):
@@ -1162,7 +1150,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "Check local recycling or drop-off options before using them.",
                 "If no reuse, recycling, or drop-off option is available, follow local trash guidance.",
             ],
-            "guidance_source": "llm_general_fallback",
+            "guidance_source": "safe_fallback",
             "guidance_metadata": {
                 "llm_provider": "groq",
                 "llm_model": "llama-3.1-8b-instant",
@@ -1189,7 +1177,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 ):
                     response = build_prediction_response(classification)
 
-                self.assertEqual(response["guidance_source"], "llm_general_fallback")
+                self.assertEqual(response["guidance_source"], "safe_fallback")
 
     def test_multiple_high_risk_items_are_blocked_from_general_safe_fallback(self):
         cases = [
@@ -1252,7 +1240,7 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        self.assertIsNone(response["disposal_action"])
+        self.assertEqual(response["disposal_action"], "check local guidance")
         mock_rules.assert_not_called()
 
     def test_unsupported_open_recognition_items_do_not_use_legacy_rules(self):
@@ -1288,7 +1276,7 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         mock_rules.assert_not_called()
 
@@ -1318,8 +1306,8 @@ class GuidanceServiceTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["guidance_source"], "legacy_rules_fallback")
-        self.assertEqual(response["disposal_action"], "e-waste recycling")
+        self.assertEqual(response["guidance_source"], "safe_fallback")
+        self.assertEqual(response["disposal_action"], "check local guidance")
 
     def test_if_json_and_rules_both_fail_safe_fallback_works(self):
         classification = {
@@ -1336,8 +1324,8 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        self.assertIsNone(response["disposal_action"])
-        self.assertEqual(response["summary"], "Trusted disposal guidance is not available yet.")
+        self.assertEqual(response["disposal_action"], "check local guidance")
+        self.assertIn("Verified local guidance is unavailable", response["summary"])
 
     def test_safe_fallback_is_never_written_to_guidance_cache(self):
         classification = {
