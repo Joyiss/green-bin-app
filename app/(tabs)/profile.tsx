@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
@@ -453,7 +452,6 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
 
       <ScrollView
         contentContainerStyle={[

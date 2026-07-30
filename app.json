@@ -5,6 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
+    "backgroundColor": "#F3F1EE",
     "scheme": "greenbinapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -35,6 +36,17 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-navigation-bar",
+        {
+          "backgroundColor": "#00000000",
+          "barStyle": "dark",
+          "borderColor": "#00000000",
+          "visibility": "hidden",
+          "behavior": "overlay-swipe",
+          "position": "absolute"
+        }
+      ],
       [
         "expo-camera",
         {

@@ -5,7 +5,6 @@ import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -994,15 +993,8 @@ function CameraArea({
 
         {!shouldHideCameraUi ? (
           <>
-            <View style={[styles.backdropTopBar, { paddingTop: topInset + 16 }]}>
-              <Pressable
-                accessibilityLabel={isTorchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
-                accessibilityRole="button"
-                hitSlop={6}
-                onPress={onToggleTorch}
-                style={styles.headerIconButton}>
-                <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
-              </Pressable>
+            <View style={[styles.backdropTopBar, { paddingTop: topInset + 2 }]}>
+              <View style={styles.headerIconSpacer} />
               {onClose ? (
                 <Pressable
                   accessibilityLabel="Close scan result"
@@ -1051,7 +1043,20 @@ function CameraArea({
                 <View style={styles.shutterInner} />
               </Pressable>
 
-              <View style={styles.iconActionSpacer} />
+              <View style={styles.iconActionSpacer}>
+                <Pressable
+                  accessibilityLabel={isTorchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
+                  accessibilityRole="button"
+                  hitSlop={6}
+                  onPress={onToggleTorch}
+                  style={styles.iconActionButton}>
+                  <Ionicons
+                    color="#FFFFFF"
+                    name={isTorchOn ? 'flash' : 'flash-outline'}
+                    size={22}
+                  />
+                </Pressable>
+              </View>
             </View>
           </>
         ) : null}
@@ -2028,7 +2033,6 @@ export default function ScannerScreen() {
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
-      <StatusBar style="light" />
       <View style={styles.shell}>
         {permissionDenied ? (
           <CameraPermissionNotice
@@ -2485,7 +2489,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     bottom: 24,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: 20,
+    justifyContent: 'center',
     left: 18,
     position: 'absolute',
     right: 18,
@@ -2501,6 +2506,9 @@ const styles = StyleSheet.create({
     width: 52,
   },
   iconActionSpacer: {
+    alignItems: 'center',
+    height: 52,
+    justifyContent: 'center',
     width: 52,
   },
   shutterButton: {

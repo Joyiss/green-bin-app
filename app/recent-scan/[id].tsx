@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -268,7 +267,6 @@ export default function RecentScanDetailScreen() {
   if (!hasLoaded) {
     return (
       <SafeAreaView style={styles.page}>
-        <StatusBar style="dark" />
         <View style={styles.loadingState}>
           <ActivityIndicator color="#050505" size="small" />
         </View>
@@ -279,7 +277,6 @@ export default function RecentScanDetailScreen() {
   if (!scan) {
     return (
       <SafeAreaView style={styles.page}>
-        <StatusBar style="dark" />
         <View style={[styles.notFoundState, { paddingBottom: insets.bottom + 24 }]}>
           <View style={styles.notFoundIcon}>
             <Ionicons color="#5F5A54" name="alert-circle-outline" size={24} />
@@ -313,7 +310,6 @@ export default function RecentScanDetailScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
       <ScrollView
         contentContainerStyle={[
           styles.content,

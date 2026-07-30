@@ -1,7 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -266,7 +265,6 @@ export default function RecentScansScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
 
       <ScrollView
         contentContainerStyle={[

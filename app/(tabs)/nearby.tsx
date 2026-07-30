@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
@@ -450,7 +449,6 @@ export default function NearbyScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>nearby.</Text>
