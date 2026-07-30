@@ -1,6 +1,6 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import * as NavigationBar from 'expo-navigation-bar';
-import { Stack, usePathname, useSegments } from 'expo-router';
+import { Stack, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect } from 'react';
 import { AppState, InteractionManager, Platform } from 'react-native';
@@ -13,25 +13,24 @@ export const unstable_settings = {
   anchor: '(tabs)',
 };
 
-function useHiddenNavigationBar() {
-  const pathname = usePathname();
-
-  const hideNavigationBar = useCallback(() => {
+function useAndroidNavigationBar(isScanScreen: boolean) {
+  const updateNavigationBar = useCallback(() => {
     if (Platform.OS !== 'android') {
       return;
     }
 
-    NavigationBar.setVisibilityAsync('hidden').catch(() => {});
-  }, []);
+    NavigationBar.setStyle('light');
+    NavigationBar.setVisibilityAsync(isScanScreen ? 'hidden' : 'visible').catch(() => {});
+  }, [isScanScreen]);
 
   useEffect(() => {
-    hideNavigationBar();
-    const navigationBarTask = InteractionManager.runAfterInteractions(hideNavigationBar);
+    updateNavigationBar();
+    const navigationBarTask = InteractionManager.runAfterInteractions(updateNavigationBar);
 
     return () => {
       navigationBarTask.cancel();
     };
-  }, [hideNavigationBar, pathname]);
+  }, [updateNavigationBar]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') {
@@ -39,13 +38,14 @@ function useHiddenNavigationBar() {
     }
 
     const navigationBarSubscription = NavigationBar.addVisibilityListener(({ visibility }) => {
-      if (visibility === 'visible') {
-        hideNavigationBar();
+      const expectedVisibility = isScanScreen ? 'hidden' : 'visible';
+      if (visibility !== expectedVisibility) {
+        updateNavigationBar();
       }
     });
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState === 'active') {
-        hideNavigationBar();
+        updateNavigationBar();
       }
     });
 
@@ -53,7 +53,7 @@ function useHiddenNavigationBar() {
       navigationBarSubscription.remove();
       appStateSubscription.remove();
     };
-  }, [hideNavigationBar]);
+  }, [isScanScreen, updateNavigationBar]);
 }
 
 export default function RootLayout() {
@@ -61,7 +61,7 @@ export default function RootLayout() {
   const segments = useSegments();
   const isScanScreen = segments.length === 1 && segments[0] === '(tabs)';
   const statusBarStyle = isScanScreen ? 'light' : 'dark';
-  useHiddenNavigationBar();
+  useAndroidNavigationBar(isScanScreen);
 
   return (
     <GestureHandlerRootView style={{ backgroundColor: '#F3F1EE', flex: 1 }}>
@@ -70,7 +70,7 @@ export default function RootLayout() {
         <Stack
           screenOptions={{
             navigationBarColor: 'transparent',
-            navigationBarHidden: true,
+            navigationBarHidden: isScanScreen,
             navigationBarTranslucent: true,
             statusBarStyle: 'dark',
           }}>

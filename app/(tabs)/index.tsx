@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
@@ -1038,7 +1039,10 @@ function CameraArea({
                 accessibilityLabel="Take photo"
                 accessibilityRole="button"
                 disabled={isCaptureDisabled}
-                onPress={onTakePhoto}
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  onTakePhoto();
+                }}
                 style={[styles.shutterButton, isCaptureDisabled && styles.buttonDisabled]}>
                 <View style={styles.shutterInner} />
               </Pressable>
