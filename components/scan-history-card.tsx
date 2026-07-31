@@ -2,6 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
+
 export type ScanHistoryCardThumbnailVariant =
   | 'plastic-bottle'
   | 'cardboard-boxes'
@@ -187,6 +189,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.35,
     lineHeight: 22,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   metaRow: {
     alignItems: 'center',
@@ -207,6 +210,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.4,
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   statusChip: {
     alignItems: 'center',
@@ -224,6 +228,7 @@ const styles = StyleSheet.create({
   statusChipText: {
     fontSize: 11,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   needsActionStatusChip: {
     backgroundColor: '#F5EFE5',
@@ -242,6 +247,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     lineHeight: 16,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   chevronButton: {
     alignItems: 'center',

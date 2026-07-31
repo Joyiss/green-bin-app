@@ -2,8 +2,17 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { PRIMARY_TEXT_STYLES } from '@/constants/typography';
 
 export const BOTTOM_NAV_BAR_HEIGHT = 64;
 export const BOTTOM_NAV_BAR_VERTICAL_PADDING = 8;
@@ -13,6 +22,8 @@ export const BOTTOM_NAV_BAR_TOTAL_HEIGHT =
 const BOTTOM_NAV_BAR_MAX_WIDTH = 356;
 const BOTTOM_NAV_BAR_HORIZONTAL_MARGIN = 28;
 const BAR_HORIZONTAL_PADDING = 14;
+const TAB_TRANSITION_DURATION_MS = 225;
+const TAB_TRANSITION_EASING = Easing.out(Easing.cubic);
 
 const tabs = {
   index: {
@@ -37,6 +48,55 @@ const tabs = {
   },
 };
 
+type AnimatedTabContentProps = {
+  activeColor: string;
+  config: (typeof tabs)[keyof typeof tabs];
+  inactiveColor: string;
+  isFocused: boolean;
+};
+
+function AnimatedTabContent({
+  activeColor,
+  config,
+  inactiveColor,
+  isFocused,
+}: AnimatedTabContentProps) {
+  const focusProgress = useSharedValue(isFocused ? 1 : 0);
+
+  useEffect(() => {
+    focusProgress.value = withTiming(isFocused ? 1 : 0, {
+      duration: TAB_TRANSITION_DURATION_MS,
+      easing: TAB_TRANSITION_EASING,
+    });
+  }, [focusProgress, isFocused]);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    const transitionDip = Math.sin(focusProgress.value * Math.PI);
+
+    return {
+      opacity: 1 - transitionDip * 0.18,
+      transform: [{ scale: 1 - transitionDip * 0.035 }],
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.tabContent, animatedStyle]}>
+      <View style={styles.iconBubble}>
+        <Ionicons
+          color={isFocused ? activeColor : inactiveColor}
+          name={isFocused ? config.activeIcon : config.icon}
+          size={21}
+        />
+      </View>
+      <Text
+        numberOfLines={1}
+        style={[styles.tabLabel, { color: isFocused ? activeColor : inactiveColor }]}>
+        {config.label}
+      </Text>
+    </Animated.View>
+  );
+}
+
 export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
@@ -49,7 +109,19 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
 
   const tabCount = state.routes.length;
   const tabWidth = (barWidth - BAR_HORIZONTAL_PADDING * 2) / tabCount;
-  const selectedBubbleLeft = BAR_HORIZONTAL_PADDING + tabWidth * state.index;
+  const selectedBubbleOffset = tabWidth * state.index;
+  const indicatorOffset = useSharedValue(selectedBubbleOffset);
+
+  useEffect(() => {
+    indicatorOffset.value = withTiming(selectedBubbleOffset, {
+      duration: TAB_TRANSITION_DURATION_MS,
+      easing: TAB_TRANSITION_EASING,
+    });
+  }, [indicatorOffset, selectedBubbleOffset]);
+
+  const animatedIndicatorStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: indicatorOffset.value }],
+  }));
 
   return (
     <View pointerEvents="box-none" style={styles.wrapper}>
@@ -123,14 +195,15 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
 
         {/* Layer 4: Interactive Content Layer */}
         <View style={[styles.barFill, isAndroid && styles.barFillAndroid, { width: barWidth }]}>
-          <View
+          <Animated.View
             pointerEvents="none"
             style={[
               styles.selectedBubble,
               {
-                left: selectedBubbleLeft,
+                left: BAR_HORIZONTAL_PADDING,
                 width: tabWidth,
               },
+              animatedIndicatorStyle,
             ]}
           >
             {isAndroid ? (
@@ -157,7 +230,7 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
                 <View pointerEvents="none" style={styles.focusedTabEdge} />
               </>
             )}
-          </View>
+          </Animated.View>
 
           {state.routes.map((route, index) => {
             const isFocused = state.index === index;
@@ -198,18 +271,12 @@ export function BottomNavBar({ state, descriptors, navigation }: BottomTabBarPro
                   pressed && styles.tabButtonPressed,
                 ]}
               >
-                <View style={styles.iconBubble}>
-                  <Ionicons
-                    color={isFocused ? activeColor : inactiveColor}
-                    name={isFocused ? config.activeIcon : config.icon}
-                    size={21}
-                  />
-                </View>
-                <Text
-                  numberOfLines={1}
-                  style={[styles.tabLabel, { color: isFocused ? activeColor : inactiveColor }]}>
-                  {config.label}
-                </Text>
+                <AnimatedTabContent
+                  activeColor={activeColor}
+                  config={config}
+                  inactiveColor={inactiveColor}
+                  isFocused={isFocused}
+                />
               </Pressable>
             );
           })}
@@ -323,6 +390,11 @@ const styles = StyleSheet.create({
   tabButtonPressed: {
     opacity: 0.82,
   },
+  tabContent: {
+    alignItems: 'center',
+    gap: 4,
+    width: '100%',
+  },
   focusedTabSurface: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
@@ -366,5 +438,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
     textAlign: 'center',
     width: '100%',
+    ...PRIMARY_TEXT_STYLES.tab,
   },
 });

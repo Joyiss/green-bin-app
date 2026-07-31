@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { LocalGuidance } from '@/api/contracts';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 
 function formatFee(amount: number, currency: string | null) {
   if (currency === 'USD') {
@@ -82,6 +83,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   group: {
     gap: 3,
@@ -91,11 +93,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0,
+    ...PRIMARY_TEXT_STYLES.label,
   },
   value: {
     color: '#66605B',
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   sourceLink: {
     alignItems: 'center',
@@ -109,6 +113,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: 13,
     fontWeight: '700',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   pressed: {
     opacity: 0.7,

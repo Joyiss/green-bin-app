@@ -45,6 +45,7 @@ import {
   BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET,
   BOTTOM_NAV_BAR_TOTAL_HEIGHT,
 } from '@/components/bottom-nav-bar';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import { ResultSheet } from '@/components/result-sheet';
 import { ResultFeedback } from '@/components/result-feedback';
 import { LocalGuidanceDetails } from '@/components/local-guidance-details';
@@ -2385,17 +2386,20 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2.4,
     textTransform: 'uppercase',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   rateLimitTitle: {
     color: '#111111',
     fontSize: 22,
     fontWeight: '900',
     lineHeight: 27,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   rateLimitMessage: {
     color: '#66605B',
     fontSize: 15,
     lineHeight: 22,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   rateLimitButton: {
     alignItems: 'center',
@@ -2411,6 +2415,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   cameraCard: {
     flex: 1,
@@ -2439,6 +2444,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: -0.1,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   backdropTopBar: {
     alignItems: 'center',
@@ -2685,6 +2691,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 22,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerMask: {
     bottom: 0,
@@ -2699,6 +2706,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 22,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerGradientBand: {
     height: 22,
@@ -2734,12 +2742,14 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '900',
     letterSpacing: 1.3,
+    ...PRIMARY_TEXT_STYLES.label,
   },
   developmentLocationLabel: {
     color: '#4D3304',
     fontSize: 12,
     fontWeight: '800',
     lineHeight: 16,
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   developmentLocationReset: {
     backgroundColor: '#FFFFFF',
@@ -2753,6 +2763,7 @@ const styles = StyleSheet.create({
     color: '#5E3C00',
     fontSize: 10,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   sheetWrap: {
     left: 16,
@@ -2769,6 +2780,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   manualEntryInput: {
     backgroundColor: '#F7F4EF',
@@ -2780,6 +2792,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     paddingHorizontal: 16,
     paddingVertical: 14,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualStateRow: {
     alignItems: 'center',
@@ -2791,6 +2804,7 @@ const styles = StyleSheet.create({
     color: '#66605B',
     fontSize: 13,
     fontWeight: '600',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualStateBlock: {
     alignItems: 'center',
@@ -2802,6 +2816,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 18,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   manualHintText: {
     color: '#8B857F',
@@ -2809,6 +2824,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 18,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualRetryButton: {
     alignItems: 'center',
@@ -2824,6 +2840,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualSuggestionsGroup: {
     gap: 8,
@@ -2844,6 +2861,7 @@ const styles = StyleSheet.create({
     color: '#050505',
     fontSize: 15,
     fontWeight: '700',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualSuggestionTextSelected: {
     color: '#FFFFFF',
@@ -2866,6 +2884,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualContinueButton: {
     alignItems: 'center',
@@ -2879,6 +2898,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   permissionState: {
     alignItems: 'center',
@@ -2896,6 +2916,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 28,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   permissionButton: {
     alignItems: 'center',
@@ -2910,5 +2931,6 @@ const styles = StyleSheet.create({
     color: '#050505',
     fontSize: 15,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
 });

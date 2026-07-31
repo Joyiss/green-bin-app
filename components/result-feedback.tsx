@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { SECONDARY_TEXT_STYLES } from '@/constants/typography';
+
 type FeedbackAnswer = boolean | null;
 
 type ResultFeedbackProps = {
@@ -126,6 +128,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     lineHeight: 18,
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   row: {
     alignItems: 'center',

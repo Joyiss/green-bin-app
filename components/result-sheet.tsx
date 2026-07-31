@@ -19,6 +19,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
+
 const IS_ANDROID = Platform.OS === 'android';
 const SHEET_COLLAPSE_THRESHOLD = 96;
 const ANDROID_SHEET_COLLAPSE_THRESHOLD = 50;
@@ -447,6 +449,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 2,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   title: {
     color: '#050505',
@@ -456,6 +459,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 10,
     marginTop: 8,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   tag: {
     alignItems: 'center',
@@ -472,6 +476,7 @@ const styles = StyleSheet.create({
     color: '#4E5661',
     fontSize: 12,
     fontWeight: '700',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   body: {
     flexGrow: 0,
@@ -504,6 +509,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   steps: {
     gap: 10,
@@ -527,12 +533,14 @@ const styles = StyleSheet.create({
     color: '#8B857F',
     fontSize: 11,
     fontWeight: '700',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   stepText: {
     color: '#736C65',
     flex: 1,
     fontSize: 15,
     lineHeight: 21,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   warnings: {
     backgroundColor: '#FBF4E8',
@@ -552,6 +560,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   footer: {
     backgroundColor: '#FFFEFC',
@@ -583,6 +592,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   button: {
     alignItems: 'center',
@@ -600,5 +610,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
 });

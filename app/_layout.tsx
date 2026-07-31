@@ -1,4 +1,5 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { useFonts } from 'expo-font';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -7,6 +8,7 @@ import { AppState, InteractionManager, Platform } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { FONT_SOURCES } from '@/constants/typography';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export const unstable_settings = {
@@ -57,11 +59,16 @@ function useAndroidNavigationBar(isScanScreen: boolean) {
 }
 
 export default function RootLayout() {
+  const [fontsLoaded, fontError] = useFonts(FONT_SOURCES);
   const colorScheme = useColorScheme();
   const pathname = usePathname();
   const isScanScreen = pathname === '/';
   const statusBarStyle = isScanScreen ? 'light' : 'dark';
   useAndroidNavigationBar(isScanScreen);
+
+  if (!fontsLoaded && !fontError) {
+    return null;
+  }
 
   return (
     <GestureHandlerRootView style={{ backgroundColor: '#F3F1EE', flex: 1 }}>
