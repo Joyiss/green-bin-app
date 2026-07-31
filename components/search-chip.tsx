@@ -1,5 +1,7 @@
 import { Pressable, StyleSheet, Text } from 'react-native';
 
+import { PRIMARY_TEXT_STYLES } from '@/constants/typography';
+
 type SearchChipProps = {
   label: string;
   isActive: boolean;
@@ -33,6 +35,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   textActive: {
     color: '#FFFFFF',

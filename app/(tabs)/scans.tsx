@@ -1,13 +1,13 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import {
   ScanHistoryCard,
   type ScanHistoryCardItem,
@@ -266,7 +266,6 @@ export default function RecentScansScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
 
       <ScrollView
         contentContainerStyle={[
@@ -368,6 +367,7 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: '900',
     letterSpacing: -1.3,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   clearAllButton: {
     alignItems: 'center',
@@ -386,12 +386,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.2,
+    ...PRIMARY_TEXT_STYLES.button,
   },
   subtitle: {
     color: '#898783',
     fontSize: 14,
     lineHeight: 20,
     maxWidth: 260,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   section: {
     gap: 14,
@@ -403,6 +405,7 @@ const styles = StyleSheet.create({
     letterSpacing: 3.2,
     paddingHorizontal: 16,
     textTransform: 'uppercase',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   cardStack: {
     gap: 14,
@@ -440,10 +443,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     letterSpacing: -0.4,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   emptySubtitle: {
     color: '#898783',
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
 });

@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
@@ -28,6 +27,7 @@ import {
   type DevelopmentLocationSettings,
 } from '@/app/development-location';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import { getRecentScans, type RecentScan } from '@/storage/recentScans';
 import {
   DEFAULT_DAILY_SCAN_LIMIT,
@@ -453,7 +453,6 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
 
       <ScrollView
         contentContainerStyle={[
@@ -624,12 +623,14 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: '900',
     letterSpacing: -1.3,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   subtitle: {
     color: '#8A8782',
     fontSize: 14,
     lineHeight: 20,
     maxWidth: 300,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   heroCard: {
     backgroundColor: '#FFFFFF',
@@ -665,15 +666,18 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
     letterSpacing: -0.4,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   heroEmail: {
     color: '#8A8782',
     fontSize: 13,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   heroMessage: {
     color: '#66605B',
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   scanAllowanceCard: {
     alignItems: 'center',
@@ -706,11 +710,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
     letterSpacing: -0.3,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   scanAllowanceCaption: {
     color: '#746F69',
     fontSize: 12,
     lineHeight: 17,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   statsSection: {
     gap: 10,
@@ -722,6 +728,7 @@ const styles = StyleSheet.create({
     letterSpacing: 2.8,
     paddingHorizontal: 4,
     textTransform: 'uppercase',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -750,6 +757,7 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     fontWeight: '900',
     letterSpacing: -0.6,
+    ...SECONDARY_TEXT_STYLES.black,
   },
   statValueLong: {
     fontSize: 17,
@@ -761,11 +769,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.2,
     textTransform: 'uppercase',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   statCaption: {
     color: '#8A8782',
     fontSize: 11,
     lineHeight: 15,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   progressCard: {
     backgroundColor: '#FFFFFF',
@@ -795,12 +805,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.2,
     lineHeight: 22,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   progressPercent: {
     color: '#2E6B47',
     fontSize: 13,
     fontVariant: ['tabular-nums'],
     fontWeight: '900',
+    ...SECONDARY_TEXT_STYLES.black,
   },
   progressTrack: {
     backgroundColor: '#EFF4EA',
@@ -817,6 +829,7 @@ const styles = StyleSheet.create({
     color: '#746F69',
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   sectionGroup: {
     gap: 10,
@@ -855,11 +868,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     letterSpacing: -0.2,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   actionDescription: {
     color: '#7B7670',
     fontSize: 12,
     lineHeight: 17,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   infoCard: {
     alignItems: 'flex-start',
@@ -892,11 +907,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     letterSpacing: -0.2,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   infoText: {
     color: '#746F69',
     fontSize: 13,
     lineHeight: 19,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   appInfoCard: {
     backgroundColor: '#F7F4EF',
@@ -936,11 +953,13 @@ const styles = StyleSheet.create({
     color: '#4F3200',
     fontSize: 16,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   devDescription: {
     color: '#765A26',
     fontSize: 12,
     lineHeight: 17,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   devCurrentLocation: {
     backgroundColor: '#FBEFD3',
@@ -955,12 +974,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
     textTransform: 'uppercase',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   devCurrentLocationValue: {
     color: '#4F3200',
     fontSize: 13,
     fontWeight: '800',
     lineHeight: 18,
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   devPresetList: {
     gap: 7,
@@ -986,6 +1007,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: '700',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   devPresetTextSelected: {
     color: '#234C31',
@@ -1002,6 +1024,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minHeight: 44,
     paddingHorizontal: 12,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   devApplyButton: {
     alignItems: 'center',
@@ -1019,11 +1042,13 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   devNote: {
     color: '#765A26',
     fontSize: 11,
     fontWeight: '600',
     lineHeight: 16,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
 });

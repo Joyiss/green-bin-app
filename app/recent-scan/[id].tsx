@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -17,6 +16,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import { setLastNearbyScanContext } from '@/constants/scan-session';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import {
   getRecentScans,
   updateRecentScan,
@@ -268,7 +268,6 @@ export default function RecentScanDetailScreen() {
   if (!hasLoaded) {
     return (
       <SafeAreaView style={styles.page}>
-        <StatusBar style="dark" />
         <View style={styles.loadingState}>
           <ActivityIndicator color="#050505" size="small" />
         </View>
@@ -279,7 +278,6 @@ export default function RecentScanDetailScreen() {
   if (!scan) {
     return (
       <SafeAreaView style={styles.page}>
-        <StatusBar style="dark" />
         <View style={[styles.notFoundState, { paddingBottom: insets.bottom + 24 }]}>
           <View style={styles.notFoundIcon}>
             <Ionicons color="#5F5A54" name="alert-circle-outline" size={24} />
@@ -313,7 +311,6 @@ export default function RecentScanDetailScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -511,12 +508,14 @@ const styles = StyleSheet.create({
     color: '#050505',
     fontSize: 22,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.header,
   },
   notFoundText: {
     color: '#736C65',
     fontSize: 15,
     lineHeight: 22,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   header: {
     alignItems: 'center',
@@ -552,6 +551,7 @@ const styles = StyleSheet.create({
     color: '#7C6A52',
     fontSize: 12,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   statusPillTextDisposed: {
     color: '#2E6B47',
@@ -585,6 +585,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 2,
     textTransform: 'uppercase',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   title: {
     color: '#050505',
@@ -593,6 +594,7 @@ const styles = StyleSheet.create({
     letterSpacing: -1.2,
     lineHeight: 40,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.header,
   },
   chipRow: {
     flexDirection: 'row',
@@ -610,6 +612,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   infoChip: {
     backgroundColor: '#FFFFFF',
@@ -623,12 +626,14 @@ const styles = StyleSheet.create({
     color: '#5F5A54',
     fontSize: 12,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   materialText: {
     color: '#736C65',
     fontSize: 13,
     fontWeight: '700',
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   section: {
     backgroundColor: '#FFFFFF',
@@ -644,11 +649,13 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 3,
     textTransform: 'uppercase',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   summaryText: {
     color: '#66605B',
     fontSize: 15,
     lineHeight: 22,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   steps: {
     gap: 12,
@@ -671,12 +678,14 @@ const styles = StyleSheet.create({
     color: '#8B857F',
     fontSize: 11,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   stepText: {
     color: '#736C65',
     flex: 1,
     fontSize: 15,
     lineHeight: 22,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   warningSection: {
     backgroundColor: '#FBF4E8',
@@ -696,6 +705,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   sourceList: {
     gap: 8,
@@ -721,11 +731,13 @@ const styles = StyleSheet.create({
     color: '#736C65',
     fontSize: 14,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   sourceLinkText: {
     color: '#2F6B52',
     fontSize: 14,
     fontWeight: '800',
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   actions: {
     gap: 10,
@@ -745,6 +757,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   primaryButton: {
     alignItems: 'center',
@@ -760,6 +773,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   buttonPressed: {
     opacity: 0.82,

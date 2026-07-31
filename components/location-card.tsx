@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
+
 export type LocationCardProps = {
   type: string;
   name: string;
@@ -115,6 +117,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1.2,
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   dot: {
     borderRadius: 999,
@@ -126,16 +129,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     lineHeight: 22,
+    ...PRIMARY_TEXT_STYLES.title,
   },
   address: {
     color: '#78726C',
     fontSize: 14,
     lineHeight: 20,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   phone: {
     color: '#66605B',
     fontSize: 13,
     fontWeight: '600',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   metaRow: {
     flexDirection: 'row',
@@ -152,6 +158,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: 12,
     fontWeight: '600',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   button: {
     alignItems: 'center',
@@ -169,6 +176,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   previewFrame: {
     borderRadius: 16,

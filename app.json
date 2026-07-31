@@ -5,6 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
+    "backgroundColor": "#F3F1EE",
     "scheme": "greenbinapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -29,12 +30,34 @@
         "backgroundColor": "#F3F1EE"
       }
     },
+    "androidNavigationBar": {
+      "backgroundColor": "#00000000",
+      "barStyle": "dark-content",
+      "enforceContrast": false
+    },
+    "androidStatusBar": {
+      "backgroundColor": "#00000000",
+      "barStyle": "light-content",
+      "hidden": false,
+      "translucent": true
+    },
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-navigation-bar",
+        {
+          "backgroundColor": "#00000000",
+          "barStyle": "dark",
+          "borderColor": "#00000000",
+          "visibility": "hidden",
+          "behavior": "overlay-swipe",
+          "position": "absolute"
+        }
+      ],
       [
         "expo-camera",
         {
@@ -64,7 +87,8 @@
             "backgroundColor": "#F3F1EE"
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,

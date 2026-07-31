@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
@@ -22,6 +21,7 @@ import { fetchNearbyLocations as fetchNearbyLocationsApi } from '@/api/client';
 import { getApiErrorMessage } from '@/api/request';
 import { getNearbyFallback, supportsNearbyDonationReuse } from '@/constants/nearby-search';
 import { getLastNearbyScanContext, getLastScannedItem } from '@/constants/scan-session';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import {
   getAppLocationContext,
   LocationPermissionError,
@@ -450,7 +450,6 @@ export default function NearbyScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-      <StatusBar style="dark" />
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>nearby.</Text>
@@ -674,6 +673,7 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: '900',
     letterSpacing: -1.3,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   subtitle: {
     color: '#9D9791',
@@ -681,6 +681,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: 4,
     maxWidth: 260,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   searchBar: {
     alignItems: 'center',
@@ -700,6 +701,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     padding: 0,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   cards: {
     flex: 1,
@@ -732,6 +734,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 24,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   stateText: {
     color: '#78726C',
@@ -739,6 +742,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 20,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   guidanceText: {
     color: '#5F6858',
@@ -746,6 +750,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 19,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   warningBox: {
     alignItems: 'flex-start',
@@ -764,11 +769,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     lineHeight: 18,
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   fallbackHint: {
     color: '#9D9791',
     fontSize: 12,
     fontWeight: '600',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   primaryButton: {
     alignItems: 'center',
@@ -785,6 +792,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   broaderNotice: {
     backgroundColor: '#FFFFFF',
@@ -803,17 +811,20 @@ const styles = StyleSheet.create({
     color: '#38342F',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   noticeText: {
     color: '#78726C',
     fontSize: 13,
     fontWeight: '600',
     lineHeight: 19,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   noticeWarning: {
     color: '#8A6419',
     fontSize: 12,
     fontWeight: '700',
     lineHeight: 18,
+    ...SECONDARY_TEXT_STYLES.bold,
   },
 });

@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -44,6 +45,7 @@ import {
   BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET,
   BOTTOM_NAV_BAR_TOTAL_HEIGHT,
 } from '@/components/bottom-nav-bar';
+import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import { ResultSheet } from '@/components/result-sheet';
 import { ResultFeedback } from '@/components/result-feedback';
 import { LocalGuidanceDetails } from '@/components/local-guidance-details';
@@ -115,17 +117,29 @@ import {
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
 const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
-const ANALYZING_STATUS_INTERVAL_MS = 1400;
+const ANALYZING_STATUS_INTERVAL_MS = 2000;
 const ANALYZING_STATUS_MESSAGES = [
-  'Connecting to Green Bin',
-  'Preparing image',
-  'Checking for barcode or text',
-  'Identifying the item',
-  'Finding disposal guidance',
-  'Building your result',
-  'Almost ready',
+  'Got your photo',
+  'Taking a closer look',
+  'Checking a few possibilities',
+  'Matching the item',
+  'Looking up local disposal rules',
+  'Making sure the guidance fits',
+  'Putting your result together',
+  'Ready in a moment',
 ] as const;
 const LOADING_SHIMMER_BAND_WIDTH = 110;
+
+async function normalizeCapturedPhotoOrientation(uri: string) {
+  const context = ImageManipulator.manipulate(uri);
+  const renderedImage = await context.renderAsync();
+
+  return renderedImage.saveAsync({
+    compress: 1,
+    format: SaveFormat.JPEG,
+  });
+}
+
 const ANALYZING_PIXEL_COORDINATES = [
   { left: 2, size: 3, top: 1 },
   { left: 10, size: 4, top: 0 },
@@ -818,10 +832,10 @@ function ShimmerLoadingText({ children }: { children: string }) {
     shimmerProgress.value = withRepeat(
       withSequence(
         withTiming(1, {
-          duration: 2200,
+          duration: 2000,
           easing: Easing.bezier(0.4, 0, 0.2, 1),
         }),
-        withDelay(750, withTiming(0, { duration: 0 })),
+        withDelay(50, withTiming(0, { duration: 0 })),
       ),
       -1,
       false,
@@ -994,15 +1008,8 @@ function CameraArea({
 
         {!shouldHideCameraUi ? (
           <>
-            <View style={[styles.backdropTopBar, { paddingTop: topInset + 16 }]}>
-              <Pressable
-                accessibilityLabel={isTorchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
-                accessibilityRole="button"
-                hitSlop={6}
-                onPress={onToggleTorch}
-                style={styles.headerIconButton}>
-                <Ionicons color="#F3F6F9" name={isTorchOn ? 'flash' : 'flash-outline'} size={20} />
-              </Pressable>
+            <View style={[styles.backdropTopBar, { paddingTop: topInset + 2 }]}>
+              <View style={styles.headerIconSpacer} />
               {onClose ? (
                 <Pressable
                   accessibilityLabel="Close scan result"
@@ -1046,12 +1053,28 @@ function CameraArea({
                 accessibilityLabel="Take photo"
                 accessibilityRole="button"
                 disabled={isCaptureDisabled}
-                onPress={onTakePhoto}
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  onTakePhoto();
+                }}
                 style={[styles.shutterButton, isCaptureDisabled && styles.buttonDisabled]}>
                 <View style={styles.shutterInner} />
               </Pressable>
 
-              <View style={styles.iconActionSpacer} />
+              <View style={styles.iconActionSpacer}>
+                <Pressable
+                  accessibilityLabel={isTorchOn ? 'Turn off flashlight' : 'Turn on flashlight'}
+                  accessibilityRole="button"
+                  hitSlop={6}
+                  onPress={onToggleTorch}
+                  style={[styles.iconActionButton, isLoading && styles.buttonDisabled]}>
+                  <Ionicons
+                    color="#FFFFFF"
+                    name={isTorchOn ? 'flash' : 'flash-outline'}
+                    size={22}
+                  />
+                </Pressable>
+              </View>
             </View>
           </>
         ) : null}
@@ -1828,7 +1851,8 @@ export default function ScannerScreen() {
         return;
       }
 
-      await sendPredictionRequest({ imageUri: photo.uri });
+      const normalizedPhoto = await normalizeCapturedPhotoOrientation(photo.uri);
+      await sendPredictionRequest({ imageUri: normalizedPhoto.uri });
     } catch {
       Alert.alert(
         'Could not take photo',
@@ -2028,7 +2052,6 @@ export default function ScannerScreen() {
 
   return (
     <SafeAreaView edges={[]} style={styles.page}>
-      <StatusBar style="light" />
       <View style={styles.shell}>
         {permissionDenied ? (
           <CameraPermissionNotice
@@ -2363,17 +2386,20 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2.4,
     textTransform: 'uppercase',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   rateLimitTitle: {
     color: '#111111',
     fontSize: 22,
     fontWeight: '900',
     lineHeight: 27,
+    ...PRIMARY_TEXT_STYLES.header,
   },
   rateLimitMessage: {
     color: '#66605B',
     fontSize: 15,
     lineHeight: 22,
+    ...SECONDARY_TEXT_STYLES.regular,
   },
   rateLimitButton: {
     alignItems: 'center',
@@ -2389,6 +2415,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   cameraCard: {
     flex: 1,
@@ -2417,6 +2444,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: -0.1,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   backdropTopBar: {
     alignItems: 'center',
@@ -2485,7 +2513,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     bottom: 24,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: 20,
+    justifyContent: 'center',
     left: 18,
     position: 'absolute',
     right: 18,
@@ -2501,6 +2530,9 @@ const styles = StyleSheet.create({
     width: 52,
   },
   iconActionSpacer: {
+    alignItems: 'center',
+    height: 52,
+    justifyContent: 'center',
     width: 52,
   },
   shutterButton: {
@@ -2659,6 +2691,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 22,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerMask: {
     bottom: 0,
@@ -2673,6 +2706,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 22,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerGradientBand: {
     height: 22,
@@ -2708,12 +2742,14 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '900',
     letterSpacing: 1.3,
+    ...PRIMARY_TEXT_STYLES.label,
   },
   developmentLocationLabel: {
     color: '#4D3304',
     fontSize: 12,
     fontWeight: '800',
     lineHeight: 16,
+    ...SECONDARY_TEXT_STYLES.extraBold,
   },
   developmentLocationReset: {
     backgroundColor: '#FFFFFF',
@@ -2727,6 +2763,7 @@ const styles = StyleSheet.create({
     color: '#5E3C00',
     fontSize: 10,
     fontWeight: '900',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   sheetWrap: {
     left: 16,
@@ -2743,6 +2780,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   manualEntryInput: {
     backgroundColor: '#F7F4EF',
@@ -2754,6 +2792,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     paddingHorizontal: 16,
     paddingVertical: 14,
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualStateRow: {
     alignItems: 'center',
@@ -2765,6 +2804,7 @@ const styles = StyleSheet.create({
     color: '#66605B',
     fontSize: 13,
     fontWeight: '600',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualStateBlock: {
     alignItems: 'center',
@@ -2776,6 +2816,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 18,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.bold,
   },
   manualHintText: {
     color: '#8B857F',
@@ -2783,6 +2824,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 18,
     textAlign: 'center',
+    ...SECONDARY_TEXT_STYLES.semiBold,
   },
   manualRetryButton: {
     alignItems: 'center',
@@ -2798,6 +2840,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualSuggestionsGroup: {
     gap: 8,
@@ -2818,6 +2861,7 @@ const styles = StyleSheet.create({
     color: '#050505',
     fontSize: 15,
     fontWeight: '700',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualSuggestionTextSelected: {
     color: '#FFFFFF',
@@ -2840,6 +2884,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   manualContinueButton: {
     alignItems: 'center',
@@ -2853,6 +2898,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
   permissionState: {
     alignItems: 'center',
@@ -2870,6 +2916,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 28,
     textAlign: 'center',
+    ...PRIMARY_TEXT_STYLES.title,
   },
   permissionButton: {
     alignItems: 'center',
@@ -2884,5 +2931,6 @@ const styles = StyleSheet.create({
     color: '#050505',
     fontSize: 15,
     fontWeight: '800',
+    ...PRIMARY_TEXT_STYLES.button,
   },
 });
