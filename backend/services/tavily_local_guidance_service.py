@@ -1179,6 +1179,36 @@ def _state_abbreviation(state: str | None) -> str | None:
     return _STATE_ABBREVIATIONS.get(normalized)
 
 
+def _wrong_state(record: _SourceRecord, selected_state: str | None) -> bool:
+    selected = normalize_guidance_phrase(selected_state)
+    if not selected:
+        return False
+    selected_abbr = _state_abbreviation(selected_state)
+    text = _normalized_haystack(record)
+    mentioned_states = {
+        state
+        for state in _STATE_ABBREVIATIONS
+        if _term_in_text(state, text)
+    }
+    if mentioned_states and selected not in mentioned_states:
+        return True
+    domain_tokens = set(record.domain.casefold().replace("-", ".").split("."))
+    state_domain_tokens = domain_tokens & set(_STATE_ABBREVIATIONS.values())
+    return bool(state_domain_tokens and selected_abbr not in state_domain_tokens)
+
+
+def _is_federal_source(record: _SourceRecord) -> bool:
+    domain = record.domain.casefold()
+    text = _normalized_haystack(record)
+    return (
+        domain == "epa.gov"
+        or domain.endswith(".epa.gov")
+        or domain == "usa.gov"
+        or domain.endswith(".federalregister.gov")
+        or _term_in_text("federal", text)
+    )
+
+
 def _term_in_text(term: str | None, text: str) -> bool:
     normalized = normalize_guidance_phrase(term)
     if not normalized:
@@ -1242,24 +1272,14 @@ def _trusted_source_decision(
 ) -> tuple[bool, str | None]:
     if _source_matches_provider(record, location):
         return True, None
+    if _wrong_state(record, location.get("state")):
+        return False, "wrong_state"
     if _is_government_domain(record.domain):
         return True, None
     if rejected_reason := _is_rejected_source_type(record):
         return False, rejected_reason
     if _looks_like_commercial_provider(record):
         return False, "provider_mismatch" if location.get("waste_provider") else "unverified_commercial_provider"
-
-    text = _normalized_haystack(record)
-    city = normalize_guidance_phrase(location.get("city"))
-    county = normalize_guidance_phrase(location.get("county"))
-    state = normalize_guidance_phrase(location.get("state"))
-    local_entity_match = (
-        bool(city and (f"city of {city}" in text or f"{city} city" in text))
-        or bool(county and county in text and "county" in text)
-        or bool(state and state in text and any(term in text for term in ("department", "agency", "authority")))
-    )
-    if local_entity_match and any(term in text for term in _OFFICIAL_SERVICE_TERMS):
-        return True, None
 
     return False, "unofficial_source"
 
@@ -1289,6 +1309,11 @@ def _applicability_label(
         matches["waste_provider"] = True
         return "provider_exact", matches, None
 
+    if _wrong_state(record, location.get("state")):
+        return "jurisdiction_mismatch", matches, "wrong_state"
+    if _is_federal_source(record):
+        return "federal", matches, None
+
     city = normalize_guidance_phrase(location.get("city"))
     county = normalize_guidance_phrase(location.get("county"))
     state = normalize_guidance_phrase(location.get("state"))
@@ -1316,6 +1341,12 @@ def _applicability_label(
     if _different_named_jurisdiction(text, location.get("county"), r"\b([a-z][a-z .'-]{2,80}) county\b"):
         return "jurisdiction_mismatch", matches, "different_county"
 
+    if _is_government_domain(record.domain) and state and (
+        _term_in_text(state, text) or (state_abbr and state_abbr in set(record.domain.split(".")))
+    ):
+        matches["state"] = True
+        return "state_official", matches, None
+
     return "unknown", matches, "location_not_confirmed"
 
 
@@ -1329,6 +1360,18 @@ def _supporting_official_decision(record: _SourceRecord) -> bool:
     return "manufacturer" in text and any(
         term in text for term in ("safety", "disposal", "recycling", "recycle")
     )
+
+
+def _source_is_related(
+    record: _SourceRecord,
+    classification: dict[str, Any],
+) -> bool:
+    text = _normalized_haystack(record)
+    waste_context = any(
+        _term_in_text(term, text)
+        for term in ("disposal", "recycle", "recycling", "trash", "waste", "compost", "drop off")
+    )
+    return waste_context
 
 
 def _source_excerpt(record: _SourceRecord) -> str:
@@ -1345,6 +1388,8 @@ def _validation_result(
     trusted, trust_rejection = _trusted_source_decision(record, location)
     applicability, matches, applicability_rejection = _applicability_label(record, location)
     reasons: list[str] = []
+    if not _source_is_related(record, classification):
+        reasons.append("unrelated_source")
     if applicability_rejection and applicability_rejection != "location_not_confirmed":
         reasons.append(applicability_rejection)
     if applicability == "jurisdiction_mismatch":
@@ -1352,7 +1397,7 @@ def _validation_result(
     if trust_rejection and trust_rejection != "unofficial_source":
         reasons.append(trust_rejection)
 
-    local_primary = trusted and applicability in {
+    local_primary = trusted and not reasons and applicability in {
         "city_exact",
         "county_exact",
         "statewide",

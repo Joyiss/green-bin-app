@@ -40,15 +40,69 @@ def _result(chunk):
     return {"chunk": chunk, "chunk_id": chunk["id"], "score": 8.0, "matched_fields": []}
 
 
+def _official_result(
+    chunk_id,
+    *,
+    content,
+    action,
+    applicability_label,
+    location_scope,
+    score=10.0,
+):
+    chunk = _chunk(chunk_id, action=action, claim=content)
+    chunk.update(
+        {
+            "title": f"Official guidance for {chunk_id}",
+            "source_name": "Official waste agency",
+            "source_url": f"https://example.gov/{chunk_id}",
+            "location_scope": location_scope,
+            "generalizable": applicability_label == "official_supporting",
+            "content": content,
+            "source_excerpt": content,
+            "source_claim": content,
+            "decision_signals": {
+                "applicability_label": applicability_label,
+                "tavily_trust_level": (
+                    "OFFICIAL_SUPPORTING"
+                    if applicability_label == "official_supporting"
+                    else "LOCAL_PRIMARY"
+                ),
+            },
+            "source_metadata": {
+                "title": f"Official guidance for {chunk_id}",
+                "organization": "Official waste agency",
+                "url": f"https://example.gov/{chunk_id}",
+                "trusted": True,
+                "local": applicability_label != "official_supporting",
+            },
+        }
+    )
+    return {
+        "chunk": chunk,
+        "chunk_id": chunk_id,
+        "score": score,
+        "matched_fields": [applicability_label],
+        "requires_location_check": False,
+        "applicability": "applicable",
+        "applicability_reason_codes": [],
+        "source_conditions": {},
+    }
+
+
 def _payload(**overrides):
+    legacy_steps = overrides.pop("steps", None)
     payload = {
         "disposal_action": "drop-off",
         "summary": "Take this laptop to electronics drop-off.",
-        "steps": ["Back up personal files.", "Take the laptop to drop-off."],
+        "prep_steps": ["Back up personal files."],
+        "next_step": "Take the laptop to an approved electronics collection site.",
+        "alternatives": [],
         "warnings": [],
         "confidence": "high",
-        "sources_used": ["electronics_01"],
     }
+    if legacy_steps is not None:
+        payload["prep_steps"] = legacy_steps[:-1]
+        payload["next_step"] = legacy_steps[-1] if legacy_steps else ""
     payload.update(overrides)
     return payload
 
@@ -68,6 +122,15 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(validated["steps"], ["Erase your data.", "Use electronics drop-off."])
 
+    def test_empty_prep_steps_are_accepted_without_filler(self):
+        validated, errors = validate_guidance_basic(
+            _payload(prep_steps=[], next_step="Set the cart out for scheduled collection."),
+            self.context(),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(validated["prep_steps"], [])
+        self.assertEqual(validated["steps"], ["Set the cart out for scheduled collection."])
+
     def test_style_imperfections_are_not_rejected(self):
         validated, errors = validate_guidance_basic(
             _payload(summary="Drop-off.", steps=["Data backup first", "Maybe keep its charger together"]),
@@ -80,13 +143,13 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertIsNotNone(validate_guidance_basic(_payload(summary="x" * 240), self.context())[0])
         self.assertIn("summary_too_long", validate_guidance_basic(_payload(summary="x" * 241), self.context())[1])
 
-    def test_exact_normalized_duplicate_is_rejected(self):
-        _, errors = validate_guidance_basic(
+    def test_duplicate_steps_do_not_trigger_semantic_rejection(self):
+        validated, errors = validate_guidance_basic(
             _payload(steps=["Use electronics drop-off!", " use   electronics dropoff ", "Use electronics drop-off."]),
             self.context(),
         )
-        # Punctuation removal does not erase a meaningful hyphen, so only the first and third match.
-        self.assertIn("duplicate_steps", errors)
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
 
     def test_near_duplicates_are_allowed(self):
         validated, errors = validate_guidance_basic(
@@ -96,7 +159,7 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
 
-    def test_affirmative_dangerous_instructions_are_rejected(self):
+    def test_keyword_semantics_are_not_part_of_structural_validation(self):
         cases = [
             "Disassemble the laptop before recycling.",
             "Pry open the case.",
@@ -111,10 +174,11 @@ class BasicValidatorTests(unittest.TestCase):
         ]
         for instruction in cases:
             with self.subTest(instruction=instruction):
-                _, errors = validate_guidance_basic(
+                validated, errors = validate_guidance_basic(
                     _payload(steps=[instruction, "Use electronics drop-off."]), self.context()
                 )
-                self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+                self.assertIsNotNone(validated)
+                self.assertEqual(errors, [])
 
     def test_negated_safety_warnings_are_allowed(self):
         warnings = [
@@ -135,10 +199,11 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_negation_does_not_mask_later_unsafe_clause(self):
-        _, errors = validate_guidance_basic(
+        validated, errors = validate_guidance_basic(
             _payload(warnings=["Do not wait; disassemble the laptop."]), self.context()
         )
-        self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+        self.assertIsNotNone(validated)
+        self.assertEqual(errors, [])
 
     def test_negated_battery_safety_steps_are_allowed(self):
         validated, errors = validate_guidance_basic(
@@ -155,7 +220,7 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
 
-    def test_genuinely_dangerous_part_removal_is_rejected(self):
+    def test_part_removal_words_do_not_trigger_semantic_validation(self):
         cases = [
             "Dismantle the phone before taking it in.",
             "Open the device and remove the battery.",
@@ -164,11 +229,12 @@ class BasicValidatorTests(unittest.TestCase):
         ]
         for instruction in cases:
             with self.subTest(instruction=instruction):
-                _, errors = validate_guidance_basic(
+                validated, errors = validate_guidance_basic(
                     _payload(steps=[instruction, "Use electronics drop-off."]),
                     self.context(),
                 )
-                self.assertTrue(any(error.startswith("dangerous_instruction:") for error in errors))
+                self.assertIsNotNone(validated)
+                self.assertEqual(errors, [])
 
     def test_source_names_in_main_guidance_are_nonblocking_warnings(self):
         validated, errors = validate_guidance_basic(
@@ -176,24 +242,21 @@ class BasicValidatorTests(unittest.TestCase):
         )
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
-        self.assertIn(
-            "source_name_in_main_guidance:epa",
-            validated["validation_warnings"],
-        )
+        self.assertEqual(validated["validation_warnings"], [])
         validated, errors = validate_guidance_basic(_payload(), self.context())
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
 
-    def test_unsupported_action_and_absolute_claims_are_rejected(self):
+    def test_only_unsupported_action_is_rejected(self):
         _, errors = validate_guidance_basic(
             _payload(disposal_action="trash", summary="This is recyclable everywhere."), self.context()
         )
         self.assertIn("unsupported_disposal_action", errors)
-        self.assertTrue(any(error.startswith("unsupported_strong_claim:") for error in errors))
+        self.assertFalse(any(error.startswith("unsupported_strong_claim:") for error in errors))
 
-    def test_curbside_and_hazardous_claims_require_source_support(self):
+    def test_claim_keywords_do_not_trigger_semantic_validation(self):
         curbside = _payload(summary="Recycle this container curbside.")
-        self.assertIn("unsupported_curbside_claim", validate_guidance_basic(curbside, self.context())[1])
+        self.assertEqual(validate_guidance_basic(curbside, self.context())[1], [])
         supported_chunk = _chunk(
             action="Recycle",
             claim="This container is accepted in curbside recycling.",
@@ -223,6 +286,231 @@ class GenerationFlowTests(unittest.TestCase):
             recognized_item="Laptop", normalized_item_label="Laptop", material="Electronics",
             broad_category="Electronics", condition_flags=[], special_flags=["electronics"],
             visual_evidence=None, candidates=[], location=None, retrieval_results=[_result(_chunk())],
+        )
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_seattle_battery_regression_keeps_supported_local_details(self, request):
+        local_evidence = (
+            "Seattle residents may use city household-battery drop-off for alkaline, "
+            "rechargeable, and button batteries. Tape rechargeable battery terminals. "
+            "Seattle Public Utilities also offers scheduled special-item pickup for eligible "
+            "households, with a two-item limit and no residential pickup fee."
+        )
+        request.return_value = json.dumps(
+            {
+                "disposal_action": "drop-off",
+                "summary": (
+                    "Seattle accepts alkaline, rechargeable, and button batteries through "
+                    "its household-battery collection service."
+                ),
+                "prep_steps": ["Tape the terminals on rechargeable batteries."],
+                "next_step": "Use Seattle's household-battery drop-off service.",
+                "alternatives": [
+                    "Eligible households may schedule special-item pickup, limited to two items."
+                ],
+                "warnings": [],
+                "confidence": "high",
+            }
+        )
+        result = try_generate_source_grounded_guidance(
+            recognized_item="Household battery",
+            normalized_item_label="Household battery",
+            material="Battery",
+            broad_category="batteries",
+            condition_flags=[],
+            special_flags=["battery", "requires_dropoff"],
+            visual_evidence="Small household battery.",
+            candidates=[],
+            location={"city": "Seattle", "county": "King County", "state": "Washington"},
+            retrieval_results=[
+                _official_result(
+                    "seattle-battery",
+                    content=local_evidence,
+                    action="Drop-off",
+                    applicability_label="city_exact",
+                    location_scope="Seattle, Washington",
+                )
+            ],
+        )
+
+        guidance = result["guidance"]
+        self.assertIn("alkaline, rechargeable, and button batteries", guidance["summary"])
+        self.assertIn("special-item pickup", guidance["alternatives"][0])
+        self.assertNotIn("search", " ".join(guidance["steps"] + guidance["alternatives"]).casefold())
+        self.assertNotIn("green bin", json.dumps(guidance).casefold())
+        prompt = request.call_args.args[0]
+        self.assertIn(local_evidence, prompt)
+        self.assertIn('"evidence_priority": "exact_local"', prompt)
+        self.assertIn("quantity limits, fees, restrictions", prompt)
+        self.assertNotIn("Green Bin", prompt)
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_local_detail_handling_spans_categories_and_jurisdictions(self, request):
+        cases = [
+            {
+                "name": "paint_with_fee_and_pickup",
+                "item": "Oil-based paint can",
+                "material": "Paint",
+                "category": "paint",
+                "location": {"city": "Austin", "county": "Travis County", "state": "Texas"},
+                "action": "household hazardous waste",
+                "evidence": (
+                    "Austin household hazardous waste collection accepts sealed oil-based paint "
+                    "from residents. Keep lids secured. Up to 30 gallons is accepted without a fee, "
+                    "and eligible residents may schedule home pickup."
+                ),
+                "response": {
+                    "disposal_action": "household hazardous waste",
+                    "summary": "Austin residents may use household hazardous waste collection for sealed oil-based paint, up to 30 gallons without a fee.",
+                    "prep_steps": ["Secure the lid on the oil-based paint can."],
+                    "next_step": "Use Austin's household hazardous waste collection service.",
+                    "alternatives": ["Eligible residents may schedule home pickup."],
+                    "warnings": ["The no-fee residential limit is 30 gallons."],
+                    "confidence": "high",
+                },
+            },
+            {
+                "name": "food_scraps_with_restriction",
+                "item": "Food scraps",
+                "material": "Organic",
+                "category": "organic",
+                "location": {"city": "Portland", "county": "Multnomah County", "state": "Oregon"},
+                "action": "compost",
+                "evidence": (
+                    "Portland curbside compost accepts food scraps and food-soiled paper. "
+                    "Remove produce stickers. Compostable cups and serviceware are not accepted."
+                ),
+                "response": {
+                    "disposal_action": "compost",
+                    "summary": "Portland curbside compost accepts food scraps and food-soiled paper, but not compostable serviceware.",
+                    "prep_steps": ["Remove produce stickers from the food scraps."],
+                    "next_step": "Place the food scraps in the curbside compost cart.",
+                    "alternatives": [],
+                    "warnings": ["Do not include compostable cups or serviceware."],
+                    "confidence": "high",
+                },
+            },
+            {
+                "name": "bulky_collection_without_prep_filler",
+                "item": "Broken chair",
+                "material": "Mixed material",
+                "category": "household",
+                "location": {"city": "Columbus", "county": "Franklin County", "state": "Ohio"},
+                "action": "trash",
+                "evidence": (
+                    "Columbus residential bulk collection accepts unusable chairs by scheduled "
+                    "curbside collection. No preparation requirement is listed."
+                ),
+                "response": {
+                    "disposal_action": "trash",
+                    "summary": "Columbus residential bulk collection accepts unusable chairs through scheduled curbside service.",
+                    "prep_steps": [],
+                    "next_step": "Use the scheduled residential bulk collection service.",
+                    "alternatives": [],
+                    "warnings": [],
+                    "confidence": "high",
+                },
+            },
+        ]
+
+        for index, case in enumerate(cases):
+            with self.subTest(case=case["name"]):
+                request.return_value = json.dumps(case["response"])
+                result = try_generate_source_grounded_guidance(
+                    recognized_item=case["item"],
+                    normalized_item_label=case["item"],
+                    material=case["material"],
+                    broad_category=case["category"],
+                    condition_flags=[],
+                    special_flags=[],
+                    visual_evidence=None,
+                    candidates=[],
+                    location=case["location"],
+                    retrieval_results=[
+                        _official_result(
+                            f"local-case-{index}",
+                            content=case["evidence"],
+                            action=case["action"],
+                            applicability_label="city_exact",
+                            location_scope=f"{case['location']['city']}, {case['location']['state']}",
+                        )
+                    ],
+                )
+                guidance = result["guidance"]
+                self.assertEqual(guidance["prep_steps"], case["response"]["prep_steps"])
+                self.assertEqual(guidance["next_step"], case["response"]["next_step"])
+                self.assertIn(case["evidence"], request.call_args.args[0])
+                self.assertNotIn("green bin", json.dumps(guidance).casefold())
+                self.assertNotIn("search online", json.dumps(guidance).casefold())
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_exact_local_evidence_is_prioritized_before_state_and_federal(self, request):
+        request.return_value = json.dumps(
+            {
+                "disposal_action": "drop-off",
+                "summary": "Local electronics collection accepts televisions under the stated limits.",
+                "prep_steps": ["Keep the television intact."],
+                "next_step": "Use the local electronics collection service.",
+                "alternatives": [],
+                "warnings": [],
+                "confidence": "high",
+            }
+        )
+        retrieval_results = [
+            _official_result(
+                "federal-tv",
+                content="Federal electronics stewardship overview.",
+                action="Drop-off",
+                applicability_label="official_supporting",
+                location_scope="federal",
+                score=100.0,
+            ),
+            _official_result(
+                "state-tv",
+                content="Nebraska statewide electronics information.",
+                action="Drop-off",
+                applicability_label="statewide_rule",
+                location_scope="Nebraska",
+                score=5.0,
+            ),
+            _official_result(
+                "county-tv",
+                content="Douglas County accepts televisions with a two-unit household limit.",
+                action="Drop-off",
+                applicability_label="county_exact",
+                location_scope="Douglas County, Nebraska",
+                score=6.0,
+            ),
+            _official_result(
+                "city-tv",
+                content="Omaha electronics collection accepts intact televisions.",
+                action="Drop-off",
+                applicability_label="city_exact",
+                location_scope="Omaha, Nebraska",
+                score=7.0,
+            ),
+        ]
+
+        result = try_generate_source_grounded_guidance(
+            recognized_item="Television",
+            normalized_item_label="Television",
+            material="Electronics",
+            broad_category="electronics",
+            condition_flags=[],
+            special_flags=["electronics"],
+            visual_evidence=None,
+            candidates=[],
+            location={"city": "Omaha", "county": "Douglas County", "state": "Nebraska"},
+            retrieval_results=retrieval_results,
+        )
+
+        prompt = request.call_args.args[0]
+        self.assertLess(prompt.index('"id": "city-tv"'), prompt.index('"id": "state-tv"'))
+        self.assertLess(prompt.index('"id": "county-tv"'), prompt.index('"id": "state-tv"'))
+        self.assertNotIn('"id": "federal-tv"', prompt)
+        self.assertEqual(
+            result["guidance"]["guidance_metadata"]["retrieved_chunk_ids"],
+            ["city-tv", "county-tv", "state-tv"],
         )
 
     @patch("services.guidance_llm_service._groq_request")
@@ -282,7 +570,8 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertEqual(result["guidance"]["disposal_action"], "trash")
         prompt = request.call_args.args[0]
         self.assertIn('"applicability": "conditional"', prompt)
-        self.assertIn('"allowed_disposal_actions": ["trash"]', prompt)
+        self.assertIn('"check local guidance"', prompt)
+        self.assertIn('"trash"', prompt)
 
     @patch("services.guidance_llm_service._groq_request")
     def test_original_safe_output_has_original_path(self, request):
@@ -292,12 +581,12 @@ class GenerationFlowTests(unittest.TestCase):
         request.assert_called_once()
 
     @patch("services.guidance_llm_service._groq_request")
-    def test_duplicate_fails_without_repair(self, request):
+    def test_duplicate_reaches_response_without_repair(self, request):
         request.return_value = json.dumps(_payload(steps=["Use drop-off.", "Use drop-off."]))
         result = self.source_call()
         request.assert_called_once()
-        self.assertIsNone(result["guidance"])
-        self.assertEqual(result["failure_reason"], "duplicate_steps")
+        self.assertIsNotNone(result["guidance"])
+        self.assertIsNone(result["failure_reason"])
 
     @patch("services.guidance_llm_service._groq_request")
     def test_style_imperfection_does_not_repair_or_fallback(self, request):
@@ -325,18 +614,15 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
     @patch("services.guidance_llm_service._groq_request")
-    def test_unsafe_output_fails_without_repair_or_deterministic_fallback(self, request):
+    def test_keyword_output_is_not_replaced_by_validator(self, request):
         request.return_value = json.dumps(_payload(steps=["Disassemble the laptop.", "Use drop-off."]))
         with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
             result = self.source_call()
         request.assert_called_once()
-        self.assertIsNone(result["guidance"])
-        self.assertEqual(result["failure_reason"], "dangerous_instruction:disassemble")
+        self.assertIsNotNone(result["guidance"])
+        self.assertIsNone(result["failure_reason"])
         combined = " ".join(logs.output)
-        self.assertIn("original_llm_output=", combined)
-        self.assertIn("validation_reason=", combined)
-        self.assertIn("repair_attempted=False", combined)
-        self.assertIn("deterministic_fallback_used=false", combined)
+        self.assertIn("validation succeeded", combined)
 
     @patch("services.guidance_llm_service._groq_request", side_effect=requests.Timeout())
     def test_request_failure_returns_no_guidance_without_repair(self, request):
@@ -355,14 +641,21 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIsNone(result["guidance"])
         self.assertEqual(result["failure_reason"], "invalid_json")
 
-    def test_prompt_marks_examples_as_non_templates(self):
+    def test_prompt_uses_new_shape_without_source_identifiers(self):
         prompt = _build_source_grounded_prompt(
             recognized_item="Laptop", normalized_item_label="Laptop", material="Electronics",
             broad_category="Electronics", condition_flags=[], special_flags=[], visual_evidence=None,
             candidates=[], location=None, chunks=[_chunk()], allowed_disposal_actions=["drop-off"],
         )
-        self.assertIn("Do not copy them blindly", prompt)
-        self.assertIn('"steps":[]', prompt)
+        self.assertIn('"prep_steps":[]', prompt)
+        self.assertIn('"next_step":""', prompt)
+        self.assertIn('"alternatives":[]', prompt)
+        self.assertNotIn('"sources_used"', prompt)
+        self.assertIn("Location search is handled separately", prompt)
+        self.assertIn("summary must state its most important rule", prompt)
+        self.assertIn("prep_steps may be empty", prompt)
+        self.assertIn("Prefer applicable exact city, county, or waste-provider evidence", prompt)
+        self.assertNotIn("Green Bin", prompt)
         self.assertNotIn('"intent"', prompt)
 
     def test_source_prompt_requires_realistic_object_specific_action(self):
@@ -498,8 +791,9 @@ class GenerationFlowTests(unittest.TestCase):
     def test_general_safe_output_keeps_public_shape(self, request):
         request.return_value = json.dumps({
             "disposal_action": "donate/reuse", "summary": "Donate this drum if it still plays.",
-            "steps": ["Wipe dust from the shell.", "Donate it if playable."], "warnings": [],
-            "confidence": "low", "sources_used": [],
+            "prep_steps": ["Wipe dust from the shell."],
+            "next_step": "Donate it through an accepted reuse program if it is playable.",
+            "alternatives": [], "warnings": [], "confidence": "low",
         })
         result = try_generate_general_safe_guidance(
             recognized_item="Drum", normalized_item_label="Drum", material="Wood",
@@ -509,7 +803,7 @@ class GenerationFlowTests(unittest.TestCase):
         guidance = result["guidance"]
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
         self.assertEqual(
-            {"disposal_action", "material_code", "impact_level", "summary", "steps", "guidance_source", "guidance_metadata"},
+            {"disposal_action", "material_code", "impact_level", "summary", "prep_steps", "next_step", "alternatives", "steps", "guidance_source", "guidance_metadata"},
             set(guidance),
         )
 
@@ -518,10 +812,11 @@ class GenerationFlowTests(unittest.TestCase):
         request.return_value = json.dumps({
             "disposal_action": "trash",
             "summary": "Put this used yogurt container in household trash if it has residue.",
-            "steps": ["Empty loose residue first.", "Place the used container in household trash."],
+            "prep_steps": ["Empty loose residue first."],
+            "next_step": "Place the used container in household trash.",
+            "alternatives": [],
             "warnings": [],
             "confidence": "low",
-            "sources_used": [],
         })
 
         result = try_generate_general_safe_guidance(

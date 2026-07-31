@@ -461,79 +461,6 @@ def _open_vlm_recognition_source(prediction_result: dict[str, Any]) -> str:
     return "vlm_open" if _prediction_contains_open_recognition(prediction_result) else "vlm"
 
 
-_SECONDARY_OBSERVATION_REASON_CODES = {
-    "item_observation_contradiction",
-    "material_observation_contradiction",
-    "specific_container_feature_conflict",
-    "label_material_conflict",
-}
-
-
-def _top_candidate_confidence(recognition_details: dict[str, Any]) -> float:
-    candidates = recognition_details.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        return 0.0
-    first_candidate = candidates[0]
-    if not isinstance(first_candidate, dict):
-        return 0.0
-    try:
-        return float(first_candidate.get("confidence") or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _primary_recognition_is_strong(
-    recognition_details: dict[str, Any],
-    normalized_item_label: str,
-) -> bool:
-    if (
-        str(recognition_details.get("status") or "").strip().casefold() != "confident"
-        or not _is_real_item_label(normalized_item_label)
-    ):
-        return False
-    return _top_candidate_confidence(recognition_details) >= 0.8
-
-
-def _recognition_confidence_for_final_item(
-    recognition_details: dict[str, Any],
-    normalized_item_label: str,
-    reliability: dict[str, Any],
-) -> dict[str, Any]:
-    if not _primary_recognition_is_strong(
-        recognition_details,
-        normalized_item_label,
-    ):
-        return reliability
-
-    sanitized = dict(reliability)
-    reason_codes = [
-        reason
-        for reason in list(reliability.get("reason_codes") or [])
-        if reason not in _SECONDARY_OBSERVATION_REASON_CODES
-    ]
-    sanitized["reason_codes"] = reason_codes
-    sanitized["suggested_label"] = None
-    if not reason_codes:
-        sanitized["blocking"] = False
-        sanitized["level"] = "high"
-        sanitized["score"] = max(float(sanitized.get("score") or 0.0), 0.85)
-        sanitized["label_observation_agreement"] = "supported"
-    elif not any(
-        reason
-        in {
-            "missing_item_identity",
-            "model_returned_unknown",
-            "model_returned_uncertain",
-            "truncated_or_recovered_output",
-            "unresolved_power_source_conflict",
-            "organic_identity_material_conflict",
-        }
-        for reason in reason_codes
-    ):
-        sanitized["blocking"] = False
-    return sanitized
-
-
 def _build_open_vlm_classification(
     prediction_result: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -548,12 +475,13 @@ def _build_open_vlm_classification(
     normalized_item_label = str(
         normalized.get("normalized_item") or normalized.get("item_label") or ""
     ).strip()
-    reliability = _recognition_confidence_for_final_item(
-        recognition_details,
-        normalized_item_label,
-        evaluate_open_recognition(recognition_details),
+    reliability = evaluate_open_recognition(recognition_details)
+    suggested_label = reliability.get("suggested_label")
+    final_item_label = (
+        str(suggested_label).strip()
+        if isinstance(suggested_label, str) and suggested_label.strip()
+        else normalized_item_label
     )
-    final_item_label = normalized_item_label
     model_status = str(recognition_details.get("status") or "unknown").strip().casefold()
     if model_status == "unknown" or not _is_real_item_label(final_item_label):
         final_status = "unknown"
@@ -579,12 +507,9 @@ def _build_open_vlm_classification(
     ):
         trusted_classification = build_selected_item_prediction(matched_supported_label)
         if trusted_classification.get("status") == "confident":
-            trusted_category = str(
-                trusted_classification.get("category") or ""
-            ).strip()
             return {
                 "item": final_item_label,
-                "category": trusted_category or disposal_category,
+                "category": disposal_category,
                 "status": "confident",
                 "candidates": [],
                 "trusted_guidance_available": True,

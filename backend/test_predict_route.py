@@ -821,11 +821,16 @@ class PredictRouteTests(unittest.TestCase):
                 "material_code": None,
                 "impact_level": None,
                 "summary": "Confirm or correct the recognized item before disposal guidance is shown.",
+                "prep_steps": [],
+                "next_step": None,
+                "alternatives": [],
                 "steps": [],
                 "guidance_source": "recognition_clarification_required",
                 "guidance_metadata": {
                     "final_generation_path": "recognition_clarification",
                     "clarification_reason_codes": ["recognition_status_unknown"],
+                    "guidance_generation_status": "not_attempted",
+                    "location_search_recommended": False,
                 },
                 "cache_hit": False,
                 "recognition_source": "vlm_open",
@@ -903,7 +908,7 @@ class PredictRouteTests(unittest.TestCase):
         mock_clip.assert_not_called()
         mock_vlm.assert_not_called()
 
-    def test_predict_can_return_direct_json_guidance_with_metadata(self):
+    def test_predict_uses_one_safe_fallback_and_preserves_source_metadata(self):
         client = TestClient(app)
         classification = {
             "item": "Battery",
@@ -947,19 +952,22 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["guidance_source"], "json_rag_direct_generated")
-        self.assertEqual(response.json()["disposal_action"], "drop-off")
+        self.assertEqual(response.json()["guidance_source"], "safe_fallback")
+        self.assertEqual(response.json()["disposal_action"], "check local guidance")
         self.assertIn("guidance_metadata", response.json())
         self.assertEqual(
             response.json()["guidance_metadata"]["retrieved_chunk_ids"],
             ["battery-guidance"],
         )
+        self.assertTrue(
+            response.json()["guidance_metadata"]["location_search_recommended"]
+        )
         self.assertEqual(
-            response.json()["warnings"],
-            ["Do not place rechargeable batteries in curbside recycling."],
+            response.json()["guidance_metadata"]["location_search_provider"],
+            "earth911",
         )
 
-    def test_predict_open_battery_without_gemini_uses_json_guidance(self):
+    def test_predict_open_battery_without_llm_uses_one_safe_fallback(self):
         client = TestClient(app)
         classification = {
             "item": "Battery",
@@ -1003,8 +1011,8 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["guidance_source"], "json_rag_direct_generated")
-        self.assertEqual(response.json()["disposal_action"], "drop-off")
+        self.assertEqual(response.json()["guidance_source"], "safe_fallback")
+        self.assertEqual(response.json()["disposal_action"], "check local guidance")
         self.assertIn(
             "batteries_01",
             response.json()["guidance_metadata"]["retrieved_chunk_ids"],

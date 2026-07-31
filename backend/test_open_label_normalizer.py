@@ -158,39 +158,6 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["material_category"], "Plastic")
         self.assertEqual(result["normalized"]["broad_category"], "electronics")
 
-    def test_exact_supported_label_match_is_not_rejected_by_material(self):
-        result = normalize_open_recognition(
-            {
-                "status": "confident",
-                "raw_item_label": "calculator",
-                "likely_material": "plastic",
-                "broad_category": "unknown",
-                "candidates": [{"label": "calculator", "confidence": 1.0}],
-                "visual_evidence": "Calculator with buttons and screen.",
-                "visual_observations": [
-                    {
-                        "aspect": "form_factor",
-                        "value": "rigid container",
-                        "confidence": 0.92,
-                        "evidence": "Calculator body is visible.",
-                    },
-                    {
-                        "aspect": "construction",
-                        "value": "rigid plastic",
-                        "confidence": 0.88,
-                        "evidence": "Calculator body appears plastic.",
-                    },
-                ],
-            }
-        )
-
-        normalized = result["normalized"]
-        self.assertEqual(normalized["normalized_item"], "Calculator")
-        self.assertEqual(normalized["matched_supported_label"], "Calculator")
-        self.assertEqual(normalized["disposal_category"], "Electronics")
-        self.assertEqual(normalized["material_category"], "Plastic")
-        self.assertEqual(normalized["broad_category"], "electronics")
-
     def test_electronic_item_keeps_specific_material_hint(self):
         result = normalize_open_recognition(
             {

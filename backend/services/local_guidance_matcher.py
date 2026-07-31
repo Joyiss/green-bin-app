@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 from urllib.parse import quote_plus
+from urllib.parse import urlparse
 
 try:
     from .local_guidance_source_loader import load_local_guidance
@@ -176,6 +177,102 @@ def _applicable_fees(rule: dict[str, Any], evidence: str) -> dict[str, Any] | No
     } if line_items else None
 
 
+def _official_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return usable citations from the curated, human-reviewed local dataset."""
+    official: list[dict[str, Any]] = []
+    for source in sources:
+        url = str(source.get("url") or "").strip()
+        parsed = urlparse(url)
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc
+            and str(source.get("title") or "").strip()
+        ):
+            official.append(source)
+    return official
+
+
+def _manual_evidence(
+    *,
+    rule: dict[str, Any],
+    program: dict[str, Any],
+    applicability: str,
+    preparation: list[str],
+    restrictions: list[str],
+    sources: list[dict[str, Any]],
+    item: str,
+) -> tuple[dict[str, Any], bool]:
+    official_sources = _official_sources(sources)
+    action = str(rule.get("action") or "").strip()
+    useful_instructions = [
+        value
+        for value in [*preparation, *restrictions]
+        if isinstance(value, str) and value.strip()
+    ]
+    can_skip_tavily = bool(action and useful_instructions and official_sources)
+    source = official_sources[0] if official_sources else (sources[0] if sources else {})
+    source_id = f"manual-{rule['rule_id']}"
+    if applicability == "excluded":
+        supported_actions = ["check local guidance"]
+    elif action.startswith("drop_off"):
+        supported_actions = ["drop-off"]
+    elif action:
+        supported_actions = [action.replace("_", " ")]
+    else:
+        supported_actions = ["check local guidance"]
+    content_parts = [
+        f"Forsyth County curated rule for {item}.",
+        f"Action: {action}." if action else "",
+        f"Program: {program.get('name')}." if program.get("name") else "",
+        *preparation,
+        *restrictions,
+    ]
+    chunk = {
+        "id": source_id,
+        "title": str(source.get("title") or rule.get("item_family") or "Forsyth County rule"),
+        "section": "LOCAL_PRIMARY",
+        "source_name": str(source.get("publisher") or "Forsyth County"),
+        "source_url": str(source.get("url") or ""),
+        "source_type": "manual_local_rule",
+        "location_scope": "Forsyth County, Georgia",
+        "generalizable": False,
+        "requires_location_check": applicability == "conditional",
+        "content": " ".join(part for part in content_parts if part),
+        "source_excerpt": " ".join(useful_instructions),
+        "source_claim": f"{rule.get('item_family') or item}: {action or 'local requirements apply'}",
+        "disposal_actions_supported": supported_actions,
+        "warnings": restrictions,
+        "limitations": [],
+        "verified": bool(official_sources),
+        "source_grounded": True,
+        "human_reviewed": True,
+        "decision_signals": {
+            "tavily_trust_level": "LOCAL_PRIMARY" if official_sources else None,
+            "applicability_label": "county_exact",
+        },
+        "source_metadata": {
+            "title": source.get("title"),
+            "organization": source.get("publisher") or "Forsyth County",
+            "url": source.get("url"),
+            "trusted": bool(official_sources),
+            "local": bool(official_sources),
+            "status": "trusted_local" if official_sources else "incomplete_manual_rule",
+            "trust_level": "LOCAL_PRIMARY" if official_sources else "REJECTED",
+        },
+    }
+    retrieval_result = {
+        "chunk": chunk,
+        "chunk_id": source_id,
+        "score": 110.0,
+        "matched_fields": ["manual_local_rule", "county_exact", "location_exact"],
+        "requires_location_check": applicability == "conditional",
+        "applicability": "conditional" if applicability == "conditional" else "applicable",
+        "applicability_reason_codes": ["curated_local_evidence", applicability],
+        "source_conditions": {},
+    }
+    return retrieval_result, can_skip_tavily
+
+
 def match_local_guidance(
     classification: dict[str, Any],
     jurisdiction_id: str | None,
@@ -325,9 +422,20 @@ def match_local_guidance(
             "final_generation_path": "local_rules",
         },
     }
+    retrieval_result, can_skip_tavily = _manual_evidence(
+        rule=rule,
+        program=program,
+        applicability=applicability,
+        preparation=preparation,
+        restrictions=restrictions,
+        sources=sources,
+        item=item,
+    )
     return {
         "status": applicability,
         "dataset": dataset,
         "rules_version": dataset["rules_version"],
         "guidance": guidance,
+        "retrieval_results": [retrieval_result],
+        "can_skip_tavily": can_skip_tavily,
     }

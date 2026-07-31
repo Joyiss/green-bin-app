@@ -630,6 +630,9 @@ test('prediction validation rejects incompatible core fields and normalizes opti
     category: null,
     disposal_action: 42,
     material_code: ' PET ',
+    prep_steps: [' Empty loose contents. ', null, 7],
+    next_step: ' Use Green Bin nearby options. ',
+    alternatives: [' Reuse if suitable. ', null],
     steps: [' Empty it. ', null, 7],
     warnings: 'not-an-array',
     recognition_details: {
@@ -643,6 +646,9 @@ test('prediction validation rejects incompatible core fields and normalizes opti
   assert.equal(prediction.category, 'Unknown');
   assert.equal(prediction.disposal_action, null);
   assert.equal(prediction.material_code, 'PET');
+  assert.deepEqual(prediction.prep_steps, ['Empty loose contents.']);
+  assert.equal(prediction.next_step, 'Use Green Bin nearby options.');
+  assert.deepEqual(prediction.alternatives, ['Reuse if suitable.']);
   assert.deepEqual(prediction.steps, ['Empty it.']);
   assert.deepEqual(prediction.warnings, []);
 });

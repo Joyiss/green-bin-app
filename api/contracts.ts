@@ -76,6 +76,9 @@ export type PredictionResponse = {
   material_code: string | null;
   impact_level: string | null;
   summary?: string | null;
+  prep_steps: string[];
+  next_step: string | null;
+  alternatives: string[];
   steps: string[];
   guidance_source?: string;
   guidanceSource?: string;
@@ -342,6 +345,9 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
     material_code: text(value.material_code),
     impact_level: text(value.impact_level),
     summary: text(value.summary),
+    prep_steps: stringArray(value.prep_steps),
+    next_step: text(value.next_step),
+    alternatives: stringArray(value.alternatives),
     steps: stringArray(value.steps),
     guidance_source: text(value.guidance_source) ?? undefined,
     guidanceSource: text(value.guidanceSource) ?? undefined,

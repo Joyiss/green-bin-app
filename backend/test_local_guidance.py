@@ -188,20 +188,24 @@ class LocalGuidanceMatcherTests(unittest.TestCase):
 
 
 class LocalGuidanceIntegrationTests(unittest.TestCase):
-    def test_local_rule_precedes_epa_retrieval(self):
-        with patch(
-            "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks"
-        ) as retrieval:
+    def test_local_rule_becomes_evidence_for_the_shared_pipeline(self):
+        with (
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ) as retrieval,
+            patch.dict("os.environ", {"ENABLE_LLM_GUIDANCE": "false"}, clear=False),
+        ):
             response = build_prediction_response(
                 _classification("Laptop", "Electronics"),
                 jurisdiction_id=JURISDICTION_ID,
             )
 
-        retrieval.assert_not_called()
-        self.assertEqual(response["guidance_source"], "local_rules")
+        retrieval.assert_called_once()
+        self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["jurisdiction_id"], JURISDICTION_ID)
         self.assertEqual(response["local_guidance"]["rule_id"], "fc_electronics")
-        self.assertEqual(response["guidance_confidence"]["level"], "high")
+        self.assertTrue(response["guidance_metadata"]["source_urls"])
 
     def test_no_local_match_keeps_existing_guidance_flow(self):
         with patch(
@@ -232,7 +236,8 @@ class LocalGuidanceIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["guidance_source"], "local_rules")
+        self.assertNotEqual(response.json()["guidance_source"], "local_rules")
+        self.assertEqual(response.json()["local_guidance"]["rule_id"], "fc_electronics")
         recognize.assert_awaited_once()
         self.assertNotIn("jurisdiction_id", recognize.await_args.kwargs)
 

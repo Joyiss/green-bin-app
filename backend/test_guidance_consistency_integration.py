@@ -55,7 +55,7 @@ def _guidance(action, *, source="json_rag_llm_generated", cache_hit=False):
 
 
 class GuidanceConsistencyIntegrationTests(unittest.TestCase):
-    def test_incompatible_reuse_uses_existing_low_risk_fallback(self):
+    def test_condition_keywords_do_not_replace_generated_guidance(self):
         classification = _open_classification(condition_flags=["single_use"])
 
         with patch(
@@ -64,17 +64,11 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["disposal_action"], "check local guidance")
-        self.assertEqual(response["guidance_source"], "safe_fallback")
-        self.assertTrue(
-            response["guidance_metadata"]["consistency_guard_triggered"]
-        )
-        self.assertIn(
-            "reuse_conflicts_with_explicit_condition",
-            response["guidance_metadata"]["consistency_contradiction_codes"],
-        )
+        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
+        self.assertNotIn("consistency_guard_triggered", response["guidance_metadata"])
 
-    def test_unsupported_strong_route_is_withheld_without_replacement_claim(self):
+    def test_valid_allowed_route_is_not_replaced_by_consistency_layer(self):
         classification = _open_classification(condition_flags=["single_use"])
 
         with patch(
@@ -83,14 +77,10 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["disposal_action"], "check local guidance")
-        self.assertEqual(response["guidance_source"], "safe_fallback")
-        self.assertIn(
-            "strong_action_without_applicable_evidence",
-            response["guidance_metadata"]["consistency_contradiction_codes"],
-        )
+        self.assertEqual(response["disposal_action"], "recycle")
+        self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
 
-    def test_cached_reuse_conflict_is_rechecked_against_current_condition(self):
+    def test_cached_guidance_is_not_semantically_rewritten(self):
         classification = _open_classification(condition_flags=["contaminated"])
 
         with patch(
@@ -103,10 +93,10 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertNotEqual(response["disposal_action"], "donate/reuse")
-        self.assertTrue(response["guidance_metadata"]["rejected_cache_hit"])
+        self.assertEqual(response["disposal_action"], "donate/reuse")
+        self.assertTrue(response["cache_hit"])
 
-    def test_trash_with_special_handling_evidence_requests_clarification(self):
+    def test_special_handling_keywords_do_not_create_late_clarification(self):
         classification = _open_classification(special_flags=["battery"])
         classification["recognition_source"] = "user_confirmed_selection"
 
@@ -116,13 +106,9 @@ class GuidanceConsistencyIntegrationTests(unittest.TestCase):
         ):
             response = build_prediction_response(classification)
 
-        self.assertEqual(response["status"], "uncertain")
-        self.assertIsNone(response["disposal_action"])
-        self.assertTrue(response["clarification"]["required"])
-        self.assertIn(
-            "trash_conflicts_with_special_handling_evidence",
-            response["clarification"]["reason_codes"],
-        )
+        self.assertEqual(response["status"], "confident")
+        self.assertEqual(response["disposal_action"], "trash")
+        self.assertNotIn("clarification", response)
 
 
 if __name__ == "__main__":

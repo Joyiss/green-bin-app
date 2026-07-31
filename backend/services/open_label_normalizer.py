@@ -5,9 +5,9 @@ import re
 from typing import Any
 
 try:
-    from ..materials import LABEL_TO_CATEGORY, resolve_material_label
+    from ..materials import resolve_material_label
 except ImportError:
-    from materials import LABEL_TO_CATEGORY, resolve_material_label
+    from materials import resolve_material_label
 
 
 logger = logging.getLogger(__name__)
@@ -1002,25 +1002,10 @@ def _resolve_supported_label_from_candidates(
                 continue
 
         resolved_label = resolve_material_label(candidate_label)
-        if resolved_label is not None:
-            exact_supported_match = (
-                _normalize_candidate_label(resolved_label)
-                == _normalize_candidate_label(normalized_item_label)
-            )
-            if (
-                not exact_supported_match
-                and (
-                    not _supported_label_preserves_primary_identity(
-                        normalized_item_label,
-                        resolved_label,
-                    )
-                    or not _supported_label_matches_material(
-                        resolved_label,
-                        material_category,
-                    )
-                )
-            ):
-                continue
+        if resolved_label is not None and _supported_label_matches_material(
+            resolved_label,
+            material_category,
+        ):
             return resolved_label
 
     return None
@@ -1040,23 +1025,6 @@ def _supported_label_matches_material(
     if material_category in {"Mixed Material", "Unknown"}:
         return not _contains_term(normalized_supported_label, "plastic")
     return True
-
-
-def _supported_label_preserves_primary_identity(
-    item_label: str,
-    supported_label: str,
-) -> bool:
-    primary_terms = {
-        term
-        for term in _normalize_candidate_label(item_label).split()
-        if term and term not in _GENERIC_SHAPE_TERMS
-    }
-    supported_terms = {
-        term
-        for term in _normalize_candidate_label(supported_label).split()
-        if term and term not in _GENERIC_SHAPE_TERMS
-    }
-    return not primary_terms or primary_terms.issubset(supported_terms)
 
 
 def _resolve_supported_label_from_primary(
@@ -1096,23 +1064,9 @@ def _resolve_supported_label_from_primary(
     resolved_label = resolve_material_label(item_label)
     if resolved_label is None:
         return None
-    exact_supported_match = (
-        _normalize_candidate_label(resolved_label)
-        == _normalize_candidate_label(item_label)
-    )
-    if not exact_supported_match:
-        if not _supported_label_preserves_primary_identity(item_label, resolved_label):
-            return None
-        if not _supported_label_matches_material(resolved_label, material_category):
-            return None
-    return resolved_label
-
-
-def _supported_label_disposal_category(supported_label: str | None) -> str | None:
-    if not supported_label:
+    if not _supported_label_matches_material(resolved_label, material_category):
         return None
-    category = LABEL_TO_CATEGORY.get(supported_label)
-    return category if category and category != UNKNOWN_VALUE else None
+    return resolved_label
 
 
 def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str, Any]:
@@ -1195,11 +1149,6 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
             material_category,
             candidates,
         )
-    supported_disposal_category = _supported_label_disposal_category(
-        matched_supported_label
-    )
-    if supported_disposal_category:
-        disposal_category = supported_disposal_category
 
     normalized_payload = {
         "normalized_item": item_label,

@@ -359,7 +359,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertIn("untrusted_publication_source", news.rejection_reasons)
         self.assertIn("social_or_forum_source", social.rejection_reasons)
 
-    def test_official_local_page_is_not_rejected_for_missing_item_terms(self):
+    def test_unrelated_official_local_page_is_rejected(self):
         validation = tavily._validation_result(
             _record(
                 title="Parks | City of Raleigh",
@@ -373,7 +373,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             location={"city": "Raleigh", "state": "North Carolina"},
         )
 
-        self.assertEqual(validation.trust_level, tavily.LOCAL_PRIMARY)
+        self.assertEqual(validation.trust_level, tavily.REJECTED)
+        self.assertIn("unrelated_source", validation.rejection_reasons)
 
     def test_provider_match_and_mismatch(self):
         location = {
@@ -725,7 +726,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertNotIn("Popular Pages", captured["prompt"])
         self.assertNotIn("Unrelated department link 90", captured["prompt"])
 
-    def test_forsyth_manual_rule_has_priority_and_makes_zero_tavily_calls(self):
+    def test_complete_forsyth_manual_evidence_makes_zero_tavily_calls(self):
         classification = _classification(
             "Laptop",
             location={
@@ -747,7 +748,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             response["guidance_metadata"]["local_guidance_status"],
             "manual_local_rule",
         )
-        self.assertEqual(response["guidance_source"], "local_rules")
+        self.assertNotEqual(response["guidance_source"], "local_rules")
+        self.assertEqual(response["local_guidance"]["rule_id"], "fc_electronics")
 
     def test_unknown_and_clarification_required_items_make_zero_search_calls(self):
         client, env = self._search({"results": []})
@@ -907,9 +909,9 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
             )
 
-        self.assertIn("Verified local guidance is temporarily unavailable.", response["summary"])
-        self.assertIn("Confirm local rules before acting.", response["summary"])
+        self.assertNotIn("Verified local guidance is temporarily unavailable.", response["summary"])
         self.assertEqual(response["guidance_metadata"]["local_guidance_status"], "tavily_official_supporting")
+        self.assertEqual(response["guidance_metadata"]["local_evidence_status"], "supporting")
         self.assertEqual(response["guidance_metadata"]["tavily_trusted_source_count"], 0)
 
     def test_timeout_and_weak_results_never_retry(self):
@@ -980,7 +982,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
             )
 
-        self.assertIn(
+        self.assertNotIn(
             "Verified local guidance is temporarily unavailable.",
             response["summary"],
         )
