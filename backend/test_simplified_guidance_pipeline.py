@@ -186,8 +186,12 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
                     url=url,
                     domain=domain,
                     organization=title,
-                    snippet=f"{title} battery recycling and waste disposal.",
-                    content=f"{title} battery recycling and waste disposal.",
+                    snippet=(
+                        f"{title} accepts batteries through its designated recycling drop-off."
+                    ),
+                    content=(
+                        f"{title} accepts batteries through its designated recycling drop-off."
+                    ),
                     relevance_score=1.0,
                     raw_content="",
                 )

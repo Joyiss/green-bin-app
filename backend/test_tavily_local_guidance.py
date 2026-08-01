@@ -88,10 +88,12 @@ def _record(**overrides):
         "url": "https://raleighnc.gov/solid-waste",
         "domain": "raleighnc.gov",
         "organization": "City of Raleigh",
-        "snippet": "City of Raleigh disposal rules for household batteries.",
-        "content": "City of Raleigh disposal rules for household batteries.",
+        "snippet": "City of Raleigh accepts household batteries at its recycling drop-off.",
+        "content": "City of Raleigh accepts household batteries at its recycling drop-off.",
         "relevance_score": 0.9,
     }
+    if "content" in overrides and "snippet" not in overrides:
+        overrides["snippet"] = overrides["content"]
     defaults.update(overrides)
     return tavily._SourceRecord(**defaults)
 
@@ -284,8 +286,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 url="https://wake.gov/departments-government/waste-recycling",
                 domain="wake.gov",
                 organization="Wake County",
-                snippet="Wake County solid waste recycling information for batteries.",
-                content="Wake County solid waste recycling information for batteries.",
+                snippet="Wake County accepts batteries at its solid waste recycling drop-off.",
+                content="Wake County accepts batteries at its solid waste recycling drop-off.",
             ),
             classification=_classification(),
             location={"city": "Raleigh", "county": "Wake County", "state": "North Carolina"},
@@ -301,8 +303,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 url="https://deq.nc.gov/recycling",
                 domain="deq.nc.gov",
                 organization="NC DEQ",
-                snippet="North Carolina statewide recycling program information for batteries.",
-                content="North Carolina statewide recycling program information for batteries.",
+                snippet="North Carolina accepts batteries through a statewide recycling program.",
+                content="North Carolina accepts batteries through a statewide recycling program.",
             )
         validation = tavily._validation_result(
             record,
@@ -341,8 +343,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 url="https://deq.nc.gov/recycling/batteries",
                 domain="deq.nc.gov",
                 organization="NC DEQ",
-                snippet="North Carolina environmental agency battery recycling information.",
-                content="North Carolina environmental agency battery recycling information.",
+                snippet="North Carolina publishes battery collection requirements and limits.",
+                content="North Carolina publishes battery collection requirements and limits.",
             ),
             classification=_classification(),
             location=location,
@@ -481,7 +483,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             location=location,
         )
 
-        self.assertEqual(accepted.trust_level, tavily.LOCAL_PRIMARY)
+        self.assertEqual(accepted.trust_level, tavily.OFFICIAL_SUPPORTING)
+        self.assertEqual(accepted.source_role, tavily.DIRECT_SERVICE_PROVIDER_ROLE)
         self.assertEqual(accepted.applicability_label, "provider_exact")
         self.assertTrue(accepted.location_matches["waste_provider"])
         self.assertEqual(rejected.trust_level, tavily.REJECTED)
@@ -528,9 +531,12 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         records = tavily._source_records(
             [
                 {
-                    "title": "Solid Waste | City of Raleigh",
-                    "url": "https://raleighnc.gov/solid-waste",
+                    "title": "Battery Recycling | City of Raleigh",
+                    "url": "https://raleighnc.gov/recycling/batteries",
                     "score": 0.5,
+                    "content": (
+                        "Explore City of Raleigh battery recycling resources and accepted items."
+                    ),
                 }
             ],
             {"city": "Raleigh", "state": "North Carolina"},
@@ -542,8 +548,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         )
 
         self.assertEqual(validation.trust_level, tavily.REJECTED)
-        self.assertIn("item_relevance_not_established", validation.rejection_reasons)
-        self.assertEqual(validation.content, "Solid Waste | City of Raleigh")
+        self.assertIn("meaningful_disposal_information_missing", validation.rejection_reasons)
+        self.assertIn("generic_landing_page", validation.rejection_reasons)
 
     def test_trusted_sources_also_require_item_or_containing_category_relevance(self):
         location = {"city": "Raleigh", "state": "North Carolina"}
@@ -734,6 +740,173 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(article.claim_scope, ("supporting_context",))
         self.assertEqual(article_evidence["applicability"], "conditional")
         self.assertFalse(article_evidence["chunk"]["source_metadata"]["local"])
+
+    def test_source_roles_and_claim_limits_are_entity_agnostic(self):
+        item = "portable media player"
+        category = "Electronics"
+        city = "Lakewood"
+        state = "Colorado"
+        location = {"city": city, "state": state}
+        classification = _classification(
+            item,
+            material_category=category,
+            category=category,
+            special_handling_flags=[],
+        )
+
+        provider_name = "Community Reuse Cooperative"
+        provider_record = _record(
+            title=f"Small device recycling | {provider_name}",
+            url="https://community-reuse.example/services/small-devices",
+            domain="community-reuse.example",
+            organization=provider_name,
+            content=(
+                f"We accept {item} devices at our nonprofit reuse center. "
+                "A per-item fee and quantity limit apply."
+            ),
+        )
+        retailer_name = "Neighborhood Retail Group"
+        retailer_record = _record(
+            title=f"In-store take-back | {retailer_name}",
+            url="https://neighborhood-retail.example/programs/takeback",
+            domain="neighborhood-retail.example",
+            organization=retailer_name,
+            content=(
+                f"Participating retail stores in {city}, {state} accept {item} devices "
+                "through this retailer's own in-store take-back program."
+            ),
+        )
+        official_domain = f"{city.casefold()}.gov"
+        official_record = _record(
+            title=f"Curbside recycling | City of {city}",
+            url=f"https://{official_domain}/recycling/curbside",
+            domain=official_domain,
+            organization=f"City of {city}",
+            content=(
+                f"City of {city} residents may place {item} devices in the curbside "
+                "recycling cart."
+            ),
+        )
+        unrelated_record = _record(
+            title="Furniture pickup | Independent Hauler",
+            url="https://independent-hauler.example/services/furniture",
+            domain="independent-hauler.example",
+            organization="Independent Hauler",
+            content=(
+                f"We collect mattresses through our pickup service in {city}, {state}."
+            ),
+        )
+        article_record = _record(
+            title=f"Recycling options in {city}",
+            url="https://regional-publisher.example/recycling-options",
+            domain="regional-publisher.example",
+            organization="Regional Publisher",
+            content=(
+                f"A regional article reports that {item} devices may be accepted through "
+                f"recycling collection in {city}, {state}."
+            ),
+        )
+
+        provider = tavily._validation_result(
+            provider_record, classification=classification, location=location
+        )
+        retailer = tavily._validation_result(
+            retailer_record, classification=classification, location=location
+        )
+        official = tavily._validation_result(
+            official_record, classification=classification, location=location
+        )
+        unrelated = tavily._validation_result(
+            unrelated_record, classification=classification, location=location
+        )
+        article = tavily._validation_result(
+            article_record, classification=classification, location=location
+        )
+
+        self.assertEqual(provider.source_role, tavily.DIRECT_SERVICE_PROVIDER_ROLE)
+        self.assertEqual(provider.trust_level, tavily.OFFICIAL_SUPPORTING)
+        self.assertEqual(provider.applicability_label, "unknown")
+        self.assertNotIn("jurisdiction_wide_rules", provider.claim_scope)
+        provider_evidence = tavily._accepted_result_to_evidence(
+            provider_record,
+            provider,
+            classification=classification,
+            location=location,
+        )
+        self.assertEqual(provider_evidence["applicability"], "conditional")
+        self.assertTrue(provider_evidence["requires_location_check"])
+        self.assertEqual(
+            provider_evidence["chunk"]["source_metadata"]["source_role"],
+            tavily.DIRECT_SERVICE_PROVIDER_ROLE,
+        )
+        self.assertEqual(
+            provider_evidence["chunk"]["source_metadata"]["claim_scope"],
+            list(tavily._PROVIDER_CLAIM_SCOPE),
+        )
+
+        self.assertEqual(retailer.source_role, tavily.RETAILER_TAKEBACK_ROLE)
+        self.assertNotIn("jurisdiction_wide_rules", retailer.claim_scope)
+        self.assertEqual(official.source_role, tavily.OFFICIAL_PRIMARY_ROLE)
+        self.assertEqual(official.trust_level, tavily.LOCAL_PRIMARY)
+        self.assertIn("jurisdiction_wide_rules", official.claim_scope)
+        self.assertEqual(unrelated.trust_level, tavily.REJECTED)
+        self.assertIn("item_relevance_not_established", unrelated.rejection_reasons)
+        self.assertEqual(article.source_role, tavily.REPUTABLE_SUPPORTING_ROLE)
+        self.assertEqual(article.claim_scope, tavily._SUPPORTING_CLAIM_SCOPE)
+        article_evidence = tavily._accepted_result_to_evidence(
+            article_record,
+            article,
+            classification=classification,
+            location=location,
+        )
+        self.assertEqual(article_evidence["applicability"], "conditional")
+        self.assertTrue(article_evidence["requires_location_check"])
+
+    def test_unsafe_or_directly_contradictory_sources_are_rejected(self):
+        item = "portable media player"
+        location = {"city": "Lakewood", "state": "Colorado"}
+        classification = _classification(
+            item,
+            material_category="Electronics",
+            category="Electronics",
+            special_handling_flags=[],
+        )
+        cases = [
+            (
+                _record(
+                    title="Unsafe disposal advice",
+                    url="https://unsafe-advice.example/disposal",
+                    domain="unsafe-advice.example",
+                    organization="Unsafe Advice",
+                    content=(
+                        f"For disposal, residents should burn the {item} device in an open fire."
+                    ),
+                ),
+                "unsafe_disposal_instruction",
+            ),
+            (
+                _record(
+                    title="Conflicting acceptance information",
+                    url="https://conflicting-provider.example/accepted-items",
+                    domain="conflicting-provider.example",
+                    organization="Conflicting Provider",
+                    content=(
+                        f"We accept {item} and do not accept {item} at our recycling center."
+                    ),
+                ),
+                "internally_contradictory_disposal_claims",
+            ),
+        ]
+
+        for record, rejection_reason in cases:
+            with self.subTest(rejection_reason=rejection_reason):
+                validation = tavily._validation_result(
+                    record,
+                    classification=classification,
+                    location=location,
+                )
+                self.assertEqual(validation.trust_level, tavily.REJECTED)
+                self.assertIn(rejection_reason, validation.rejection_reasons)
 
     def test_extracted_context_preserves_relevant_middle_and_late_raw_content(self):
         raw_content = "\n".join(
@@ -1363,8 +1536,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                         "title": "Household Hazardous Waste | City of Raleigh",
                         "url": "https://raleighnc.gov/trash-recycling-and-clean/household-hazardous-waste",
                         "score": 0.94,
-                        "content": "City of Raleigh disposal rules for household batteries.",
-                        "raw_content": f"City of Raleigh disposal rules for household batteries. {marker}",
+                        "content": "City of Raleigh accepts household batteries at drop-off.",
+                        "raw_content": f"City of Raleigh accepts household batteries at drop-off. {marker}",
                     }
                 ],
                 "usage": {"credits": 1},

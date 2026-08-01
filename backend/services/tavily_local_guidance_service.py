@@ -244,8 +244,13 @@ _TAKEBACK_EVIDENCE_TERMS = (
     "participating stores accept",
 )
 _DIRECT_SERVICE_SOURCE_TERMS = (
+    "charity",
+    "donation center",
+    "non-profit",
+    "nonprofit",
     "recycler",
     "recycling center",
+    "reuse center",
     "service provider",
     "waste company",
     "disposal facility",
@@ -262,6 +267,67 @@ _OWN_SERVICE_EVIDENCE_TERMS = (
     "accepted at our",
     "schedule a pickup",
     "drop off at",
+)
+_DISPOSAL_CHANNEL_TERMS = (
+    "collection",
+    "curbside",
+    "drop off",
+    "pickup",
+    "recycling center",
+    "take back",
+    "takeback",
+)
+_OPERATIONAL_DETAIL_TERMS = (
+    "appointment",
+    "available",
+    "bring",
+    "eligible",
+    "fee",
+    "hours",
+    "limit",
+    "location",
+    "place",
+    "requirement",
+    "resident",
+    "schedule",
+)
+_SAFETY_CONTEXT_TERMS = (
+    "fire risk",
+    "handling",
+    "hazard",
+    "safety",
+)
+_UNSAFE_DISPOSAL_ACTIONS = (
+    "burn",
+    "dump into",
+    "dump in",
+    "pour down",
+    "pour into",
+    "bury",
+    "abandon",
+)
+_UNSAFE_DISPOSAL_INSTRUCTION_TERMS = (
+    "can",
+    "just",
+    "must",
+    "recommend",
+    "safe to",
+    "should",
+    "simply",
+)
+_NEGATED_INSTRUCTION_TERMS = (
+    "avoid",
+    "cannot",
+    "do not",
+    "don't",
+    "illegal",
+    "must not",
+    "never",
+    "not allowed",
+    "not safe",
+    "prohibited",
+    "should not",
+    "unsafe",
 )
 _NATIONAL_APPLICABILITY_TERMS = (
     "nationwide",
@@ -1410,7 +1476,105 @@ def _has_own_service_evidence(record: _SourceRecord) -> bool:
             text,
         )
     )
-    return explicit_acceptance or any(term in text for term in _OWN_SERVICE_EVIDENCE_TERMS)
+    first_party_service = any(term in text for term in _OWN_SERVICE_EVIDENCE_TERMS)
+    service_organization = _looks_like_commercial_provider(record) or any(
+        term in text for term in _DIRECT_SERVICE_SOURCE_TERMS
+    )
+    return first_party_service or (explicit_acceptance and service_organization)
+
+
+def _has_meaningful_disposal_information(record: _SourceRecord) -> bool:
+    text = _normalized_haystack(record)
+    explicit_disposition = bool(
+        re.search(r"\b(?:accepts?|collects?)\b", text)
+        or re.search(
+            r"\b(?:is|are|may be|can be)\s+"
+            r"(?:accepted|allowed|collected|not accepted|prohibited)\b",
+            text,
+        )
+    )
+    operational_details = any(term in text for term in _DISPOSAL_CHANNEL_TERMS) and any(
+        term in text for term in _OPERATIONAL_DETAIL_TERMS
+    )
+    safety_context = any(term in text for term in _SAFETY_CONTEXT_TERMS) and any(
+        term in text for term in ("disposal", "recycle", "recycling", "waste")
+    )
+    return (
+        _has_takeback_evidence(record)
+        or explicit_disposition
+        or operational_details
+        or safety_context
+    )
+
+
+def _content_statements(record: _SourceRecord) -> list[str]:
+    content = "\n".join(
+        value for value in (record.title, record.snippet, record.content) if value
+    )
+    return [
+        normalized
+        for statement in re.split(r"[\r\n.!?;]+", content)
+        if (normalized := normalize_guidance_phrase(statement))
+    ]
+
+
+def _has_unsafe_disposal_instruction(record: _SourceRecord) -> bool:
+    for statement in _content_statements(record):
+        if not any(action in statement for action in _UNSAFE_DISPOSAL_ACTIONS):
+            continue
+        if any(term in statement for term in _NEGATED_INSTRUCTION_TERMS):
+            continue
+        starts_with_unsafe_action = any(
+            statement.startswith(action) for action in _UNSAFE_DISPOSAL_ACTIONS
+        )
+        if starts_with_unsafe_action or any(
+            re.search(
+                rf"\b{re.escape(term)}\b.{{0,60}}\b{re.escape(action)}\b",
+                statement,
+            )
+            for term in _UNSAFE_DISPOSAL_INSTRUCTION_TERMS
+            for action in _UNSAFE_DISPOSAL_ACTIONS
+        ):
+            return True
+    return False
+
+
+def _source_relevance_targets(classification: dict[str, Any]) -> list[str]:
+    values = (
+        _specific_item_for_query(classification),
+        _normalized_item(classification),
+    )
+    return list(
+        dict.fromkeys(
+            target
+            for value in values
+            if (target := normalize_guidance_phrase(value))
+            and target not in _GENERIC_ITEM_NAMES
+        )
+    )
+
+
+def _has_directly_contradictory_disposal_claims(
+    record: _SourceRecord,
+    classification: dict[str, Any],
+) -> bool:
+    targets = _source_relevance_targets(classification)
+    for statement in _content_statements(record):
+        for target in targets:
+            escaped_target = re.escape(target)
+            positive_then_negative = re.search(
+                rf"\b(?:accepts?|collects?)\s+{escaped_target}\b.{{0,60}}"
+                rf"\b(?:cannot|does not|do not)\s+accept\s+{escaped_target}\b",
+                statement,
+            )
+            target_status_conflict = re.search(
+                rf"\b{escaped_target}\b\s+(?:is|are)\s+accepted\b.{{0,60}}"
+                rf"\b{escaped_target}\b\s+(?:is|are)\s+(?:not accepted|prohibited)\b",
+                statement,
+            )
+            if positive_then_negative or target_status_conflict:
+                return True
+    return False
 
 
 def _source_role(record: _SourceRecord, location: dict[str, str]) -> tuple[str, tuple[str, ...]]:
@@ -1424,11 +1588,7 @@ def _source_role(record: _SourceRecord, location: dict[str, str]) -> tuple[str, 
         and any(term in text for term in _RETAIL_CONTEXT_TERMS)
     ):
         return RETAILER_TAKEBACK_ROLE, _RETAILER_CLAIM_SCOPE
-    if _has_own_service_evidence(record) and (
-        _source_matches_provider(record, location)
-        or _looks_like_commercial_provider(record)
-        or any(term in text for term in _DIRECT_SERVICE_SOURCE_TERMS)
-    ):
+    if _has_own_service_evidence(record):
         return DIRECT_SERVICE_PROVIDER_ROLE, _PROVIDER_CLAIM_SCOPE
     return REPUTABLE_SUPPORTING_ROLE, _SUPPORTING_CLAIM_SCOPE
 
@@ -1599,6 +1759,16 @@ def _validation_result(
     if not _source_is_related(record, classification):
         reasons.append("unrelated_source")
         reasons.append("item_relevance_not_established")
+    if (
+        source_role != DISCOVERY_ONLY_ROLE
+        and not _has_meaningful_disposal_information(record)
+    ):
+        reasons.append("meaningful_disposal_information_missing")
+        reasons.append("generic_landing_page")
+    if _has_unsafe_disposal_instruction(record):
+        reasons.append("unsafe_disposal_instruction")
+    if _has_directly_contradictory_disposal_claims(record, classification):
+        reasons.append("internally_contradictory_disposal_claims")
     if quality_rejection := _source_quality_rejection(record):
         reasons.append(quality_rejection)
     if applicability_rejection and applicability_rejection != "location_not_confirmed":
@@ -1619,8 +1789,12 @@ def _validation_result(
         and "manufacturer" in text
         and _supporting_official_decision(record)
     )
+    provider_claim_with_unconfirmed_location = source_role in {
+        DIRECT_SERVICE_PROVIDER_ROLE,
+        RETAILER_TAKEBACK_ROLE,
+    }
     if not jurisdiction_applies and applicability not in {"federal", "state_official"}:
-        if not jurisdiction_neutral_support:
+        if not jurisdiction_neutral_support and not provider_claim_with_unconfirmed_location:
             reasons.append(applicability_rejection or "location_not_confirmed")
 
     retail_context = any(term in text for term in _RETAIL_CONTEXT_TERMS)
@@ -1642,15 +1816,11 @@ def _validation_result(
         source_role == OFFICIAL_PRIMARY_ROLE
         and applicability in {"city_exact", "county_exact", "statewide", "provider_exact"}
     )
-    configured_provider = (
-        source_role == DIRECT_SERVICE_PROVIDER_ROLE
-        and applicability == "provider_exact"
-    )
     if reasons:
         trust_level = REJECTED
     elif source_role == DISCOVERY_ONLY_ROLE:
         trust_level = DISCOVERY_ONLY
-    elif local_official or configured_provider:
+    elif local_official:
         trust_level = LOCAL_PRIMARY
     elif source_role in {
         OFFICIAL_PRIMARY_ROLE,
