@@ -30,6 +30,7 @@ import Reanimated, {
   Easing,
   FadeIn,
   FadeOut,
+  Keyframe,
   cancelAnimation,
   interpolate,
   useAnimatedStyle,
@@ -117,7 +118,7 @@ import {
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
 const CAMERA_LOADING_OVERLAY_DELAY_MS = 280;
-const ANALYZING_STATUS_INTERVAL_MS = 2000;
+const ANALYZING_STATUS_INTERVAL_MS = 3000;
 const ANALYZING_STATUS_MESSAGES = [
   'Got your photo',
   'Taking a closer look',
@@ -128,7 +129,44 @@ const ANALYZING_STATUS_MESSAGES = [
   'Putting your result together',
   'Ready in a moment',
 ] as const;
-const LOADING_SHIMMER_BAND_WIDTH = 110;
+const LOADING_TEXT_LAYOUT_HEIGHT = 22;
+const LOADING_TEXT_LINE_HEIGHT = 26;
+const LOADING_SHIMMER_OVERSCAN = 6;
+const LOADING_TEXT_CONTAINER_HEIGHT =
+  LOADING_TEXT_LINE_HEIGHT + LOADING_SHIMMER_OVERSCAN * 2;
+const LOADING_TEXT_CONTAINER_MARGIN =
+  (LOADING_TEXT_LAYOUT_HEIGHT - LOADING_TEXT_CONTAINER_HEIGHT) / 2;
+const LOADING_SHIMMER_EDGE_OFFSET = 8;
+const LOADING_SHIMMER_BAND_WIDTH_RATIO = 0.65;
+const LOADING_SHIMMER_MIN_BAND_WIDTH = 88;
+const LOADING_SHIMMER_MAX_BAND_WIDTH = 152;
+const LOADING_SHIMMER_PIXELS_PER_MS = 0.46;
+const LOADING_SHIMMER_MIN_PASS_DURATION_MS = 600;
+const LOADING_SHIMMER_MAX_PASS_DURATION_MS = 900;
+const LOADING_SHIMMER_PASS_GAP_MS = 100;
+const LOADING_PHRASE_TRANSITION_DURATION_MS = 300;
+const LOADING_PHRASE_ENTERING = new Keyframe({
+  from: {
+    opacity: 0,
+    transform: [{ translateY: -LOADING_TEXT_CONTAINER_HEIGHT }],
+  },
+  to: {
+    easing: Easing.out(Easing.cubic),
+    opacity: 1,
+    transform: [{ translateY: 0 }],
+  },
+}).duration(LOADING_PHRASE_TRANSITION_DURATION_MS);
+const LOADING_PHRASE_EXITING = new Keyframe({
+  from: {
+    opacity: 1,
+    transform: [{ translateY: 0 }],
+  },
+  to: {
+    easing: Easing.out(Easing.cubic),
+    opacity: 0,
+    transform: [{ translateY: LOADING_TEXT_CONTAINER_HEIGHT }],
+  },
+}).duration(LOADING_PHRASE_TRANSITION_DURATION_MS);
 
 async function normalizeCapturedPhotoOrientation(uri: string) {
   const context = ImageManipulator.manipulate(uri);
@@ -824,38 +862,68 @@ function AnalyzingImageAnimation() {
   );
 }
 
-function ShimmerLoadingText({ children }: { children: string }) {
+function ShimmerLoadingText({
+  children,
+  shimmerStartDelayMs = 0,
+}: {
+  children: string;
+  shimmerStartDelayMs?: number;
+}) {
   const [textWidth, setTextWidth] = useState(0);
   const shimmerProgress = useSharedValue(0);
+  const shimmerBandWidth = Math.min(
+    LOADING_SHIMMER_MAX_BAND_WIDTH,
+    Math.max(LOADING_SHIMMER_MIN_BAND_WIDTH, textWidth * LOADING_SHIMMER_BAND_WIDTH_RATIO),
+  );
 
   useEffect(() => {
-    shimmerProgress.value = withRepeat(
-      withSequence(
-        withTiming(1, {
-          duration: 2000,
-          easing: Easing.bezier(0.4, 0, 0.2, 1),
-        }),
-        withDelay(50, withTiming(0, { duration: 0 })),
+    cancelAnimation(shimmerProgress);
+    shimmerProgress.value = 0;
+
+    if (textWidth <= 0) {
+      return;
+    }
+
+    const shimmerTravelDistance =
+      textWidth + shimmerBandWidth + LOADING_SHIMMER_EDGE_OFFSET * 2;
+    const shimmerPassDuration = Math.min(
+      LOADING_SHIMMER_MAX_PASS_DURATION_MS,
+      Math.max(
+        LOADING_SHIMMER_MIN_PASS_DURATION_MS,
+        Math.round(shimmerTravelDistance / LOADING_SHIMMER_PIXELS_PER_MS),
       ),
-      -1,
-      false,
+    );
+    const shimmerPass = withSequence(
+      withTiming(1, {
+        duration: shimmerPassDuration,
+        easing: Easing.inOut(Easing.cubic),
+      }),
+      withDelay(LOADING_SHIMMER_PASS_GAP_MS, withTiming(0, { duration: 0 })),
+    );
+
+    shimmerProgress.value = withDelay(
+      shimmerStartDelayMs,
+      withRepeat(shimmerPass, -1, false),
     );
 
     return () => {
       cancelAnimation(shimmerProgress);
       shimmerProgress.value = 0;
     };
-  }, [shimmerProgress]);
+  }, [children, shimmerBandWidth, shimmerProgress, shimmerStartDelayMs, textWidth]);
 
   const shimmerBandStyle = useAnimatedStyle(() => {
     const translateX = interpolate(
       shimmerProgress.value,
       [0, 1],
-      [-LOADING_SHIMMER_BAND_WIDTH, textWidth],
+      [
+        -shimmerBandWidth - LOADING_SHIMMER_EDGE_OFFSET,
+        textWidth + LOADING_SHIMMER_EDGE_OFFSET,
+      ],
     );
 
     return {
-      opacity: interpolate(shimmerProgress.value, [0, 0.12, 0.88, 1], [0, 1, 1, 0]),
+      opacity: interpolate(shimmerProgress.value, [0, 0.08, 0.92, 1], [0, 1, 1, 0]),
       transform: [{ translateX }],
     };
   });
@@ -870,22 +938,29 @@ function ShimmerLoadingText({ children }: { children: string }) {
       {textWidth > 0 ? (
         <MaskedView
           maskElement={
-            <Text numberOfLines={1} style={styles.loadingShimmerMaskText}>
-              {children}
-            </Text>
+            <View style={styles.loadingShimmerMaskContent}>
+              <Text numberOfLines={1} style={styles.loadingShimmerMaskText}>
+                {children}
+              </Text>
+            </View>
           }
           pointerEvents="none"
           style={[styles.loadingShimmerMask, { width: textWidth }]}>
-          <Reanimated.View style={[styles.loadingShimmerGradientBand, shimmerBandStyle]}>
+          <Reanimated.View
+            style={[
+              styles.loadingShimmerGradientBand,
+              { width: shimmerBandWidth },
+              shimmerBandStyle,
+            ]}>
             <LinearGradient
               colors={[
-                'rgba(18,18,18,0)',
-                'rgba(18,18,18,0.12)',
-                'rgba(5,5,5,0.62)',
-                'rgba(18,18,18,0.12)',
-                'rgba(18,18,18,0)',
+                'rgba(255,255,255,0)',
+                'rgba(255,255,255,0.28)',
+                'rgba(255,255,255,0.96)',
+                'rgba(255,255,255,0.28)',
+                'rgba(255,255,255,0)',
               ]}
-              locations={[0, 0.22, 0.5, 0.78, 1]}
+              locations={[0, 0.2, 0.5, 0.8, 1]}
               start={{ x: 0, y: 0.5 }}
               end={{ x: 1, y: 0.5 }}
               style={StyleSheet.absoluteFillObject}
@@ -1085,9 +1160,17 @@ function CameraArea({
             exiting={FadeOut.duration(160)}
             style={styles.loadingOverlay}>
             <AnalyzingImageAnimation />
-            <ShimmerLoadingText>
-              {ANALYZING_STATUS_MESSAGES[analyzingStatusIndex]}
-            </ShimmerLoadingText>
+            <View style={styles.loadingPhraseTransitionFrame}>
+              <Reanimated.View
+                entering={LOADING_PHRASE_ENTERING}
+                exiting={LOADING_PHRASE_EXITING}
+                key={ANALYZING_STATUS_MESSAGES[analyzingStatusIndex]}
+                style={styles.loadingPhraseTransitionLayer}>
+                <ShimmerLoadingText shimmerStartDelayMs={LOADING_PHRASE_TRANSITION_DURATION_MS}>
+                  {ANALYZING_STATUS_MESSAGES[analyzingStatusIndex]}
+                </ShimmerLoadingText>
+              </Reanimated.View>
+            </View>
           </Reanimated.View>
         ) : null}
       </View>
@@ -2681,6 +2764,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     position: 'absolute',
   },
+  loadingPhraseTransitionFrame: {
+    height: LOADING_TEXT_CONTAINER_HEIGHT,
+    justifyContent: 'center',
+    marginVertical: LOADING_TEXT_CONTAINER_MARGIN,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  loadingPhraseTransitionLayer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: LOADING_SHIMMER_OVERSCAN,
+  },
   loadingShimmerTextWrap: {
     alignSelf: 'center',
     position: 'relative',
@@ -2689,28 +2785,31 @@ const styles = StyleSheet.create({
     color: '#A9A9A9',
     fontSize: 16,
     fontWeight: '700',
-    lineHeight: 22,
+    lineHeight: LOADING_TEXT_LINE_HEIGHT,
     textAlign: 'center',
     ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerMask: {
-    bottom: 0,
+    bottom: -LOADING_SHIMMER_OVERSCAN,
     left: 0,
     overflow: 'hidden',
     position: 'absolute',
-    top: 0,
+    top: -LOADING_SHIMMER_OVERSCAN,
+  },
+  loadingShimmerMaskContent: {
+    paddingBottom: LOADING_SHIMMER_OVERSCAN,
+    paddingTop: LOADING_SHIMMER_OVERSCAN,
   },
   loadingShimmerMaskText: {
     color: '#000000',
     fontSize: 16,
     fontWeight: '700',
-    lineHeight: 22,
+    lineHeight: LOADING_TEXT_LINE_HEIGHT,
     textAlign: 'center',
     ...PRIMARY_TEXT_STYLES.loading,
   },
   loadingShimmerGradientBand: {
-    height: 22,
-    width: LOADING_SHIMMER_BAND_WIDTH,
+    height: '100%',
   },
   developmentLocationBanner: {
     alignItems: 'center',
