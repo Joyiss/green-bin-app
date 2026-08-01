@@ -376,7 +376,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(validation.applicability_label, "jurisdiction_mismatch")
         self.assertIn("different_city", validation.rejection_reasons)
 
-    def test_news_and_social_media_sources_are_rejected(self):
+    def test_relevant_local_article_is_supporting_but_social_media_is_rejected(self):
         location = {"city": "Raleigh", "county": "Wake County", "state": "North Carolina"}
         news = tavily._validation_result(
             _record(
@@ -399,9 +399,10 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             location=location,
         )
 
-        self.assertEqual(news.trust_level, tavily.REJECTED)
+        self.assertEqual(news.trust_level, tavily.OFFICIAL_SUPPORTING)
+        self.assertEqual(news.source_role, tavily.REPUTABLE_SUPPORTING_ROLE)
+        self.assertEqual(news.claim_scope, ("supporting_context",))
         self.assertEqual(social.trust_level, tavily.REJECTED)
-        self.assertIn("untrusted_publication_source", news.rejection_reasons)
         self.assertIn("social_or_forum_source", social.rejection_reasons)
 
     def test_unrelated_official_local_page_is_rejected(self):
@@ -421,7 +422,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(validation.trust_level, tavily.REJECTED)
         self.assertIn("unrelated_source", validation.rejection_reasons)
 
-    def test_provider_match_and_mismatch(self):
+    def test_configured_provider_requires_evidence_for_its_claimed_service(self):
         location = {
             "city": "Asheville",
             "state": "North Carolina",
@@ -433,7 +434,10 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 url="https://wasteprousa.com/asheville",
                 domain="wasteprousa.com",
                 organization="Waste Pro",
-                content="Waste Pro residential service information for batteries in Asheville.",
+                content=(
+                    "Waste Pro says we accept household batteries for drop off at our "
+                    "Asheville recycling center."
+                ),
             ),
             classification=_classification(),
             location=location,
@@ -454,7 +458,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(accepted.applicability_label, "provider_exact")
         self.assertTrue(accepted.location_matches["waste_provider"])
         self.assertEqual(rejected.trust_level, tavily.REJECTED)
-        self.assertIn("provider_mismatch", rejected.rejection_reasons)
+        self.assertIn("provider_service_evidence_missing", rejected.rejection_reasons)
 
     def test_generic_national_guidance_is_rejected(self):
         validation = tavily._validation_result(
@@ -472,7 +476,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(validation.trust_level, tavily.REJECTED)
         self.assertEqual(validation.applicability_label, "unknown")
-        self.assertIn("generic_recycling_aggregator", validation.rejection_reasons)
+        self.assertEqual(validation.source_role, tavily.DISCOVERY_ONLY_ROLE)
+        self.assertIn("location_not_confirmed", validation.rejection_reasons)
 
     def test_prompt_injection_text_inside_webpage_content_is_removed_from_records(self):
         records = tavily._source_records(
@@ -557,6 +562,151 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                         "item_relevance_not_established",
                         validation.rejection_reasons,
                     )
+
+    def test_recycler_with_explicit_item_acceptance_is_provider_specific_evidence(self):
+        location = {"city": "Denver", "state": "Colorado"}
+        record = _record(
+            title="Monitor Recycling | Community Recycler",
+            url="https://recycler.example/denver/monitors",
+            domain="recycler.example",
+            organization="Community Recycler",
+            snippet="Denver recycler services for monitors.",
+            content=(
+                "Community Recycler says we accept monitors for drop off at our Denver "
+                "recycling center. Service is available to Colorado residents."
+            ),
+        )
+        classification = _classification(
+            "Monitor", material_category="Electronics", category="Electronics"
+        )
+
+        validation = tavily._validation_result(
+            record, classification=classification, location=location
+        )
+        evidence = tavily._accepted_result_to_evidence(
+            record, validation, classification=classification, location=location
+        )
+
+        self.assertEqual(validation.source_role, tavily.DIRECT_SERVICE_PROVIDER_ROLE)
+        self.assertEqual(validation.trust_level, tavily.OFFICIAL_SUPPORTING)
+        self.assertIn("own_accepted_items", validation.claim_scope)
+        self.assertEqual(evidence["applicability"], "applicable")
+        self.assertEqual(
+            evidence["chunk"]["source_metadata"]["source_role"],
+            tavily.DIRECT_SERVICE_PROVIDER_ROLE,
+        )
+        self.assertFalse(evidence["chunk"]["source_metadata"]["local"])
+
+    def test_retail_takeback_with_explicit_acceptance_is_retailer_specific_evidence(self):
+        location = {"city": "Madison", "state": "Wisconsin"}
+        record = _record(
+            title="In-store LED bulb take-back",
+            url="https://retail.example/madison/takeback",
+            domain="retail.example",
+            organization="Example Retailer",
+            snippet="Retail store take-back program for LED bulbs in Madison.",
+            content=(
+                "This retailer's participating stores accept LED bulbs through an in-store "
+                "take-back program in Madison, Wisconsin."
+            ),
+        )
+        classification = _classification(
+            "LED bulb", material_category="Electronics", category="Electronics"
+        )
+
+        validation = tavily._validation_result(
+            record, classification=classification, location=location
+        )
+        evidence = tavily._accepted_result_to_evidence(
+            record, validation, classification=classification, location=location
+        )
+
+        self.assertEqual(validation.source_role, tavily.RETAILER_TAKEBACK_ROLE)
+        self.assertIn("own_takeback_program", validation.claim_scope)
+        self.assertEqual(evidence["applicability"], "applicable")
+        self.assertEqual(
+            evidence["chunk"]["source_metadata"]["claim_scope"],
+            list(validation.claim_scope),
+        )
+
+    def test_official_local_source_has_jurisdiction_wide_claim_scope(self):
+        validation = tavily._validation_result(
+            _record(),
+            classification=_classification(),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+
+        self.assertEqual(validation.source_role, tavily.OFFICIAL_PRIMARY_ROLE)
+        self.assertEqual(validation.trust_level, tavily.LOCAL_PRIMARY)
+        self.assertIn("jurisdiction_wide_rules", validation.claim_scope)
+        self.assertIn("curbside_policies", validation.claim_scope)
+
+    def test_unrelated_provider_is_rejected_even_with_local_service_claim(self):
+        validation = tavily._validation_result(
+            _record(
+                title="Tire drop-off | Community Recycler",
+                url="https://recycler.example/raleigh/tires",
+                domain="recycler.example",
+                organization="Community Recycler",
+                snippet="Raleigh recycler services for tires.",
+                content=(
+                    "Community Recycler says we accept tires for drop off at our Raleigh "
+                    "recycling center."
+                ),
+            ),
+            classification=_classification(
+                "Glass jar", material_category="Glass", category="Glass"
+            ),
+            location={"city": "Raleigh", "state": "North Carolina"},
+        )
+
+        self.assertEqual(validation.trust_level, tavily.REJECTED)
+        self.assertIn("item_relevance_not_established", validation.rejection_reasons)
+
+    def test_directory_is_discovery_only_and_article_cannot_be_primary_local_evidence(self):
+        location = {"city": "Raleigh", "state": "North Carolina"}
+        directory_record = _record(
+            title="Raleigh battery recycling directory",
+            url="https://directory.example/raleigh/batteries",
+            domain="directory.example",
+            organization="Recycling Directory",
+            snippet="Find a recycler for batteries in Raleigh.",
+            content="A Raleigh facility listings directory for battery recycling and drop off.",
+        )
+        article_record = _record(
+            title="Article about Raleigh battery disposal",
+            url="https://publisher.example/raleigh-batteries",
+            domain="publisher.example",
+            organization="Regional Publisher",
+            snippet="A local article about battery disposal in Raleigh.",
+            content=(
+                "This news article reports that household batteries may be accepted through "
+                "recycling collection in Raleigh, North Carolina."
+            ),
+        )
+        classification = _classification()
+
+        directory = tavily._validation_result(
+            directory_record, classification=classification, location=location
+        )
+        article = tavily._validation_result(
+            article_record, classification=classification, location=location
+        )
+        article_evidence = tavily._accepted_result_to_evidence(
+            article_record, article, classification=classification, location=location
+        )
+
+        self.assertEqual(directory.source_role, tavily.DISCOVERY_ONLY_ROLE)
+        self.assertEqual(directory.trust_level, tavily.DISCOVERY_ONLY)
+        self.assertIsNone(
+            tavily._accepted_result_to_evidence(
+                directory_record, directory, classification=classification, location=location
+            )
+        )
+        self.assertEqual(article.source_role, tavily.REPUTABLE_SUPPORTING_ROLE)
+        self.assertEqual(article.claim_scope, ("supporting_context",))
+        self.assertEqual(article_evidence["applicability"], "conditional")
+        self.assertFalse(article_evidence["chunk"]["source_metadata"]["local"])
 
     def test_extracted_context_preserves_relevant_middle_and_late_raw_content(self):
         raw_content = "\n".join(

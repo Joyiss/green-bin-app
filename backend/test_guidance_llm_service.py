@@ -716,6 +716,71 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertNotIn("computer peripherals", prompt)
         self.assertNotIn("electronics drop-off that accepts", prompt)
 
+    def test_source_role_and_claim_scope_are_in_guidance_context(self):
+        chunk = _chunk(
+            action="Drop-off",
+            claim="A local recycler says it accepts monitors at its own facility.",
+        )
+        chunk.update(
+            {
+                "source_role": "direct_service_provider",
+                "claim_scope": [
+                    "own_accepted_items",
+                    "own_services",
+                    "own_locations",
+                ],
+            }
+        )
+
+        prompt = _build_source_grounded_prompt(
+            recognized_item="Monitor",
+            normalized_item_label="Monitor",
+            material="Electronics",
+            broad_category="electronics",
+            condition_flags=[],
+            special_flags=["electronics"],
+            visual_evidence=None,
+            candidates=[],
+            location={"city": "Denver", "state": "Colorado"},
+            chunks=[chunk],
+            allowed_disposal_actions=["drop-off"],
+        )
+
+        self.assertIn('"source_role": "direct_service_provider"', prompt)
+        self.assertIn('"claim_scope": ["own_accepted_items", "own_services", "own_locations"]', prompt)
+        self.assertIn("State provider claims as provider-specific, never as citywide rules.", prompt)
+        self.assertIn("cannot by itself support a strong local rule", prompt)
+
+    @patch("services.guidance_llm_service._groq_request")
+    def test_discovery_only_result_is_not_sent_to_guidance_llm(self, request):
+        discovery_chunk = _chunk(
+            action="Drop-off",
+            claim="A directory lists possible battery recyclers.",
+        )
+        discovery_chunk.update(
+            {
+                "source_role": "discovery_only",
+                "claim_scope": ["source_discovery"],
+            }
+        )
+
+        result = try_generate_source_grounded_guidance(
+            recognized_item="Household battery",
+            normalized_item_label="Household battery",
+            material="Battery",
+            broad_category="batteries",
+            condition_flags=[],
+            special_flags=["battery"],
+            visual_evidence=None,
+            candidates=[],
+            location={"city": "Raleigh", "state": "North Carolina"},
+            retrieval_results=[_result(discovery_chunk)],
+        )
+
+        request.assert_not_called()
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "no_chunks")
+
     def test_general_safe_fallback_prompt_is_standalone_without_retrieved_chunks(self):
         observations = [
             {

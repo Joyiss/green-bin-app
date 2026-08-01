@@ -212,33 +212,62 @@ _REJECTED_SOURCE_DOMAINS = (
     "blogspot.",
     "wordpress.",
 )
-_REJECTED_SOURCE_TERMS = (
-    "blog",
-    "forum",
-    "news",
-    "article",
-    "retailer",
-    "store",
-    "shopping",
-    "reddit",
-    "facebook",
-    "social media",
+_LOW_QUALITY_SOURCE_TERMS = (
+    "affiliate links",
+    "sponsored content",
+    "click here to learn more",
+    "top 10",
+    "best recycling near me",
+    "seo content",
 )
-_RETAILER_TERMS = (
-    "amazon",
-    "best buy",
-    "costco",
-    "home depot",
-    "lowes",
-    "target",
-    "walmart",
-)
-_GENERIC_AGGREGATOR_TERMS = (
-    "earth911",
-    "recyclenation",
-    "how2recycle",
-    "recycle coach",
+_DIRECTORY_SOURCE_TERMS = (
+    "directory",
+    "provider listings",
+    "facility listings",
+    "find a recycler",
     "recycling guide",
+)
+_RETAIL_CONTEXT_TERMS = (
+    "retailer",
+    "retail store",
+    "in store",
+    "participating stores",
+    "store locations",
+    "trade in",
+)
+_TAKEBACK_EVIDENCE_TERMS = (
+    "take back",
+    "takeback",
+    "trade in",
+    "in store recycling",
+    "stores accept",
+    "participating stores accept",
+)
+_DIRECT_SERVICE_SOURCE_TERMS = (
+    "recycler",
+    "recycling center",
+    "service provider",
+    "waste company",
+    "disposal facility",
+    "transfer station",
+    "collection service",
+)
+_OWN_SERVICE_EVIDENCE_TERMS = (
+    "we accept",
+    "our facility",
+    "our facilities",
+    "our service",
+    "our services",
+    "our locations",
+    "accepted at our",
+    "schedule a pickup",
+    "drop off at",
+)
+_NATIONAL_APPLICABILITY_TERMS = (
+    "nationwide",
+    "national program",
+    "across the united states",
+    "all stores",
 )
 _OFFICIAL_SERVICE_TERMS = (
     "city",
@@ -279,12 +308,15 @@ _CORE_DISPOSAL_ACTIONS = (
     "check local guidance",
 )
 _GENERIC_DISPOSAL_RELEVANCE_TERMS = {
+    "accept",
     "accepted",
     "collection",
     "disposal",
     "drop off",
     "recycle",
     "recycling",
+    "take back",
+    "takeback",
     "trash",
     "waste",
 }
@@ -309,7 +341,39 @@ _CONTAINING_CATEGORY_TERMS = {
 }
 LOCAL_PRIMARY = "LOCAL_PRIMARY"
 OFFICIAL_SUPPORTING = "OFFICIAL_SUPPORTING"
+DISCOVERY_ONLY = "DISCOVERY_ONLY"
 REJECTED = "REJECTED"
+
+OFFICIAL_PRIMARY_ROLE = "official_primary"
+DIRECT_SERVICE_PROVIDER_ROLE = "direct_service_provider"
+RETAILER_TAKEBACK_ROLE = "retailer_takeback"
+REPUTABLE_SUPPORTING_ROLE = "reputable_supporting"
+DISCOVERY_ONLY_ROLE = "discovery_only"
+
+_OFFICIAL_CLAIM_SCOPE = (
+    "jurisdiction_wide_rules",
+    "laws",
+    "curbside_policies",
+    "public_programs",
+)
+_PROVIDER_CLAIM_SCOPE = (
+    "own_accepted_items",
+    "own_services",
+    "own_locations",
+    "own_fees",
+    "own_hours",
+    "own_limits",
+)
+_RETAILER_CLAIM_SCOPE = (
+    "own_takeback_program",
+    "own_accepted_items",
+    "own_locations",
+    "own_fees",
+    "own_hours",
+    "own_limits",
+)
+_SUPPORTING_CLAIM_SCOPE = ("supporting_context",)
+_DISCOVERY_CLAIM_SCOPE = ("source_discovery",)
 _STATE_ABBREVIATIONS = {
     "alabama": "al",
     "alaska": "ak",
@@ -392,6 +456,8 @@ class _SourceValidation:
     domain: str
     organization: str | None
     trust_level: str
+    source_role: str
+    claim_scope: tuple[str, ...]
     applicability_label: str
     rejection_reasons: tuple[str, ...]
     location_matches: dict[str, bool]
@@ -1287,17 +1353,13 @@ def _source_matches_provider(record: _SourceRecord, location: dict[str, str]) ->
     return bool(provider_tokens) and all(token in domain for token in provider_tokens)
 
 
-def _is_rejected_source_type(record: _SourceRecord) -> str | None:
+def _source_quality_rejection(record: _SourceRecord) -> str | None:
     text = _normalized_haystack(record)
     domain = record.domain.casefold()
     if any(term in domain for term in _REJECTED_SOURCE_DOMAINS):
         return "social_or_forum_source"
-    if any(term in text for term in _RETAILER_TERMS):
-        return "retailer_source"
-    if any(term in text for term in _GENERIC_AGGREGATOR_TERMS):
-        return "generic_recycling_aggregator"
-    if any(term in text for term in _REJECTED_SOURCE_TERMS):
-        return "untrusted_publication_source"
+    if any(term in text for term in _LOW_QUALITY_SOURCE_TERMS):
+        return "low_quality_or_seo_source"
     return None
 
 
@@ -1312,22 +1374,41 @@ def _looks_like_commercial_provider(record: _SourceRecord) -> bool:
     return any(term in text for term in _COMMERCIAL_PROVIDER_TERMS)
 
 
-def _trusted_source_decision(
-    record: _SourceRecord,
-    location: dict[str, str],
-) -> tuple[bool, str | None]:
-    if _source_matches_provider(record, location):
-        return True, None
-    if _wrong_state(record, location.get("state")):
-        return False, "wrong_state"
-    if _is_government_domain(record.domain):
-        return True, None
-    if rejected_reason := _is_rejected_source_type(record):
-        return False, rejected_reason
-    if _looks_like_commercial_provider(record):
-        return False, "provider_mismatch" if location.get("waste_provider") else "unverified_commercial_provider"
+def _has_takeback_evidence(record: _SourceRecord) -> bool:
+    text = _normalized_haystack(record)
+    return any(term in text for term in _TAKEBACK_EVIDENCE_TERMS)
 
-    return False, "unofficial_source"
+
+def _has_own_service_evidence(record: _SourceRecord) -> bool:
+    text = _normalized_haystack(record)
+    explicit_acceptance = bool(
+        re.search(
+            r"\b(?:accepts?|collects?|picks? up|offers?|provides?)\b.{0,100}"
+            r"\b(?:drop off|recycl|dispos|collection|pickup|service|items?)\b",
+            text,
+        )
+    )
+    return explicit_acceptance or any(term in text for term in _OWN_SERVICE_EVIDENCE_TERMS)
+
+
+def _source_role(record: _SourceRecord, location: dict[str, str]) -> tuple[str, tuple[str, ...]]:
+    text = _normalized_haystack(record)
+    if _is_government_domain(record.domain):
+        return OFFICIAL_PRIMARY_ROLE, _OFFICIAL_CLAIM_SCOPE
+    if any(term in text for term in _DIRECTORY_SOURCE_TERMS):
+        return DISCOVERY_ONLY_ROLE, _DISCOVERY_CLAIM_SCOPE
+    if (
+        _has_takeback_evidence(record)
+        and any(term in text for term in _RETAIL_CONTEXT_TERMS)
+    ):
+        return RETAILER_TAKEBACK_ROLE, _RETAILER_CLAIM_SCOPE
+    if _has_own_service_evidence(record) and (
+        _source_matches_provider(record, location)
+        or _looks_like_commercial_provider(record)
+        or any(term in text for term in _DIRECT_SERVICE_SOURCE_TERMS)
+    ):
+        return DIRECT_SERVICE_PROVIDER_ROLE, _PROVIDER_CLAIM_SCOPE
+    return REPUTABLE_SUPPORTING_ROLE, _SUPPORTING_CLAIM_SCOPE
 
 
 def _different_named_jurisdiction(
@@ -1392,6 +1473,21 @@ def _applicability_label(
     ):
         matches["state"] = True
         return "state_official", matches, None
+
+    if city and _term_in_text(city, text):
+        matches["city"] = True
+        return "jurisdiction_relevant", matches, None
+    if county and _term_in_text(county, text):
+        matches["county"] = True
+        return "jurisdiction_relevant", matches, None
+    if state and (
+        _term_in_text(state, text)
+        or bool(state_abbr and _term_in_text(state_abbr, text))
+    ):
+        matches["state"] = True
+        return "state_relevant", matches, None
+    if any(term in text for term in _NATIONAL_APPLICABILITY_TERMS):
+        return "national", matches, None
 
     return "unknown", matches, "location_not_confirmed"
 
@@ -1474,33 +1570,76 @@ def _validation_result(
     classification: dict[str, Any],
     location: dict[str, str],
 ) -> _SourceValidation:
-    trusted, trust_rejection = _trusted_source_decision(record, location)
     applicability, matches, applicability_rejection = _applicability_label(record, location)
+    source_role, claim_scope = _source_role(record, location)
+    text = _normalized_haystack(record)
     reasons: list[str] = []
     if not _source_is_related(record, classification):
         reasons.append("unrelated_source")
         reasons.append("item_relevance_not_established")
+    if quality_rejection := _source_quality_rejection(record):
+        reasons.append(quality_rejection)
     if applicability_rejection and applicability_rejection != "location_not_confirmed":
         reasons.append(applicability_rejection)
     if applicability == "jurisdiction_mismatch":
         reasons.append("jurisdiction_mismatch")
-    if trust_rejection and trust_rejection != "unofficial_source":
-        reasons.append(trust_rejection)
-
-    local_primary = trusted and not reasons and applicability in {
+    jurisdiction_applies = applicability in {
         "city_exact",
         "county_exact",
         "statewide",
         "provider_exact",
+        "jurisdiction_relevant",
+        "state_relevant",
+        "national",
     }
-    if local_primary:
+    jurisdiction_neutral_support = (
+        source_role == REPUTABLE_SUPPORTING_ROLE
+        and "manufacturer" in text
+        and _supporting_official_decision(record)
+    )
+    if not jurisdiction_applies and applicability not in {"federal", "state_official"}:
+        if not jurisdiction_neutral_support:
+            reasons.append(applicability_rejection or "location_not_confirmed")
+
+    retail_context = any(term in text for term in _RETAIL_CONTEXT_TERMS)
+    provider_context = (
+        _source_matches_provider(record, location)
+        or _looks_like_commercial_provider(record)
+        or any(term in text for term in _DIRECT_SERVICE_SOURCE_TERMS)
+    )
+    if retail_context and source_role != RETAILER_TAKEBACK_ROLE:
+        reasons.append("retailer_takeback_evidence_missing")
+    if provider_context and source_role not in {
+        DIRECT_SERVICE_PROVIDER_ROLE,
+        RETAILER_TAKEBACK_ROLE,
+        DISCOVERY_ONLY_ROLE,
+    }:
+        reasons.append("provider_service_evidence_missing")
+
+    local_official = (
+        source_role == OFFICIAL_PRIMARY_ROLE
+        and applicability in {"city_exact", "county_exact", "statewide", "provider_exact"}
+    )
+    configured_provider = (
+        source_role == DIRECT_SERVICE_PROVIDER_ROLE
+        and applicability == "provider_exact"
+    )
+    if reasons:
+        trust_level = REJECTED
+    elif source_role == DISCOVERY_ONLY_ROLE:
+        trust_level = DISCOVERY_ONLY
+    elif local_official or configured_provider:
         trust_level = LOCAL_PRIMARY
-    elif not reasons and _supporting_official_decision(record):
+    elif source_role in {
+        OFFICIAL_PRIMARY_ROLE,
+        DIRECT_SERVICE_PROVIDER_ROLE,
+        RETAILER_TAKEBACK_ROLE,
+        REPUTABLE_SUPPORTING_ROLE,
+    }:
         trust_level = OFFICIAL_SUPPORTING
     else:
         trust_level = REJECTED
-        if not reasons:
-            reasons.append(trust_rejection or applicability_rejection or "untrusted_source")
+        reasons.append("untrusted_source")
 
     return _SourceValidation(
         title=record.title,
@@ -1508,6 +1647,8 @@ def _validation_result(
         domain=record.domain,
         organization=record.organization,
         trust_level=trust_level,
+        source_role=source_role,
+        claim_scope=claim_scope,
         applicability_label=applicability,
         rejection_reasons=tuple(dict.fromkeys(reasons)),
         location_matches=matches,
@@ -1531,12 +1672,25 @@ def _accepted_result_to_evidence(
     classification: dict[str, Any],
     location: dict[str, str],
 ) -> dict[str, Any] | None:
-    if validation.trust_level == REJECTED or not validation.title:
+    if (
+        validation.trust_level in {REJECTED, DISCOVERY_ONLY}
+        or validation.source_role == DISCOVERY_ONLY_ROLE
+        or not validation.title
+    ):
         return None
     item = _normalized_item(classification)
     if not item:
         return None
     local_primary = validation.trust_level == LOCAL_PRIMARY
+    provider_specific = validation.source_role in {
+        DIRECT_SERVICE_PROVIDER_ROLE,
+        RETAILER_TAKEBACK_ROLE,
+    }
+    guidance_applicable = local_primary or (
+        provider_specific
+        and validation.applicability_label
+        in {"provider_exact", "jurisdiction_relevant", "state_relevant", "national"}
+    )
     source_id = _source_id(record.url, location, item)
     source_metadata = {
         "title": validation.title,
@@ -1544,8 +1698,20 @@ def _accepted_result_to_evidence(
         "url": validation.url,
         "trusted": True,
         "local": local_primary,
-        "status": "trusted_local" if local_primary else "official_supporting",
+        "status": (
+            "trusted_local"
+            if local_primary
+            else "provider_specific"
+            if validation.source_role == DIRECT_SERVICE_PROVIDER_ROLE
+            else "retailer_specific"
+            if validation.source_role == RETAILER_TAKEBACK_ROLE
+            else "official_supporting"
+            if validation.source_role == OFFICIAL_PRIMARY_ROLE
+            else "reputable_supporting"
+        ),
         "trust_level": validation.trust_level,
+        "source_role": validation.source_role,
+        "claim_scope": list(validation.claim_scope),
     }
     normalized_details = _normalized_details(classification)
     location_exact = any(
@@ -1571,10 +1737,12 @@ def _accepted_result_to_evidence(
         "section": validation.trust_level,
         "source_name": validation.organization or validation.domain,
         "source_url": validation.url,
-        "source_type": "official_local_web" if local_primary else "official_supporting_web",
+        "source_type": validation.source_role,
+        "source_role": validation.source_role,
+        "claim_scope": list(validation.claim_scope),
         "location_scope": ", ".join(location.values()),
         "generalizable": False,
-        "requires_location_check": not local_primary,
+        "requires_location_check": not guidance_applicable,
         "applies_to": {
             "item_labels": [item],
             "materials": [value for value in [_material(classification)] if value],
@@ -1595,20 +1763,22 @@ def _accepted_result_to_evidence(
         "disposal_actions_supported": list(_CORE_DISPOSAL_ACTIONS),
         "warnings": [],
         "limitations": [],
-        "confidence": "high",
+        "confidence": "high" if guidance_applicable else "medium",
         "verified": True,
         "source_grounded": True,
         "human_reviewed": False,
         "review_status": (
             "tavily_local_primary_source"
             if local_primary
-            else "tavily_official_supporting_source"
+            else f"tavily_{validation.source_role}_source"
         ),
         "dynamic_source": "tavily",
         "untrusted_web_evidence": True,
         "decision_signals": {
             "tavily_trust_level": validation.trust_level,
             "applicability_label": validation.applicability_label,
+            "source_role": validation.source_role,
+            "claim_scope": list(validation.claim_scope),
             "source_context_extraction_reasons": extraction_reasons,
             "source_context_original_chars": len(record.raw_content or record.content),
             "source_context_final_chars": len(source_content),
@@ -1622,20 +1792,29 @@ def _accepted_result_to_evidence(
         "matched_fields": [
             "tavily_trusted_source",
             validation.trust_level,
+            validation.source_role,
             (
                 "location_exact"
                 if location_exact
                 else "statewide_rule"
                 if local_primary
-                else "official_supporting"
+                else "provider_specific"
+                if provider_specific
+                else "reputable_supporting"
             ),
             validation.applicability_label,
         ],
-        "requires_location_check": not local_primary,
-        "applicability": "applicable" if local_primary else "conditional",
+        "requires_location_check": not guidance_applicable,
+        "applicability": "applicable" if guidance_applicable else "conditional",
         "applicability_reason_codes": [
             "deterministic_source_filter",
-            "source_location_applies" if local_primary else "official_supporting_not_verified_local",
+            (
+                "source_location_applies"
+                if local_primary
+                else "provider_specific_claim_applies"
+                if guidance_applicable
+                else "supporting_source_not_primary_local_authority"
+            ),
         ],
         "source_conditions": {
             "required": _condition_flags(classification),
@@ -1734,22 +1913,26 @@ def _log_validation_result(position: int, validation: _SourceValidation) -> None
             "url": _redact_url_for_diagnostic_log(validation.url),
             "domain": validation.domain,
             "trust_level": validation.trust_level,
+            "source_role": validation.source_role,
+            "claim_scope": list(validation.claim_scope),
             "applicability_label": validation.applicability_label,
-            "accepted": validation.trust_level != REJECTED,
+            "accepted": validation.trust_level not in {REJECTED, DISCOVERY_ONLY},
+            "discovery_only": validation.source_role == DISCOVERY_ONLY_ROLE,
             "rejection_reasons": list(validation.rejection_reasons),
             "tavily_score": validation.relevance_score,
         },
     )
     logger.info(
         "tavily_local_guidance_result request_id=%s position=%s domain=%s "
-        "trust_level=%s applicability_label=%s accepted=%s "
+        "trust_level=%s source_role=%s applicability_label=%s accepted=%s "
         "rejection_reasons=%s",
         request_context.get_predict_request_id(),
         position,
         validation.domain,
         validation.trust_level,
+        validation.source_role,
         validation.applicability_label,
-        validation.trust_level != REJECTED,
+        validation.trust_level not in {REJECTED, DISCOVERY_ONLY},
         ",".join(validation.rejection_reasons),
     )
 
@@ -1899,7 +2082,7 @@ def search_local_guidance(
             location=location,
         )
         _log_validation_result(record.position, validation)
-        if validation.trust_level == REJECTED:
+        if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
             continue
         evidence = _accepted_result_to_evidence(
             record,
