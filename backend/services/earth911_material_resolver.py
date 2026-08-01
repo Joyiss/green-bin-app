@@ -678,20 +678,53 @@ def _default_catalog_matcher(
             "failure_reason": "missing_groq_api_key",
         }
 
-    prompt = f"""You are a controlled Earth911 catalog matcher.
-Choose exactly one material name copied verbatim from the catalog below, or choose \"unsupported\".
-Do not invent or rewrite material names. Do not provide disposal or recycling guidance.
-For hazardous, battery, medical, chemical, or electronics items, choose only a specific material.
-If the item is ambiguous, the catalog has only a broad risky category, or confidence is not high, choose unsupported.
+    prompt = f"""You are a controlled matcher for the Earth911 supported-material catalog.
 
-Recognized item: {label}
-Recognition details: {json.dumps(recognition_details or {}, ensure_ascii=True, sort_keys=True)}
+Choose exactly one material description copied verbatim from a catalog item below, or choose "unsupported".
 
-Return one JSON object only:
-{{"selection":"Exact Earth911 Description or unsupported","confidence":"high or low","reason":"short explanation"}}
+This is classification only. Do not provide disposal, recycling, safety, or location guidance.
+
+Matching rules:
+
+- Match the physical recognized item, not its brand, product name, contents, disposal action, or broad material alone.
+- Use recognized_item as the main identity.
+- Use recognition details only to confirm or disambiguate that identity.
+- Do not infer hidden properties such as battery chemistry, resin code, coating, contamination, embedded components, or exact construction.
+- Choose the most specific catalog item directly supported by the recognition evidence.
+- Do not choose a catalog item that is more specific than the evidence.
+- If two or more catalog entries are reasonably plausible, choose "unsupported".
+- If the only possible match is a broad risky category for a hazardous, battery, medical, chemical, paint, or electronics item, choose "unsupported".
+- Catalog family headings are not valid selections.
+- The selection must exactly match one catalog line, including wording and capitalization, or be exactly "unsupported".
+- Never invent, shorten, expand, combine, or rewrite a catalog material name.
+
+Confidence rules:
+
+- Use "high" only when the recognized physical item directly matches one catalog entry.
+- Use "low" when returning "unsupported".
+- Never return a low-confidence catalog selection. Return "unsupported" instead.
+
+Recognized item:
+{label}
+
+Recognition details:
+{json.dumps(recognition_details or {}, ensure_ascii=True, sort_keys=True)}
 
 Earth911 supported-material catalog:
+
 {_catalog_prompt(grouped_catalog)}
+
+OUTPUT REQUIREMENTS:
+
+Return exactly one JSON object and nothing else.
+
+{{
+  "selection": "Exact catalog material or unsupported",
+  "confidence": "high or low",
+  "reason": "brief evidence-based reason"
+}}
+
+Keep reason under 20 words.
 """
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",

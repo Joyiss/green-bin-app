@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from services.earth911_material_resolver import (
+    _default_catalog_matcher,
     get_grouped_material_catalog,
     get_supported_materials,
     reset_supported_materials_cache_for_tests,
@@ -258,6 +259,52 @@ class Earth911MaterialResolverTests(unittest.TestCase):
         self.assertIn("## Construction", prompt)
         self.assertIn("- Ceramic Fixtures", prompt)
         self.assertNotIn("## 7", prompt)
+
+    def test_earth911_prompt_includes_complete_dynamic_catalog(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"selection":"unsupported","confidence":"low",'
+                            '"reason":"Two catalog entries are plausible."}'
+                        )
+                    }
+                }
+            ]
+        }
+        env = {
+            "ENABLE_EARTH911_LLM_MATCHING": "true",
+            "GUIDANCE_LLM_PROVIDER": "groq",
+            "GUIDANCE_LLM_MODEL": "test-model",
+            "GROQ_API_KEY": "test-key",
+        }
+        grouped_catalog = {
+            "Construction": ["Ceramic Fixtures", "Porcelain"],
+            "Electronics": ["Computer Peripherals - External"],
+        }
+
+        with (
+            patch.dict(os.environ, env),
+            patch("services.earth911_material_resolver.requests.post", return_value=response) as post,
+        ):
+            result = _default_catalog_matcher(
+                "porcelain sink",
+                {"recognized_item": "porcelain sink"},
+                grouped_catalog,
+            )
+
+        self.assertEqual(result["selection"], "unsupported")
+        prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("You are a controlled matcher for the Earth911 supported-material catalog.", prompt)
+        self.assertIn("Recognized item:\nporcelain sink", prompt)
+        self.assertIn('"recognized_item": "porcelain sink"', prompt)
+        self.assertIn("## Construction\n- Ceramic Fixtures\n- Porcelain", prompt)
+        self.assertIn("## Electronics\n- Computer Peripherals - External", prompt)
+        self.assertIn("OUTPUT REQUIREMENTS:", prompt)
+        self.assertIn("Keep reason under 20 words.", prompt)
 
     def test_keyboard_plural_catalog_match_bypasses_llm(self):
         fetch = _fetcher([_material("Keyboards", 40, family_ids=[4])])

@@ -122,6 +122,51 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             "Official local disposal rules for television in Austin, Texas",
         )
 
+    def test_short_meaningful_labels_are_searchable_after_normalization(self):
+        location = {"city": "Raleigh", "state": "North Carolina"}
+        expected_terms = {
+            "LED bulb": "LED bulb",
+            "PC": "personal computer",
+            "phone": "phone",
+            "tire": "tire",
+            "jar": "jar",
+            "can": "can",
+        }
+        for label, expected in expected_terms.items():
+            with self.subTest(label=label):
+                classification = _classification(label, location=location)
+                self.assertIsNone(
+                    tavily._eligibility_reason(
+                        classification,
+                        clarification_required=False,
+                        location=location,
+                    )
+                )
+                self.assertEqual(tavily._specific_item_for_query(classification), expected)
+
+    def test_vague_labels_are_not_searchable(self):
+        location = {"city": "Raleigh", "state": "North Carolina"}
+        for label in (
+            "item",
+            "object",
+            "thing",
+            "material",
+            "container",
+            "unknown object",
+            "x",
+            "ab",
+            "foo",
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(
+                    tavily._eligibility_reason(
+                        _classification(label, location=location),
+                        clarification_required=False,
+                        location=location,
+                    ),
+                    "item_not_specific",
+                )
+
     def test_simple_query_does_not_prepend_material_to_specific_item(self):
         query = tavily.build_search_query(
             _classification(
@@ -191,7 +236,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertNotIn("empty", specific)
         self.assertEqual(
             specific,
-            "Official local disposal rules for rechargeable lithium ion battery in Raleigh, North Carolina",
+            "Official local disposal rules for rechargeable lithium battery in Raleigh, North Carolina",
         )
 
     def test_official_matching_city_source_is_local_primary(self):
@@ -447,7 +492,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertNotIn("Ignore previous instructions", records[0].content)
         self.assertIn("Batteries must stay out of carts.", records[0].content)
 
-    def test_sparse_content_result_can_still_be_classified(self):
+    def test_general_agency_landing_page_without_item_guidance_is_rejected(self):
         records = tavily._source_records(
             [
                 {
@@ -464,8 +509,54 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             location={"city": "Raleigh", "state": "North Carolina"},
         )
 
-        self.assertEqual(validation.trust_level, tavily.LOCAL_PRIMARY)
+        self.assertEqual(validation.trust_level, tavily.REJECTED)
+        self.assertIn("item_relevance_not_established", validation.rejection_reasons)
         self.assertEqual(validation.content, "Solid Waste | City of Raleigh")
+
+    def test_trusted_sources_also_require_item_or_containing_category_relevance(self):
+        location = {"city": "Raleigh", "state": "North Carolina"}
+        cases = [
+            (
+                _classification("Toy", material_category="Mixed Material", category="Household item"),
+                _record(
+                    title="Appliance Recycling | City of Raleigh",
+                    snippet="Appliances are accepted for recycling collection.",
+                    content="Appliances are accepted for recycling collection.",
+                ),
+                False,
+            ),
+            (
+                _classification("Glass jar", material_category="Glass", category="Glass"),
+                _record(
+                    title="Tire Disposal | City of Raleigh",
+                    snippet="Tires require special drop-off.",
+                    content="Tires require special drop-off.",
+                ),
+                False,
+            ),
+            (
+                _classification("Monitor", material_category="Plastic", category="Electronics"),
+                _record(
+                    title="Electronics Recycling | City of Raleigh",
+                    snippet="Electronics are accepted at the city recycling drop-off.",
+                    content="Electronics are accepted at the city recycling drop-off.",
+                ),
+                True,
+            ),
+        ]
+        for classification, record, accepted in cases:
+            with self.subTest(item=classification["item"]):
+                validation = tavily._validation_result(
+                    record,
+                    classification=classification,
+                    location=location,
+                )
+                self.assertEqual(validation.trust_level != tavily.REJECTED, accepted)
+                if not accepted:
+                    self.assertIn(
+                        "item_relevance_not_established",
+                        validation.rejection_reasons,
+                    )
 
     def test_extracted_context_preserves_relevant_middle_and_late_raw_content(self):
         raw_content = "\n".join(
@@ -638,7 +729,10 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 retrieval_results=retrieval_results,
             )
 
-        prompt_context = json.loads(captured["prompt"].split("Context:\n", 1)[1])
+        context_text = captured["prompt"].split(
+            "INPUT CONTEXT — DO NOT COPY THIS INTO THE RESPONSE:\n\n", 1
+        )[1].split("\n\nOUTPUT REQUIREMENTS:", 1)[0]
+        prompt_context = json.loads(context_text)
         prompt_chunks = prompt_context["retrieved_chunks"]
         self.assertLessEqual(
             sum(len(chunk["content"]) for chunk in prompt_chunks),

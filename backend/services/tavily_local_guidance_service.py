@@ -23,10 +23,18 @@ try:
     from ..repositories import tavily_budget_repository
     from . import request_context
     from .guidance_key_service import normalize_guidance_phrase
+    from .open_label_normalizer import (
+        build_canonical_search_label,
+        is_meaningful_search_label,
+    )
 except ImportError:
     from repositories import tavily_budget_repository
     from services import request_context
     from services.guidance_key_service import normalize_guidance_phrase
+    from services.open_label_normalizer import (
+        build_canonical_search_label,
+        is_meaningful_search_label,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +55,8 @@ _LOCALITY_FIELDS = ("city", "county", "state", "waste_provider")
 _GENERIC_ITEM_NAMES = {
     "item",
     "object",
+    "thing",
+    "unknown object",
     "unknown",
     "product",
     "material",
@@ -268,6 +278,35 @@ _CORE_DISPOSAL_ACTIONS = (
     "drop-off",
     "check local guidance",
 )
+_GENERIC_DISPOSAL_RELEVANCE_TERMS = {
+    "accepted",
+    "collection",
+    "disposal",
+    "drop off",
+    "recycle",
+    "recycling",
+    "trash",
+    "waste",
+}
+_CONTAINING_CATEGORY_TERMS = {
+    "appliances": ("appliance", "appliances"),
+    "battery": ("battery", "batteries"),
+    "batteries": ("battery", "batteries"),
+    "cardboard": ("cardboard",),
+    "electronics": (
+        "electronic",
+        "electronics",
+        "electronic waste",
+        "e waste",
+        "computer peripheral",
+        "computer peripherals",
+    ),
+    "fabric textile": ("fabric", "textile", "textiles", "clothing"),
+    "glass": ("glass",),
+    "organic": ("food scraps", "food waste", "organic", "organics"),
+    "paper": ("paper",),
+    "textiles": ("fabric", "textile", "textiles", "clothing"),
+}
 LOCAL_PRIMARY = "LOCAL_PRIMARY"
 OFFICIAL_SUPPORTING = "OFFICIAL_SUPPORTING"
 REJECTED = "REJECTED"
@@ -624,10 +663,8 @@ def _eligibility_reason(
         return "recognition_not_confident"
     if clarification_required:
         return "clarification_required"
-    item = _normalized_item(classification)
-    if not item or item in _GENERIC_ITEM_NAMES:
-        return "item_not_specific"
-    if not re.search(r"[a-z]", item) or len(item) < 3:
+    item = _specific_item_for_query(classification)
+    if not is_meaningful_search_label(item):
         return "item_not_specific"
     if not location:
         return "missing_location"
@@ -671,22 +708,31 @@ def _specific_item_for_query(classification: dict[str, Any]) -> str:
     recognition = classification.get("recognition_details")
     recognition = recognition if isinstance(recognition, dict) else {}
     normalized = _normalized_details(classification)
+    stored_search_item = normalize_guidance_phrase(normalized.get("search_item"))
+    if stored_search_item and is_meaningful_search_label(stored_search_item):
+        return stored_search_item
+
     candidates = [
         normalized.get("normalized_item"),
         normalized.get("item_label"),
         classification.get("item"),
         recognition.get("raw_item_label"),
     ]
-    clean_candidates = [
-        value
-        for value in (
-            normalize_guidance_phrase(_text(candidate, max_length=100))
+    primary = next(
+        (
+            candidate
             for candidate in candidates
-        )
-        if value and value not in _GENERIC_ITEM_NAMES
-    ]
+            if isinstance(candidate, str) and candidate.strip()
+        ),
+        "",
+    )
+    canonical = build_canonical_search_label(
+        primary,
+        broad_category=normalized.get("broad_category") or classification.get("category"),
+    )
+    clean_candidates = [canonical] if is_meaningful_search_label(canonical) else []
     if not clean_candidates:
-        return _normalized_item(classification) or "item"
+        return ""
 
     battery_candidates = [
         candidate
@@ -701,7 +747,7 @@ def _specific_item_for_query(classification: dict[str, Any]) -> str:
             return "rechargeable battery"
         return min(battery_candidates, key=lambda value: len(_query_tokens(value)))
 
-    return max(clean_candidates, key=lambda value: (len(_query_tokens(value)), len(value)))
+    return clean_candidates[0]
 
 
 def _remove_brand_terms(item: str, classification: dict[str, Any]) -> str:
@@ -1366,12 +1412,55 @@ def _source_is_related(
     record: _SourceRecord,
     classification: dict[str, Any],
 ) -> bool:
-    text = _normalized_haystack(record)
+    text = normalize_guidance_phrase(
+        " ".join(
+            value
+            for value in (record.title, record.snippet, record.content)
+            if value
+        )
+    ) or ""
     waste_context = any(
         _term_in_text(term, text)
-        for term in ("disposal", "recycle", "recycling", "trash", "waste", "compost", "drop off")
+        for term in (*_GENERIC_DISPOSAL_RELEVANCE_TERMS, "compost")
     )
-    return waste_context
+    if not waste_context:
+        return False
+
+    normalized = _normalized_details(classification)
+    search_item = _specific_item_for_query(classification)
+    recognized_item = _normalized_item(classification)
+    relevance_terms: list[str] = []
+    for value in (search_item, recognized_item):
+        normalized_value = normalize_guidance_phrase(value)
+        if not normalized_value or normalized_value in _GENERIC_ITEM_NAMES:
+            continue
+        relevance_terms.append(normalized_value)
+        relevance_terms.extend(
+            token
+            for token in normalized_value.split()
+            if len(token) >= 3
+            and token not in _GENERIC_DISPOSAL_RELEVANCE_TERMS
+            and token not in _GENERIC_ITEM_NAMES
+        )
+
+    category_values = {
+        normalize_guidance_phrase(value) or ""
+        for value in (
+            normalized.get("disposal_category"),
+            normalized.get("broad_category"),
+            classification.get("category"),
+            classification.get("recognized_material_category"),
+        )
+    }
+    for category in category_values:
+        relevance_terms.extend(_CONTAINING_CATEGORY_TERMS.get(category, ()))
+
+    meaningful_terms = [
+        term
+        for term in dict.fromkeys(relevance_terms)
+        if term and term not in _GENERIC_DISPOSAL_RELEVANCE_TERMS
+    ]
+    return any(_term_in_text(term, text) for term in meaningful_terms)
 
 
 def _source_excerpt(record: _SourceRecord) -> str:
@@ -1390,6 +1479,7 @@ def _validation_result(
     reasons: list[str] = []
     if not _source_is_related(record, classification):
         reasons.append("unrelated_source")
+        reasons.append("item_relevance_not_established")
     if applicability_rejection and applicability_rejection != "location_not_confirmed":
         reasons.append(applicability_rejection)
     if applicability == "jurisdiction_mismatch":
@@ -1691,6 +1781,12 @@ def search_local_guidance(
         return outcome
 
     location = normalize_coarse_location(classification.get("location"))
+    logger.info(
+        "tavily_search_identity request_id=%s recognized_item=%s search_item=%s",
+        request_context.get_predict_request_id(),
+        _normalized_item(classification),
+        _specific_item_for_query(classification),
+    )
     eligibility_reason = _eligibility_reason(
         classification,
         clarification_required=clarification_required,

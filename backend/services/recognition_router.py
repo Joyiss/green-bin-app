@@ -476,12 +476,9 @@ def _build_open_vlm_classification(
         normalized.get("normalized_item") or normalized.get("item_label") or ""
     ).strip()
     reliability = evaluate_open_recognition(recognition_details)
-    suggested_label = reliability.get("suggested_label")
-    final_item_label = (
-        str(suggested_label).strip()
-        if isinstance(suggested_label, str) and suggested_label.strip()
-        else normalized_item_label
-    )
+    # The normalized primary label owns identity. Reliability metadata may report
+    # conflicts, but observations and alternative candidates must not rename it.
+    final_item_label = normalized_item_label
     model_status = str(recognition_details.get("status") or "unknown").strip().casefold()
     if model_status == "unknown" or not _is_real_item_label(final_item_label):
         final_status = "unknown"
@@ -743,15 +740,54 @@ def _build_cache_policy(
     }
 
 
+def _final_recognized_identity(classification: dict[str, Any]) -> str:
+    recognition_details = classification.get("recognition_details")
+    normalized = (
+        recognition_details.get("normalized")
+        if isinstance(recognition_details, dict)
+        else None
+    )
+    normalized_identity = (
+        normalized.get("normalized_item")
+        if isinstance(normalized, dict)
+        else None
+    )
+    for value in (normalized_identity, classification.get("item")):
+        if _is_real_item_label(value):
+            return str(value).strip()
+    return ""
+
+
 def _finalize_vlm_cache_policy(
     *,
     classification: dict[str, Any],
     barcode_signal: dict[str, Any],
     clip_embedding: list[float] | None,
 ) -> dict[str, Any]:
-    final_label = classification.get("item")
+    final_label = _final_recognized_identity(classification)
     final_status = classification.get("status")
     barcode_detected = barcode_signal.get("value") is not None
+
+    if final_status == "unknown":
+        return _build_cache_policy(
+            save_record=False,
+            save_clip_embedding=False,
+            reason="explicit_unknown_recognition",
+        )
+
+    if not final_label:
+        return _build_cache_policy(
+            save_record=False,
+            save_clip_embedding=False,
+            reason="blank_final_identity",
+        )
+
+    if final_status == "uncertain":
+        return _build_cache_policy(
+            save_record=False,
+            save_clip_embedding=False,
+            reason="uncertain_recognition",
+        )
 
     if barcode_detected:
         return _build_cache_policy(
@@ -765,20 +801,6 @@ def _finalize_vlm_cache_policy(
             save_record=True,
             save_clip_embedding=False,
             reason="clip_embedding_unavailable",
-        )
-
-    if final_status != "confident":
-        return _build_cache_policy(
-            save_record=True,
-            save_clip_embedding=False,
-            reason="unknown_or_uncertain_result",
-        )
-
-    if not _is_real_item_label(final_label):
-        return _build_cache_policy(
-            save_record=True,
-            save_clip_embedding=False,
-            reason="confident_result_missing_item_label",
         )
 
     recognition_confidence = classification.get("recognition_confidence")
@@ -855,7 +877,7 @@ def _save_recognition_record_if_possible(
     save_record: bool,
     save_clip_embedding: bool,
 ) -> None:
-    item_label = classification.get("item", "")
+    item_label = _final_recognized_identity(classification)
     trusted_guidance_available = classification.get("trusted_guidance_available")
     signals_barcode = signals.get("barcode") if isinstance(signals, dict) else None
     signals_cache_policy = signals.get("cache_policy") if isinstance(signals, dict) else None
@@ -870,11 +892,12 @@ def _save_recognition_record_if_possible(
     )
 
     logger.info(
-        "Recognition cache policy. save_clip_embedding=%s reason=%s barcode_detected=%s final_label=%s final_status=%s",
+        "Recognition cache decision. save_record=%s save_clip_embedding=%s reason=%s barcode_detected=%s final_label=%s final_status=%s",
+        save_record,
         bool(save_clip_embedding and clip_embedding is not None),
         cache_policy_reason,
         barcode_detected,
-        classification.get("item"),
+        item_label,
         classification.get("status"),
     )
 
@@ -896,6 +919,12 @@ def _save_recognition_record_if_possible(
             and not is_open_confident_cacheable
         )
     ):
+        logger.info(
+            "Recognition cache skipped. reason=%s final_label=%s final_status=%s",
+            cache_policy_reason or "cache_policy_rejected",
+            item_label,
+            classification.get("status"),
+        )
         return
 
     recognition_details = classification.get("recognition_details")
@@ -916,6 +945,13 @@ def _save_recognition_record_if_possible(
         confidence=_classification_confidence(classification),
         verified=False,
         metadata=metadata,
+    )
+    logger.info(
+        "Recognition cache saved. reason=%s final_label=%s final_status=%s clip_embedding_saved=%s",
+        cache_policy_reason or "cache_policy_allowed",
+        item_label,
+        classification.get("status"),
+        bool(save_clip_embedding and clip_embedding is not None),
     )
 
 
@@ -1275,41 +1311,27 @@ async def recognize_item(
                 )
                 _log_final_classification(classification)
 
-            should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
-                classification,
-            )
-            if phash is not None and not (
-                _is_cacheable_item_label(classification.get("item", ""))
-                or should_cache_open_result
-            ):
-                logger.info(
-                    "Skipping recognition cache save because classification item_label was blank or unknown. item=%s status=%s category=%s",
-                    classification.get("item"),
-                    classification.get("status"),
-                    classification.get("category"),
+            try:
+                _save_recognition_record_if_possible(
+                    phash=phash,
+                    clip_embedding=None,
+                    classification=classification,
+                    recognition_source=recognition_source,
+                    route=router_reason,
+                    signals=_build_signals_metadata(
+                        phash_value=phash,
+                        phash_hit=phash_hit,
+                        phash_distance=phash_distance,
+                        barcode_signal=barcode_signal,
+                        clip_candidates=clip_candidates,
+                        router_reason=router_reason,
+                        cache_policy=cache_policy,
+                    ),
+                    save_record=cache_policy["save_record"],
+                    save_clip_embedding=cache_policy["save_clip_embedding"],
                 )
-            else:
-                try:
-                    _save_recognition_record_if_possible(
-                        phash=phash,
-                        clip_embedding=None,
-                        classification=classification,
-                        recognition_source=recognition_source,
-                        route=router_reason,
-                        signals=_build_signals_metadata(
-                            phash_value=phash,
-                            phash_hit=phash_hit,
-                            phash_distance=phash_distance,
-                            barcode_signal=barcode_signal,
-                            clip_candidates=clip_candidates,
-                            router_reason=router_reason,
-                            cache_policy=cache_policy,
-                        ),
-                        save_record=cache_policy["save_record"],
-                        save_clip_embedding=cache_policy["save_clip_embedding"],
-                    )
-                except Exception as exc:
-                    logger.warning("Recognition cache save failed: %s", exc)
+            except Exception as exc:
+                logger.warning("Recognition cache save failed: %s", exc)
 
             return classification
 
@@ -1408,41 +1430,27 @@ async def recognize_item(
             clip_embedding=clip_embedding,
         )
 
-        should_cache_open_result = recognition_source == "vlm_open" and _should_cache_open_vlm_classification(
-            classification,
-        )
-        if phash is not None and not (
-            _is_cacheable_item_label(classification.get("item", ""))
-            or should_cache_open_result
-        ):
-            logger.info(
-                "Skipping recognition cache save because classification item_label was blank or unknown. item=%s status=%s category=%s",
-                classification.get("item"),
-                classification.get("status"),
-                classification.get("category"),
+        try:
+            _save_recognition_record_if_possible(
+                phash=phash,
+                clip_embedding=clip_embedding,
+                classification=classification,
+                recognition_source=recognition_source,
+                route=router_reason,
+                signals=_build_signals_metadata(
+                    phash_value=phash,
+                    phash_hit=phash_hit,
+                    phash_distance=phash_distance,
+                    barcode_signal=barcode_signal,
+                    clip_candidates=clip_candidates,
+                    router_reason=router_reason,
+                    cache_policy=cache_policy,
+                ),
+                save_record=cache_policy["save_record"],
+                save_clip_embedding=cache_policy["save_clip_embedding"],
             )
-        else:
-            try:
-                _save_recognition_record_if_possible(
-                    phash=phash,
-                    clip_embedding=clip_embedding,
-                    classification=classification,
-                    recognition_source=recognition_source,
-                    route=router_reason,
-                    signals=_build_signals_metadata(
-                        phash_value=phash,
-                        phash_hit=phash_hit,
-                        phash_distance=phash_distance,
-                        barcode_signal=barcode_signal,
-                        clip_candidates=clip_candidates,
-                        router_reason=router_reason,
-                        cache_policy=cache_policy,
-                    ),
-                    save_record=cache_policy["save_record"],
-                    save_clip_embedding=cache_policy["save_clip_embedding"],
-                )
-            except Exception as exc:
-                logger.warning("Recognition cache save failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Recognition cache save failed: %s", exc)
 
         return classification
     except Exception as exc:

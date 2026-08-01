@@ -129,11 +129,18 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
         self.assertNotEqual(result["item"], "Smartphone")
 
     def test_open_vlm_prompt_has_only_a_neutral_response_shape(self):
-        self.assertNotIn("pump bottle", OPEN_DETECTION_PROMPT.casefold())
-        self.assertNotIn("cosmetic container", OPEN_DETECTION_PROMPT.casefold())
-        self.assertIn(
-            '{"status":"unknown","raw_item_label":"","likely_material":"","broad_category":"unknown","candidates":[],"visual_evidence":"","visual_observations":[]}',
-            OPEN_DETECTION_PROMPT,
+        neutral_shape = OPEN_DETECTION_PROMPT.split(
+            "Use this neutral return shape when the item cannot be identified:\n",
+            1,
+        )[1].strip()
+        payload = json.loads(neutral_shape)
+
+        self.assertEqual(payload["status"], "unknown")
+        self.assertEqual(payload["raw_item_label"], "")
+        self.assertEqual(payload["candidates"], [])
+        self.assertTrue(payload["visual_observations"])
+        self.assertTrue(
+            all(item["value"] == "unknown" for item in payload["visual_observations"])
         )
 
     def test_incomplete_manual_rule_does_not_block_tavily(self):

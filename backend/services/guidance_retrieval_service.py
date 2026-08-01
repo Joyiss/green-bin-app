@@ -142,6 +142,29 @@ _UNKNOWN_OBSERVATION_VALUES = {
     "unknown",
     "unknown from image",
 }
+_PROPERTY_ALIASES = {
+    "alkaline_battery": "alkaline",
+    "battery_chemistry_alkaline": "alkaline",
+    "battery_chemistry_lithium": "lithium",
+    "battery_chemistry_lithium_ion": "lithium_ion",
+    "coated_or_laminated": "coated",
+    "contains_embedded_battery": "embedded_battery",
+    "lithium": "lithium",
+    "lithium_battery": "lithium",
+    "lithium_ion_battery": "lithium_ion",
+    "nonrechargeable": "non_rechargeable",
+    "not_rechargeable": "non_rechargeable",
+    "rechargeable_battery": "rechargeable",
+    "uncoated_paper": "uncoated",
+}
+_PROPERTY_CONFLICT_GROUPS = (
+    {"alkaline", "lead_acid", "lithium", "lithium_ion", "nickel_cadmium", "nimh"},
+    {"rechargeable", "non_rechargeable"},
+    {"coated", "uncoated"},
+    {"contaminated", "clean"},
+    {"embedded_battery", "no_embedded_battery"},
+    {"broken", "intact"},
+)
 _RECYCLING_ACTIONS = {"recycle", "drop off", "drop-off"}
 
 
@@ -218,17 +241,59 @@ def _observation_facts(values: Any) -> dict[str, dict[str, Any]]:
     return facts
 
 
+def _canonical_property(value: Any) -> str:
+    normalized = _normalize_text(value).replace(" ", "_")
+    return _PROPERTY_ALIASES.get(normalized, normalized)
+
+
+def _confirmed_property_evidence(
+    *,
+    condition_flags: set[str],
+    observations: dict[str, dict[str, Any]],
+) -> set[str]:
+    evidence = {_canonical_property(value) for value in condition_flags if value}
+    for observation in observations.values():
+        if not observation.get("known"):
+            continue
+        confidence = observation.get("confidence")
+        if confidence is not None and confidence < 0.75:
+            continue
+        value = _normalize_text(observation.get("value"))
+        if not value:
+            continue
+        normalized_value = value.replace(" ", "_")
+        evidence.add(_canonical_property(normalized_value))
+        for alias, canonical in _PROPERTY_ALIASES.items():
+            if alias in normalized_value:
+                evidence.add(canonical)
+    return evidence
+
+
 def _condition_applicability_state(
     condition: str,
     *,
     condition_flags: set[str],
     observations: dict[str, dict[str, Any]],
 ) -> str:
-    normalized = condition.replace(" ", "_")
+    normalized = _canonical_property(condition)
     if normalized in _ROUTING_MODIFIER_CONDITIONS:
         return "modifier"
-    if normalized in condition_flags:
+    property_evidence = _confirmed_property_evidence(
+        condition_flags=condition_flags,
+        observations=observations,
+    )
+    conflict_group = next(
+        (group for group in _PROPERTY_CONFLICT_GROUPS if normalized in group),
+        None,
+    )
+    if conflict_group is not None:
+        conflicting = (property_evidence & conflict_group) - {normalized}
+        if conflicting:
+            return "contradicted"
+    if normalized in property_evidence:
         return "confirmed"
+    if conflict_group is not None and property_evidence & conflict_group:
+        return "contradicted"
 
     condition_value = str(observations.get("condition", {}).get("value") or "")
     contamination_value = str(
@@ -272,7 +337,7 @@ def _condition_applicability_state(
             else "contradicted"
         )
 
-    if normalized == "coated_or_laminated":
+    if normalized == "coated":
         if any(term in construction_value for term in ("coated", "coating", "laminated")):
             return "confirmed"
         if any(term in construction_value for term in ("uncoated", "plain paper")):

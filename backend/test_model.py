@@ -1,3 +1,4 @@
+import json
 import unittest
 import requests
 from unittest.mock import Mock, patch
@@ -5,7 +6,11 @@ from unittest.mock import Mock, patch
 from classifier import classify
 from model import detect_object, get_top_predictions, normalize_vlm_recognition_mode
 from PIL import Image
-from services.vlm_service import _build_detection_prompt, _build_open_detection_prompt
+from services.vlm_service import (
+    _build_detection_prompt,
+    _build_open_detection_prompt,
+    _parse_open_detection_result,
+)
 
 
 class VisionModelCompatibilityTests(unittest.TestCase):
@@ -205,23 +210,13 @@ class DetectObjectApiTests(unittest.TestCase):
             result["visual_evidence"],
             "Handle and glossy cup body are visible.",
         )
-        self.assertEqual(
-            result["visual_observations"],
-            [
-                {
-                    "aspect": "packaging_use",
-                    "value": "not packaging",
-                    "confidence": 0.86,
-                    "evidence": "Rigid mug body with no wrapper.",
-                },
-                {
-                    "aspect": "contamination",
-                    "value": "unknown",
-                    "confidence": None,
-                    "evidence": "",
-                },
-            ],
-        )
+        observations = {
+            observation["aspect"]: observation
+            for observation in result["visual_observations"]
+        }
+        self.assertEqual(observations["packaging_use"]["value"], "not packaging")
+        self.assertEqual(observations["contamination"]["value"], "unknown")
+        self.assertEqual(observations["construction"]["value"], "unknown")
         self.assertNotIn("disposal_action", result)
         self.assertNotIn("steps", result)
         request_payload = mock_post.call_args.kwargs["json"]
@@ -253,7 +248,7 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(result["raw_output"], "Looks like a ceramic mug with a handle.")
 
     @patch("model.requests.post")
-    def test_detect_object_open_mode_recovers_truncated_json_fields(self, mock_post):
+    def test_detect_object_open_mode_rejects_truncated_json(self, mock_post):
         response = Mock()
         response.json.return_value = {
             "success": True,
@@ -271,21 +266,11 @@ class DetectObjectApiTests(unittest.TestCase):
         with patch("model.VLM_RECOGNITION_MODE", "open"):
             result = detect_object(self.image)
 
-        self.assertEqual(result["status"], "uncertain")
-        self.assertEqual(result["raw_item_label"], "Water bottle")
-        self.assertEqual(result["likely_material"], "Plastic")
-        self.assertEqual(result["broad_category"], "Bottle")
-        self.assertEqual(
-            result["candidates"],
-            [
-                {"label": "Water bottle", "confidence": 0.96},
-                {"label": "Plastic bottle", "confidence": 0.83},
-            ],
-        )
-        self.assertEqual(result["visual_evidence"], "")
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["raw_item_label"], "")
         self.assertEqual(result["visual_observations"], [])
         self.assertTrue(result["raw_output"].startswith('{"status":"confident"'))
-        self.assertEqual(result["parse_mode"], "recovered")
+        self.assertEqual(result["parse_mode"], "failed")
 
     @patch("model.requests.post", side_effect=requests.ConnectionError("network down"))
     def test_open_mode_records_transport_failure_separately(self, _mock_post):
@@ -323,10 +308,9 @@ class DetectObjectApiTests(unittest.TestCase):
             prediction["recognition_details"]["candidates"],
             [{"label": "Ceramic mug", "confidence": None}],
         )
-        self.assertEqual(
-            prediction["recognition_details"]["visual_observations"][0]["aspect"],
-            "form_factor",
-        )
+        observations = prediction["recognition_details"]["visual_observations"]
+        form_factor = next(item for item in observations if item["aspect"] == "form_factor")
+        self.assertEqual(form_factor["value"], "handled cup")
 
     @patch("model.requests.post", side_effect=Exception("network down"))
     def test_detect_object_returns_empty_string_on_api_error(self, _mock_post):
@@ -523,6 +507,92 @@ class DetectObjectApiTests(unittest.TestCase):
         self.assertEqual(result["candidate_labels"], ["Book", "Calculator", "Mouse"])
 
 
+class OpenVlmParseDiagnosticsTests(unittest.TestCase):
+    @staticmethod
+    def _response(**overrides):
+        payload = {
+            "status": "confident",
+            "raw_item_label": "desk lamp",
+            "likely_material": "mixed material",
+            "broad_category": "electronics",
+            "candidates": [{"label": "desk lamp", "confidence": 0.94}],
+            "visual_evidence": "Lamp body and cord visible.",
+            "visual_observations": [],
+        }
+        payload.update(overrides)
+        return json.dumps(payload)
+
+    def test_exact_json_reports_exact_parse_mode(self):
+        result = _parse_open_detection_result(self._response())
+
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["parse_mode"], "exact")
+        self.assertFalse(result["trailing_text_ignored"])
+        self.assertTrue(result["response_complete"])
+
+    def test_json_followed_by_prose_reports_json_prefix_and_preserves_item(self):
+        result = _parse_open_detection_result(
+            self._response() + "\nThis is the recognized item."
+        )
+
+        self.assertEqual(result["raw_item_label"], "desk lamp")
+        self.assertEqual(result["status"], "confident")
+        self.assertEqual(result["parse_mode"], "json_prefix")
+        self.assertTrue(result["trailing_text_ignored"])
+
+    def test_missing_observation_entries_are_filled_with_unknowns(self):
+        response = self._response(
+            visual_observations=[
+                {
+                    "aspect": "form_factor",
+                    "value": "corded lamp",
+                    "confidence": 0.9,
+                    "evidence": "Cord is visible.",
+                },
+                {"aspect": "bad_aspect", "value": "metal", "confidence": 0.9, "evidence": ""},
+            ]
+        )
+        result = _parse_open_detection_result(response)
+        observations = {item["aspect"]: item for item in result["visual_observations"]}
+
+        self.assertEqual(observations["form_factor"]["value"], "corded lamp")
+        self.assertEqual(observations["construction"]["value"], "unknown")
+        self.assertIsNone(observations["construction"]["confidence"])
+        self.assertEqual(observations["construction"]["evidence"], "")
+        self.assertNotIn("bad_aspect", observations)
+        self.assertIn("construction", result["missing_observation_aspects"])
+
+    def test_malformed_json_returns_unknown_with_failed_parse_mode(self):
+        result = _parse_open_detection_result('{"status":"confident"')
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["parse_mode"], "failed")
+
+    def test_empty_object_is_incomplete_not_a_valid_unknown(self):
+        result = _parse_open_detection_result("{}")
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["parse_mode"], "exact")
+        self.assertFalse(result["response_complete"])
+        self.assertIn("missing:status", result["core_response_errors"])
+
+    def test_complete_explicit_unknown_is_accepted(self):
+        result = _parse_open_detection_result(
+            self._response(
+                status="unknown",
+                raw_item_label="",
+                likely_material="",
+                broad_category="unknown",
+                candidates=[],
+                visual_evidence="",
+            )
+        )
+
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["parse_mode"], "exact")
+        self.assertTrue(result["response_complete"])
+
+
 class BarcodeAwarePromptTests(unittest.TestCase):
     def test_constrained_prompt_prioritizes_physical_disposal_item(self):
         prompt = _build_detection_prompt(barcode_aware=False)
@@ -616,9 +686,10 @@ class BarcodeAwarePromptTests(unittest.TestCase):
         self.assertIn("Recognition only.", prompt)
         self.assertIn("Do not provide disposal_action.", prompt)
         self.assertIn("Do not provide steps.", prompt)
-        self.assertIn('"candidates":[{"label":"pump bottle","confidence":0.72}', prompt)
+        self.assertNotIn('"pump bottle"', prompt)
+        self.assertIn('"status":"unknown","raw_item_label":""', prompt)
         self.assertIn('"visual_observations":[{"aspect":"packaging_use"', prompt)
-        self.assertIn('"visual_evidence":"Rigid labeled container with dispensing pump."', prompt)
+        self.assertNotIn('"visual_evidence":"Rigid labeled container with dispensing pump."', prompt)
         self.assertIn("visual_evidence must be a short string, 12 words or fewer", prompt)
         self.assertIn("For each observation, use value \"unknown\" and confidence null", prompt)
         self.assertIn("visual_observations must describe image-visible disposal context only", prompt)

@@ -13,6 +13,7 @@ from services.recognition_router import (
     _build_cached_classification,
     _build_open_vlm_classification,
     _finalize_vlm_cache_policy,
+    _save_recognition_record_if_possible,
     _should_cache_open_vlm_classification,
     recognize_item,
 )
@@ -124,7 +125,7 @@ class RecognitionRouterTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["status"], "uncertain")
-        self.assertEqual(result["item"], "Personal care container")
+        self.assertEqual(result["item"], "Ceramic mug")
         self.assertEqual(result["recognition_confidence"]["level"], "low")
         self.assertFalse(_should_cache_open_vlm_classification(result))
 
@@ -213,7 +214,7 @@ class RecognitionRouterTests(unittest.TestCase):
                 )
 
                 self.assertIsNotNone(result)
-                self.assertEqual(result["item"], "Personal care container")
+                self.assertEqual(result["item"], raw_label.title())
                 self.assertEqual(result["status"], "confident")
                 self.assertFalse(result["recognition_confidence"]["blocking"])
 
@@ -283,6 +284,84 @@ class RecognitionRouterTests(unittest.TestCase):
 
         self.assertFalse(policy["save_clip_embedding"])
         self.assertEqual(policy["reason"], "recognition_not_high_confidence")
+
+    def test_cache_policy_uses_final_normalized_identity_for_confident_result(self):
+        classification = {
+            "item": "",
+            "status": "confident",
+            "recognition_details": {
+                "normalized": {"normalized_item": "LED Bulb"}
+            },
+            "recognition_confidence": {"level": "high"},
+            "trusted_guidance_available": False,
+        }
+
+        policy = _finalize_vlm_cache_policy(
+            classification=classification,
+            barcode_signal={"value": None},
+            clip_embedding=[0.1],
+        )
+
+        self.assertTrue(policy["save_record"])
+        self.assertTrue(policy["save_clip_embedding"])
+        self.assertEqual(policy["reason"], "normal_product_photo")
+
+    def test_cache_policy_skips_uncertain_unknown_and_blank_identities(self):
+        cases = [
+            ({"item": "Desk fan", "status": "uncertain"}, "uncertain_recognition"),
+            ({"item": "Unknown", "status": "unknown"}, "explicit_unknown_recognition"),
+            ({"item": "", "status": "confident"}, "blank_final_identity"),
+        ]
+        for classification, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason):
+                policy = _finalize_vlm_cache_policy(
+                    classification=classification,
+                    barcode_signal={"value": None},
+                    clip_embedding=[0.1],
+                )
+                self.assertFalse(policy["save_record"])
+                self.assertFalse(policy["save_clip_embedding"])
+                self.assertEqual(policy["reason"], expected_reason)
+
+    def test_cache_log_and_saved_label_use_same_final_identity(self):
+        classification = {
+            "item": "stale intermediate",
+            "category": "Electronics",
+            "status": "confident",
+            "trusted_guidance_available": False,
+            "recognition_confidence": {"level": "high"},
+            "recognition_details": {
+                "normalized": {"normalized_item": "USB Accessory"}
+            },
+        }
+        signals = {
+            "barcode": {"value": None},
+            "cache_policy": {
+                "save_record": True,
+                "save_clip_embedding": True,
+                "reason": "normal_product_photo",
+            },
+        }
+
+        with (
+            patch("services.recognition_router.cache_repository.save_recognition_record") as save,
+            self.assertLogs("services.recognition_router", level="INFO") as logs,
+        ):
+            _save_recognition_record_if_possible(
+                phash="abc123",
+                clip_embedding=[0.1],
+                classification=classification,
+                recognition_source="vlm_open",
+                route="vlm_fallback",
+                signals=signals,
+                save_record=True,
+                save_clip_embedding=True,
+            )
+
+        self.assertEqual(save.call_args.kwargs["item_label"], "USB Accessory")
+        combined = "\n".join(logs.output)
+        self.assertIn("final_label=USB Accessory", combined)
+        self.assertIn("Recognition cache saved. reason=normal_product_photo", combined)
 
     def test_open_calculator_uses_disposal_category_as_final_category(self):
         result = _build_open_vlm_classification(

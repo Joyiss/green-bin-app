@@ -1,6 +1,10 @@
 import unittest
 
-from services.open_label_normalizer import normalize_open_recognition
+from services.open_label_normalizer import (
+    build_canonical_search_label,
+    normalize_display_label,
+    normalize_open_recognition,
+)
 
 
 class OpenLabelNormalizerTests(unittest.TestCase):
@@ -683,6 +687,95 @@ class OpenLabelNormalizerTests(unittest.TestCase):
         self.assertEqual(result["normalized"]["item_label"], "Opened Wrapper")
         self.assertIn("opened", result["normalized"]["condition_flags"])
         self.assertNotEqual(result["normalized"]["material_source"], "fallback")
+
+    def test_primary_identity_survives_conflicting_metadata(self):
+        cases = [
+            ("camera", "fabric", "textiles", "Camera", "Electronics", "Fabric/Textile"),
+            ("ceramic bowl", "paper", "paper", "Ceramic Bowl", "Household item", "Paper"),
+            ("desk lamp", "metal", "metal", "Desk Lamp", "Electronics", None),
+        ]
+        for raw_label, material, category, expected_item, expected_route, rejected_material in cases:
+            with self.subTest(raw_label=raw_label):
+                result = normalize_open_recognition(
+                    {
+                        "status": "confident",
+                        "raw_item_label": raw_label,
+                        "likely_material": material,
+                        "broad_category": category,
+                        "candidates": [{"label": f"{material} item", "confidence": 0.91}],
+                        "visual_observations": [],
+                    }
+                )["normalized"]
+                self.assertEqual(result["normalized_item"], expected_item)
+                self.assertEqual(result["disposal_category"], expected_route)
+                if rejected_material is not None:
+                    self.assertNotEqual(result["material_category"], rejected_material)
+                self.assertTrue(result["identity_conflicts"])
+
+    def test_secondary_objects_do_not_change_primary_routing(self):
+        cases = [
+            ("electronic device", "plastic", "plastic", "Electronics"),
+            ("food scraps", "metal", "metal", "Organic"),
+            ("glass ornament", "paper", "paper", "Glass"),
+            ("fabric item", "plastic", "plastic", "Textiles"),
+        ]
+        for label, material, category, expected_route in cases:
+            with self.subTest(label=label):
+                normalized = normalize_open_recognition(
+                    {
+                        "status": "confident",
+                        "raw_item_label": label,
+                        "likely_material": material,
+                        "broad_category": category,
+                        "candidates": [],
+                        "visual_observations": [
+                            {
+                                "aspect": "construction",
+                                "value": material,
+                                "confidence": 0.9,
+                                "evidence": "A nearby component is visible.",
+                            }
+                        ],
+                    }
+                )["normalized"]
+                self.assertEqual(normalized["disposal_category"], expected_route)
+
+    def test_canonical_search_label_is_separate_and_stable(self):
+        cases = {
+            "Small Blue Desk Fan": "desk fan",
+            "Long red edible object with seeds": "food scraps",
+            "USB computer accessory": "USB accessory",
+            "Cracked ceramic bowl": "ceramic bowl",
+        }
+        for recognized, expected_search in cases.items():
+            with self.subTest(recognized=recognized):
+                self.assertEqual(build_canonical_search_label(recognized), expected_search)
+
+        normalized = normalize_open_recognition(
+            {
+                "status": "confident",
+                "raw_item_label": "Small Blue Desk Fan",
+                "likely_material": "plastic",
+                "broad_category": "electronics",
+                "candidates": [],
+                "visual_observations": [],
+            }
+        )["normalized"]
+        self.assertEqual(normalized["normalized_item"], "Small Blue Desk Fan")
+        self.assertEqual(normalized["search_item"], "desk fan")
+
+    def test_common_acronym_display_casing_is_preserved(self):
+        for raw, expected in {
+            "tv": "TV",
+            "pc": "PC",
+            "usb cable": "USB Cable",
+            "led bulb": "LED Bulb",
+            "lcd screen": "LCD Screen",
+            "aa battery": "AA Battery",
+            "aaa battery": "AAA Battery",
+        }.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_display_label(raw), expected)
 
 
 if __name__ == "__main__":

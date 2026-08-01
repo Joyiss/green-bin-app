@@ -54,6 +54,14 @@ OPEN_VISUAL_OBSERVATION_ASPECTS = [
     "reusability",
     "other",
 ]
+REQUIRED_OPEN_VISUAL_OBSERVATION_ASPECTS = [
+    "packaging_use",
+    "form_factor",
+    "condition",
+    "contamination",
+    "recycling_marking",
+    "construction",
+]
 
 CLOUDFLARE_API_BASE_URL = os.getenv(
     "CLOUDFLARE_API_BASE_URL",
@@ -108,8 +116,18 @@ OPEN_DETECTION_PROMPT = (
     "- candidates must contain at most 3 objects.\n"
     "- each candidate object must contain label and confidence.\n"
     "- visual_evidence must be a short string, 12 words or fewer, or \"\" if unknown.\n"
-    "Illustrative return shape only; do not copy its object or features unless visible:\n"
-    '{"status":"uncertain","raw_item_label":"rigid cosmetic container","likely_material":"plastic","broad_category":"plastic","candidates":[{"label":"pump bottle","confidence":0.72},{"label":"cosmetic container","confidence":0.68}],"visual_evidence":"Rigid labeled container with dispensing pump.","visual_observations":[{"aspect":"packaging_use","value":"personal-care container","confidence":0.84,"evidence":"Product label and dispensing closure are visible."},{"aspect":"form_factor","value":"rigid container with pump","confidence":0.88,"evidence":"Bottle body and pump nozzle are visible."},{"aspect":"condition","value":"unknown","confidence":null,"evidence":""},{"aspect":"contamination","value":"unknown","confidence":null,"evidence":""},{"aspect":"recycling_marking","value":"unknown","confidence":null,"evidence":""},{"aspect":"construction","value":"rigid plastic with plastic pump","confidence":0.76,"evidence":"Molded body and pump components appear plastic."}]}\n'
+    "The JSON object must contain exactly these fields and no others:\n"
+    "- status\n"
+    "- raw_item_label\n"
+    "- likely_material\n"
+    "- broad_category\n"
+    "- candidates\n"
+    "- visual_evidence\n"
+    "- visual_observations\n"
+    "Do not copy example values from this prompt. Generate every value only from the current image.\n"
+    "Each visual_observations entry must contain exactly: aspect, value, confidence, and evidence.\n"
+    "Use this neutral return shape when the item cannot be identified:\n"
+    '{"status":"unknown","raw_item_label":"","likely_material":"","broad_category":"unknown","candidates":[],"visual_evidence":"","visual_observations":[{"aspect":"packaging_use","value":"unknown","confidence":null,"evidence":""},{"aspect":"form_factor","value":"unknown","confidence":null,"evidence":""},{"aspect":"condition","value":"unknown","confidence":null,"evidence":""},{"aspect":"contamination","value":"unknown","confidence":null,"evidence":""},{"aspect":"recycling_marking","value":"unknown","confidence":null,"evidence":""},{"aspect":"construction","value":"unknown","confidence":null,"evidence":""}]}\n'
 )
 BARCODE_AWARE_PROMPT_SUFFIX = (
     "\n\n"
@@ -338,6 +356,37 @@ def _extract_json_object(raw_text: str) -> dict[str, object]:
     return parsed
 
 
+def _parse_open_json_object(
+    raw_text: str,
+) -> tuple[dict[str, object], str, bool]:
+    if not isinstance(raw_text, str):
+        raise ValueError("Model response content must be a string.")
+    trimmed = raw_text.strip()
+    if not trimmed:
+        raise ValueError("Model response content is empty.")
+
+    decoder = json.JSONDecoder()
+    if trimmed.startswith("{"):
+        parsed, end_index = decoder.raw_decode(trimmed)
+        if not isinstance(parsed, dict):
+            raise ValueError("Parsed model response JSON is not an object.")
+        trailing_text_ignored = bool(trimmed[end_index:].strip())
+        return (
+            parsed,
+            "json_prefix" if trailing_text_ignored else "exact",
+            trailing_text_ignored,
+        )
+
+    start_index = trimmed.find("{")
+    if start_index < 0:
+        raise ValueError("No JSON object found in model response.")
+    parsed, end_index = decoder.raw_decode(trimmed[start_index:])
+    if not isinstance(parsed, dict):
+        raise ValueError("Parsed model response JSON is not an object.")
+    ignored_text = trimmed[:start_index].strip() or trimmed[start_index + end_index :].strip()
+    return parsed, "extracted_json", bool(ignored_text)
+
+
 def _extract_partial_json_fields(raw_text: str) -> dict[str, object]:
     if not isinstance(raw_text, str):
         return {}
@@ -561,6 +610,69 @@ def _normalize_visual_observations(value: object) -> list[dict[str, object]]:
             break
 
     return observations
+
+
+def _complete_visual_observations(
+    value: object,
+) -> tuple[list[dict[str, object]], list[str]]:
+    normalized = _normalize_visual_observations(value)
+    first_by_aspect: dict[str, dict[str, object]] = {}
+    extras: list[dict[str, object]] = []
+    for observation in normalized:
+        aspect = str(observation.get("aspect") or "")
+        if aspect in REQUIRED_OPEN_VISUAL_OBSERVATION_ASPECTS:
+            first_by_aspect.setdefault(aspect, observation)
+        else:
+            extras.append(observation)
+
+    missing = [
+        aspect
+        for aspect in REQUIRED_OPEN_VISUAL_OBSERVATION_ASPECTS
+        if aspect not in first_by_aspect
+    ]
+    completed = [
+        first_by_aspect.get(
+            aspect,
+            {
+                "aspect": aspect,
+                "value": "unknown",
+                "confidence": None,
+                "evidence": "",
+            },
+        )
+        for aspect in REQUIRED_OPEN_VISUAL_OBSERVATION_ASPECTS
+    ]
+    completed.extend(extras[: max(0, 8 - len(completed))])
+    return completed, missing
+
+
+def _open_core_response_errors(value: dict[str, object]) -> list[str]:
+    expected_types: dict[str, type] = {
+        "status": str,
+        "raw_item_label": str,
+        "likely_material": str,
+        "broad_category": str,
+        "candidates": list,
+        "visual_evidence": str,
+    }
+    errors = [
+        f"missing:{field}"
+        for field in expected_types
+        if field not in value
+    ]
+    errors.extend(
+        f"invalid_type:{field}"
+        for field, expected_type in expected_types.items()
+        if field in value and not isinstance(value[field], expected_type)
+    )
+    status = value.get("status")
+    if isinstance(status, str) and status.strip().casefold() not in {
+        "confident",
+        "uncertain",
+        "unknown",
+    }:
+        errors.append("invalid_status")
+    return errors
 
 
 def _dedupe_open_candidates(
@@ -1083,37 +1195,49 @@ def _extract_partial_open_detection_fields(raw_text: str) -> dict[str, object]:
 
 def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
     parse_started = perf_counter()
-    parse_mode = "exact"
     try:
-        parsed_output = _extract_json_object(raw_output)
-    except ValueError:
-        parsed_output = _extract_partial_open_detection_fields(raw_output)
-        if not parsed_output:
-            logger.warning("Open VLM JSON parse failed; returning unknown.")
-            result = _unknown_open_detection_result(
-                raw_output,
-                failure_type="model_response_error",
-            )
-            _log_vlm_timing(
-                "json_parse",
-                parse_started,
-                provider="cloudflare",
-                model=CLOUDFLARE_AI_MODEL,
-                mode="open",
-                parse_mode="failed",
-                status=result.get("status"),
-                raw_output_chars=len(raw_output),
-            )
-            return result
-        parse_mode = "recovered"
+        parsed_output, parse_mode, trailing_text_ignored = _parse_open_json_object(
+            raw_output
+        )
+    except (ValueError, json.JSONDecodeError):
+        logger.warning("Open VLM JSON parse failed; returning unknown.")
+        result = _unknown_open_detection_result(
+            raw_output,
+            failure_type="model_response_error",
+        )
+        _log_vlm_timing(
+            "json_parse",
+            parse_started,
+            provider="cloudflare",
+            model=CLOUDFLARE_AI_MODEL,
+            mode="open",
+            parse_mode="failed",
+            status=result.get("status"),
+            raw_output_chars=len(raw_output),
+        )
+        return result
+
+    core_errors = _open_core_response_errors(parsed_output)
+    if core_errors:
+        logger.warning(
+            "Open VLM response incomplete. parse_mode=%s core_errors=%s",
+            parse_mode,
+            core_errors,
+        )
+        result = _unknown_open_detection_result(
+            raw_output,
+            failure_type="incomplete_model_response",
+            parse_mode=parse_mode,
+        )
+        result["response_complete"] = False
+        result["core_response_errors"] = core_errors
+        result["trailing_text_ignored"] = trailing_text_ignored
+        return result
 
     status = str(parsed_output.get("status", "")).strip().lower()
-    if status not in {"confident", "uncertain", "unknown"}:
-        status = "unknown"
-
-    raw_item_label = _clean_optional_field(parsed_output.get("raw_item_label", ""))
-    likely_material = _clean_free_text_field(parsed_output.get("likely_material", ""))
-    broad_category = _clean_free_text_field(parsed_output.get("broad_category", ""))
+    raw_item_label = _clean_optional_field(parsed_output["raw_item_label"])
+    likely_material = _clean_free_text_field(parsed_output["likely_material"])
+    broad_category = _clean_free_text_field(parsed_output["broad_category"])
 
     raw_candidates = parsed_output.get("candidates", [])
     if not isinstance(raw_candidates, list):
@@ -1138,58 +1262,18 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         )
 
     visual_evidence = _clean_free_text_field(parsed_output.get("visual_evidence", ""))
-    visual_observations = _normalize_visual_observations(
+    visual_observations, missing_observation_aspects = _complete_visual_observations(
         parsed_output.get("visual_observations", [])
     )
-
-    if parse_mode == "recovered":
-        recovered_has_signal = any(
-            (
-                raw_item_label,
-                likely_material,
-                broad_category,
-                parsed_candidates,
-                visual_observations,
-            )
-        )
-        if not recovered_has_signal:
-            logger.warning("Open VLM JSON recovery failed; returning unknown.")
-            result = _unknown_open_detection_result(
-                raw_output,
-                failure_type="model_response_error",
-                parse_mode="recovery_failed",
-            )
-            _log_vlm_timing(
-                "json_parse",
-                parse_started,
-                provider="cloudflare",
-                model=CLOUDFLARE_AI_MODEL,
-                mode="open",
-                parse_mode="recovery_failed",
-                status=result.get("status"),
-                raw_output_chars=len(raw_output),
-            )
-            return result
-        logger.info(
-            "Open VLM JSON parse recovered. status=%s raw_item_label=%s candidate_count=%s",
-            status,
-            raw_item_label,
-            len(parsed_candidates),
-        )
-    else:
-        logger.info(
-            "Open VLM JSON parse exact. status=%s raw_item_label=%s candidate_count=%s",
-            status,
-            raw_item_label,
-            len(parsed_candidates),
-        )
-
-    if parse_mode == "recovered" and status == "confident":
-        status = "uncertain"
-        logger.info(
-            "Open VLM recovered output downgraded. reason=truncated_structured_output raw_item_label=%s",
-            raw_item_label,
-        )
+    logger.info(
+        "Open VLM JSON parsed. parse_mode=%s status=%s raw_item_label=%s candidate_count=%s trailing_text_ignored=%s missing_observation_aspects=%s",
+        parse_mode,
+        status,
+        raw_item_label,
+        len(parsed_candidates),
+        trailing_text_ignored,
+        missing_observation_aspects,
+    )
 
     result = {
         "status": status,
@@ -1201,6 +1285,9 @@ def _parse_open_detection_result(raw_output: str) -> dict[str, object]:
         "visual_observations": visual_observations,
         "raw_output": raw_output,
         "parse_mode": parse_mode,
+        "response_complete": True,
+        "trailing_text_ignored": trailing_text_ignored,
+        "missing_observation_aspects": missing_observation_aspects,
     }
     _log_vlm_timing(
         "json_parse",

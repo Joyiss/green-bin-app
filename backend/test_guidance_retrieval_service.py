@@ -2,6 +2,7 @@ import unittest
 
 from services.guidance_retrieval_service import (
     MIN_RETRIEVAL_SCORE,
+    classify_chunk_applicability,
     retrieve_guidance_chunks,
 )
 from services.guidance_source_loader import load_trusted_guidance_chunks
@@ -53,6 +54,58 @@ def _chunk(
 
 
 class GuidanceRetrievalServiceTests(unittest.TestCase):
+    def _property_applicability(self, required_property, *, flags=None, observations=None):
+        return classify_chunk_applicability(
+            _chunk(
+                chunk_id="property-specific-rule",
+                item_labels=["battery"],
+                condition_flags=[required_property],
+                disposal_actions_supported=["Drop-off"],
+            ),
+            matched_fields=["item_label_exact"],
+            item_label="Battery",
+            primary_material="Battery",
+            material_confidence="high",
+            condition_flags=list(flags or []),
+            special_flags=["battery"],
+            visual_observations=list(observations or []),
+            location={"state": "North Carolina"},
+        )
+
+    def test_unconfirmed_property_specific_evidence_remains_conditional(self):
+        result = self._property_applicability(
+            "lithium_ion",
+            observations=[
+                {
+                    "aspect": "power_source",
+                    "value": "unknown",
+                    "confidence": None,
+                    "evidence": "",
+                }
+            ],
+        )
+
+        self.assertEqual(result["applicability"], "conditional")
+        self.assertEqual(result["source_conditions"]["unknown"], ["lithium_ion"])
+
+    def test_explicitly_confirmed_property_can_apply(self):
+        result = self._property_applicability("lithium_ion", flags=["lithium_ion"])
+
+        self.assertEqual(result["applicability"], "applicable")
+        self.assertEqual(result["source_conditions"]["confirmed"], ["lithium_ion"])
+
+    def test_conditional_property_rule_does_not_become_unconditional(self):
+        result = self._property_applicability("rechargeable")
+
+        self.assertEqual(result["applicability"], "conditional")
+        self.assertIn("source_conditions_unconfirmed", result["applicability_reason_codes"])
+
+    def test_conflicting_property_evidence_is_not_applicable(self):
+        result = self._property_applicability("lithium_ion", flags=["alkaline"])
+
+        self.assertEqual(result["applicability"], "not_applicable")
+        self.assertEqual(result["source_conditions"]["contradicted"], ["lithium_ion"])
+
     def test_specific_confirmed_organic_context_is_applicable(self):
         results = retrieve_guidance_chunks(
             item_label="Vegetable scraps",

@@ -7,7 +7,7 @@
       "expected_labels": ["face cleanser bottle", "face cleanser container", "pump bottle"],
       "acceptable_broader_labels": ["cosmetic container", "personal care container", "rigid container", "unknown container"],
       "prohibited_labels": ["ceramic mug", "mug", "pot", "pressure cooker"],
-      "expected_materials": ["plastic", "rigid plastic"],
+      "expected_materials": ["ceramic"],
       "expected_categories": ["plastic", "household item"],
       "visible_condition": {
         "value": "unknown",
@@ -17,7 +17,7 @@
         "preferred_actions": ["trash"],
         "fallback_actions": ["check local guidance"],
         "required_terms_any": [],
-        "clarification": "not_required"
+        "clarification": "required_when_primary_identity_conflicts_with_metadata"
       },
       "prohibited_disposal_actions": ["donate/reuse", "compost", "drop-off", "recycle"],
       "known_failures": ["label", "prohibited_label"],

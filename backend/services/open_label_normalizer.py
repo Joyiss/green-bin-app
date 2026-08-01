@@ -14,6 +14,67 @@ logger = logging.getLogger(__name__)
 
 UNKNOWN_VALUE = "Unknown"
 
+_DISPLAY_ACRONYMS = {
+    "aa": "AA",
+    "aaa": "AAA",
+    "lcd": "LCD",
+    "led": "LED",
+    "pc": "PC",
+    "tv": "TV",
+    "usb": "USB",
+}
+
+_SEARCH_ABBREVIATIONS = {
+    "pc": "personal computer",
+    "tv": "television",
+}
+
+_VAGUE_SEARCH_LABELS = {
+    "",
+    "item",
+    "material",
+    "object",
+    "thing",
+    "container",
+    "unknown",
+    "unknown item",
+    "unknown material",
+    "unknown object",
+}
+_MEANINGFUL_THREE_LETTER_OBJECTS = {
+    "bag",
+    "bin",
+    "box",
+    "can",
+    "cup",
+    "jar",
+    "pen",
+    "toy",
+}
+
+_SEARCH_DESCRIPTOR_TERMS = {
+    "big",
+    "blue",
+    "bright",
+    "broken",
+    "clean",
+    "cracked",
+    "dark",
+    "dirty",
+    "green",
+    "large",
+    "long",
+    "new",
+    "old",
+    "red",
+    "round",
+    "short",
+    "small",
+    "square",
+    "white",
+    "yellow",
+}
+
 _MATERIAL_CATEGORIES = {
     "plastic": "Plastic",
     "metal": "Metal",
@@ -161,6 +222,11 @@ _SPECIAL_FLAG_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
             "electronics",
             "electronic",
             "computer",
+            "camera",
+            "desk fan",
+            "desk lamp",
+            "electric fan",
+            "lamp",
             "laptop",
             "tablet",
             "monitor",
@@ -255,6 +321,39 @@ _ORGANIC_MATERIAL_TERMS = (
     "food scraps",
     "fruit",
     "produce",
+)
+_PRIMARY_ELECTRONIC_ITEM_TERMS = (
+    "camera",
+    "calculator",
+    "charger",
+    "computer",
+    "computer mouse",
+    "desk fan",
+    "desk lamp",
+    "earbud",
+    "electronic device",
+    "electric fan",
+    "electric toothbrush",
+    "headphone",
+    "keyboard",
+    "lamp",
+    "laptop",
+    "monitor",
+    "phone",
+    "printer",
+    "remote",
+    "tablet",
+    "television",
+    "tv",
+    "usb accessory",
+)
+_PRIMARY_TEXTILE_ITEM_TERMS = (
+    "backpack",
+    "clothing",
+    "curtain",
+    "fabric item",
+    "garment",
+    "textile",
 )
 _MATERIAL_TERM_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Metal", _METAL_HINT_TERMS),
@@ -384,11 +483,87 @@ def _title_case_label(value: str) -> str:
         if not word:
             continue
         if "-" in word:
-            parts = [part.capitalize() for part in word.split("-") if part]
+            parts = [
+                _DISPLAY_ACRONYMS.get(part.casefold(), part.capitalize())
+                for part in word.split("-")
+                if part
+            ]
             words.append("-".join(parts))
         else:
-            words.append(word.capitalize())
+            words.append(_DISPLAY_ACRONYMS.get(word.casefold(), word.capitalize()))
     return " ".join(words) if words else UNKNOWN_VALUE
+
+
+def normalize_display_label(value: Any) -> str:
+    """Normalize ordinary casing while preserving common acronym casing."""
+    return _title_case_label(_clean_text(value))
+
+
+def build_canonical_search_label(
+    recognized_label: Any,
+    *,
+    broad_category: Any = None,
+) -> str:
+    """Build a short deterministic search identity without changing display text."""
+    normalized = _clean_text(recognized_label)
+    if normalized in _VAGUE_SEARCH_LABELS:
+        return ""
+
+    if normalized in _SEARCH_ABBREVIATIONS:
+        return _SEARCH_ABBREVIATIONS[normalized]
+
+    tokens = [
+        token
+        for token in normalized.split()
+        if token not in _SEARCH_DESCRIPTOR_TERMS
+    ]
+    compact = " ".join(tokens).strip()
+    if not compact or compact in _VAGUE_SEARCH_LABELS:
+        return ""
+
+    if _contains_term(compact, "usb") and _contains_term(compact, "accessory"):
+        return "USB accessory"
+
+    if _contains_any_term(
+        compact,
+        (
+            "edible",
+            "food scrap",
+            "food scraps",
+            "fruit scrap",
+            "fruit scraps",
+            "vegetable scrap",
+            "vegetable scraps",
+            "spoiled produce",
+        ),
+    ):
+        return "food scraps"
+
+    if len(compact.split()) > 6:
+        category = _clean_text(broad_category)
+        if category not in _VAGUE_SEARCH_LABELS and category not in {
+            "household",
+            "general",
+            "unsupported",
+        }:
+            return category
+
+    return " ".join(
+        _DISPLAY_ACRONYMS.get(token.casefold(), token)
+        for token in compact.split()[:6]
+    )
+
+
+def is_meaningful_search_label(value: Any) -> bool:
+    normalized = _clean_text(value)
+    if not normalized or normalized in _VAGUE_SEARCH_LABELS:
+        return False
+    tokens = normalized.split()
+    if not any(re.search(r"[a-z]", token) for token in tokens):
+        return False
+    if len(tokens) == 1 and len(tokens[0]) <= 3:
+        return tokens[0] in _MEANINGFUL_THREE_LETTER_OBJECTS
+    return True
 
 
 def _is_vague_hint(value: str) -> bool:
@@ -533,6 +708,64 @@ def _is_organic_item(*values: Any) -> bool:
         for value in values
         if value is not None
     )
+
+
+def _primary_identity_profile(item_label: str) -> tuple[str | None, str | None]:
+    """Return routing and material facts stated by the primary item identity."""
+    normalized = _clean_text(item_label)
+    if _contains_any_term(normalized, ("battery", "batteries")):
+        return "batteries", "Battery"
+    if _contains_any_term(normalized, _PRIMARY_ELECTRONIC_ITEM_TERMS):
+        return "electronics", None
+    if _is_organic_item(normalized) or _contains_any_term(
+        normalized, ("edible", "food", "food scraps", "produce")
+    ):
+        return "garden", "Organic"
+    if _contains_any_term(normalized, _PRIMARY_TEXTILE_ITEM_TERMS):
+        return "household", "Fabric/Textile"
+    if _contains_term(normalized, "glass"):
+        return "glass", "Glass"
+    if _contains_term(normalized, "ceramic"):
+        return "household", "Ceramic"
+    if _contains_term(normalized, "cardboard"):
+        return "paper", "Cardboard"
+    if _contains_term(normalized, "paper"):
+        return "paper", "Paper"
+    return None, None
+
+
+def _metadata_conflicts_with_identity(
+    *,
+    identity_route: str | None,
+    identity_material: str | None,
+    likely_material: Any,
+    broad_category: Any,
+    structured_material: str,
+    metadata_special_flags: list[str],
+) -> list[str]:
+    conflicts: list[str] = []
+    hinted_material = _map_material_hint(str(likely_material or ""))
+    if (
+        identity_material
+        and hinted_material not in {UNKNOWN_VALUE, identity_material}
+    ):
+        conflicts.append("likely_material_conflicts_with_primary_identity")
+    if (
+        identity_material
+        and structured_material not in {UNKNOWN_VALUE, identity_material}
+    ):
+        conflicts.append("construction_conflicts_with_primary_identity")
+
+    routed_hint = _map_routing_category_hint(str(broad_category or ""))
+    if (
+        identity_route
+        and routed_hint not in {"unknown", "unsupported", identity_route}
+    ):
+        conflicts.append("broad_category_conflicts_with_primary_identity")
+
+    if identity_route == "electronics" and "battery" in metadata_special_flags:
+        conflicts.append("secondary_battery_signal_does_not_replace_electronics")
+    return conflicts
 
 
 def _map_material_hint(value: str) -> str:
@@ -1091,9 +1324,46 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
             [str(likely_material or ""), str(raw_broad_category or "")]
         ),
     )
+    metadata_special_flags = list(special_flags)
     item_label, normalization_source = _normalize_item_label(normalized_text)
+    identity_route, identity_material = _primary_identity_profile(item_label)
+    _, identity_special_flags = _extract_flags(normalized_text, [])
+    if identity_route is not None:
+        allowed_metadata_special_flags = set(identity_special_flags)
+        if identity_route == "electronics":
+            allowed_metadata_special_flags.add("electronics")
+        elif identity_route == "batteries":
+            allowed_metadata_special_flags.add("battery")
+        special_flags = [
+            flag
+            for flag in special_flags
+            if flag not in {"battery", "electronics", "hazardous"}
+            or flag in allowed_metadata_special_flags
+        ]
+        for flag in allowed_metadata_special_flags:
+            if flag not in special_flags:
+                special_flags.append(flag)
+        if not any(
+            flag in special_flags for flag in {"battery", "electronics", "hazardous"}
+        ):
+            special_flags = [
+                flag for flag in special_flags if flag != "dropoff_recommended"
+            ]
+        if special_flags and any(
+            flag in special_flags for flag in {"battery", "electronics", "hazardous"}
+        ) and "dropoff_recommended" not in special_flags:
+            special_flags.append("dropoff_recommended")
+
     primary_material, secondary_materials, structured_material_confidence = (
         _structured_materials(visual_observations)
+    )
+    identity_conflicts = _metadata_conflicts_with_identity(
+        identity_route=identity_route,
+        identity_material=identity_material,
+        likely_material=likely_material,
+        broad_category=raw_broad_category,
+        structured_material=primary_material,
+        metadata_special_flags=metadata_special_flags,
     )
     material_category, material_confidence, material_source = _infer_material_details(
         item_label,
@@ -1106,6 +1376,30 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         structured_primary_material=primary_material,
         structured_material_confidence=structured_material_confidence,
     )
+    if identity_material is not None:
+        if material_category != identity_material:
+            material_category = identity_material
+            material_confidence = "high"
+            material_source = "item_identity"
+        if primary_material not in {UNKNOWN_VALUE, identity_material}:
+            primary_material = UNKNOWN_VALUE
+            secondary_materials = []
+    elif identity_route == "electronics" and material_category in {
+        "Battery",
+        "Cardboard",
+        "Ceramic",
+        "Fabric/Textile",
+        "Hazardous",
+        "Organic",
+        "Paper",
+    }:
+        if "likely_material_conflicts_with_primary_identity" not in identity_conflicts:
+            identity_conflicts.append("likely_material_conflicts_with_primary_identity")
+        material_category = UNKNOWN_VALUE
+        material_confidence = "low"
+        material_source = "identity_metadata_conflict"
+        primary_material = UNKNOWN_VALUE
+        secondary_materials = []
     if "battery" in special_flags:
         if primary_material not in {UNKNOWN_VALUE, _MATERIAL_CATEGORIES["battery"]}:
             secondary_materials = [primary_material, *secondary_materials]
@@ -1124,12 +1418,33 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         str(raw_broad_category or ""),
         special_flags,
     )
+    routed_raw_category = _map_routing_category_hint(str(raw_broad_category or ""))
+    if identity_route is not None and (
+        identity_route in {"batteries", "electronics", "garden", "glass", "paper"}
+        or routed_raw_category not in {"unknown", "unsupported", identity_route}
+    ):
+        broad_category = identity_route
     disposal_category = _infer_disposal_category(
         item_label,
         normalized_text,
         str(raw_broad_category or ""),
         material_category,
         special_flags,
+    )
+    identity_disposal_category = {
+        "Battery": "Battery",
+        "Cardboard": "Cardboard",
+        "Ceramic": "Household item",
+        "Fabric/Textile": "Textiles",
+        "Glass": "Glass",
+        "Organic": "Organic",
+        "Paper": "Paper",
+    }.get(identity_material or "")
+    if identity_disposal_category is not None:
+        disposal_category = identity_disposal_category
+    search_item = build_canonical_search_label(
+        item_label,
+        broad_category=broad_category,
     )
 
     matched_supported_label = None
@@ -1152,6 +1467,7 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
 
     normalized_payload = {
         "normalized_item": item_label,
+        "search_item": search_item,
         "disposal_category": disposal_category,
         "item_label": item_label,
         "material_category": material_category,
@@ -1168,6 +1484,7 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         "visual_observation_text": visual_observation_text,
         "matched_supported_label": matched_supported_label,
         "normalization_source": normalization_source,
+        "identity_conflicts": list(dict.fromkeys(identity_conflicts)),
     }
 
     enriched_details = {
@@ -1177,9 +1494,10 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
     }
 
     logger.info(
-        "Open recognition normalized. raw_label=%s normalized_item=%s disposal_category=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s observation_count=%s matched_supported_label=%s",
+        "Open recognition normalized. raw_label=%s recognized_item=%s search_item=%s disposal_category=%s material_category=%s material_confidence=%s material_source=%s broad_category=%s condition_flags=%s special_flags=%s observation_count=%s matched_supported_label=%s identity_conflicts=%s",
         raw_item_label,
         normalized_payload["normalized_item"],
+        normalized_payload["search_item"],
         normalized_payload["disposal_category"],
         normalized_payload["material_category"],
         normalized_payload["material_confidence"],
@@ -1189,6 +1507,7 @@ def normalize_open_recognition(recognition_details: dict[str, Any]) -> dict[str,
         normalized_payload["special_handling_flags"],
         len(visual_observations),
         normalized_payload["matched_supported_label"],
+        normalized_payload["identity_conflicts"],
     )
 
     return enriched_details

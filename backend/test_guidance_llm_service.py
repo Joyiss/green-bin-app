@@ -341,8 +341,8 @@ class GenerationFlowTests(unittest.TestCase):
         prompt = request.call_args.args[0]
         self.assertIn(local_evidence, prompt)
         self.assertIn('"evidence_priority": "exact_local"', prompt)
-        self.assertIn("quantity limits, fees, restrictions", prompt)
-        self.assertNotIn("Green Bin", prompt)
+        self.assertIn("supported programs, pickup services, fees, limits", prompt)
+        self.assertIn("Never mention Green Bin, the app, buttons, screens", prompt)
 
     @patch("services.guidance_llm_service._groq_request")
     def test_local_detail_handling_spans_categories_and_jurisdictions(self, request):
@@ -641,21 +641,27 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIsNone(result["guidance"])
         self.assertEqual(result["failure_reason"], "invalid_json")
 
-    def test_prompt_uses_new_shape_without_source_identifiers(self):
+    def test_source_grounded_prompt_places_context_before_output_schema(self):
         prompt = _build_source_grounded_prompt(
             recognized_item="Laptop", normalized_item_label="Laptop", material="Electronics",
             broad_category="Electronics", condition_flags=[], special_flags=[], visual_evidence=None,
             candidates=[], location=None, chunks=[_chunk()], allowed_disposal_actions=["drop-off"],
         )
-        self.assertIn('"prep_steps":[]', prompt)
-        self.assertIn('"next_step":""', prompt)
-        self.assertIn('"alternatives":[]', prompt)
+        self.assertLess(
+            prompt.index("INPUT CONTEXT"),
+            prompt.index("OUTPUT REQUIREMENTS"),
+        )
+        self.assertLess(
+            prompt.index('"retrieved_chunks"'),
+            prompt.index('"disposal_action": ""'),
+        )
+        self.assertTrue(prompt.rstrip().endswith('  "confidence": ""\n}'))
+        self.assertIn('"prep_steps": []', prompt)
+        self.assertIn('"next_step": ""', prompt)
+        self.assertIn('"alternatives": []', prompt)
         self.assertNotIn('"sources_used"', prompt)
-        self.assertIn("Location search is handled separately", prompt)
-        self.assertIn("summary must state its most important rule", prompt)
-        self.assertIn("prep_steps may be empty", prompt)
-        self.assertIn("Prefer applicable exact city, county, or waste-provider evidence", prompt)
-        self.assertNotIn("Green Bin", prompt)
+        self.assertIn("You are a source-grounded disposal guidance writer.", prompt)
+        self.assertIn("Do not tell the user to search for a facility.", prompt)
         self.assertNotIn('"intent"', prompt)
 
     def test_source_prompt_requires_realistic_object_specific_action(self):
@@ -674,31 +680,43 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "Base the disposal_action on the actual recognized physical object",
+            "Use the recognized item as the authority for item identity.",
             prompt,
         )
         self.assertIn(
-            "packaging/container type, material, condition_flags, cleanliness or residue",
+            "Use only chunks marked applicable, or conditional chunks whose stated condition is confirmed",
             prompt,
         )
         self.assertIn(
-            "Do not choose donate/reuse for opened, used, dirty, broken, food-soiled, or ordinary single-use packaging",
+            "Never infer battery chemistry, resin, coating, contamination, embedded batteries",
             prompt,
         )
-        self.assertIn(
-            "If packaging and contents are both mentioned, guide disposal for the package/container",
-            prompt,
-        )
-        self.assertIn("Use applicable chunks for definite disposal claims.", prompt)
-        self.assertIn(
-            "A conditional chunk may be mentioned only as an if-then alternative",
-            prompt,
-        )
-        self.assertIn("Separate confirmed visual facts from unknown properties.", prompt)
         self.assertIn('"recognized_item": "Opened single-use chip bag"', prompt)
         self.assertIn('"visual_evidence": "Crinkly snack pouch with crumbs."', prompt)
 
-    def test_general_safe_prompt_excludes_reuse_for_single_use_packaging(self):
+    def test_source_prompt_has_no_object_specific_destination_example(self):
+        prompt = _build_source_grounded_prompt(
+            recognized_item="Desk fan",
+            normalized_item_label="Desk fan",
+            material="Mixed Material",
+            broad_category="electronics",
+            condition_flags=[],
+            special_flags=["electronics"],
+            visual_evidence=None,
+            candidates=[],
+            location=None,
+            chunks=[_chunk()],
+            allowed_disposal_actions=["drop-off"],
+        )
+
+        self.assertIn(
+            "- next_step: One concrete disposal action supported by the accepted evidence. Describe the destination or collection route without adding item types that are not present in the current recognition or accepted evidence. Do not describe the interface.",
+            prompt,
+        )
+        self.assertNotIn("computer peripherals", prompt)
+        self.assertNotIn("electronics drop-off that accepts", prompt)
+
+    def test_general_safe_fallback_prompt_is_standalone_without_retrieved_chunks(self):
         observations = [
             {
                 "aspect": "contamination",
@@ -722,21 +740,26 @@ class GenerationFlowTests(unittest.TestCase):
             matched_terms=["yogurt container"],
         )
 
-        self.assertIn(
-            "Avoid technically possible but unrealistic advice for the specific object.",
-            prompt,
+        self.assertIn("You are a conservative disposal fallback writer.", prompt)
+        self.assertNotIn("You are a source-grounded disposal guidance writer.", prompt)
+        self.assertNotIn("retrieved_chunks", prompt)
+        self.assertNotIn("retrieved chunks", prompt)
+        self.assertNotIn('"sources_used"', prompt)
+        self.assertLess(
+            prompt.index("INPUT CONTEXT"),
+            prompt.index("OUTPUT REQUIREMENTS"),
         )
-        self.assertIn("use household trash as the main action when trash is allowed", prompt)
-        self.assertIn("Reserve check local guidance as the main action only when", prompt)
+        self.assertLess(
+            prompt.index('"recognized_item"'),
+            prompt.index('"disposal_action": ""'),
+        )
+        self.assertTrue(prompt.rstrip().endswith('  "confidence": "low"\n}'))
+        self.assertIn("No retrieved disposal evidence is available.", prompt)
+        self.assertIn("Use household trash only for ordinary low-risk disposable items", prompt)
         self.assertIn('"allowed_disposal_actions": ["trash"]', prompt)
         self.assertIn('"recognized_item": "Used plastic yogurt container"', prompt)
         self.assertIn('"visual_evidence": "Open plastic cup with food residue."', prompt)
         self.assertIn('"visual_observations": [{"aspect": "contamination"', prompt)
-        self.assertIn("Treat visual_observations as recognition evidence only.", prompt)
-        self.assertIn(
-            "For edible food, prefer using or sharing it while still edible",
-            prompt,
-        )
 
     def test_general_safe_allowed_actions_use_trash_for_non_reusable_low_risk_items(self):
         self.assertEqual(
@@ -837,8 +860,8 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
         sent_prompt = request.call_args.args[0]
         self.assertIn('"allowed_disposal_actions": ["trash"]', sent_prompt)
-        self.assertIn("household trash as the main action", sent_prompt)
-        self.assertIn("ordinary single-use packaging", sent_prompt)
+        self.assertIn("Use household trash only for ordinary low-risk disposable items", sent_prompt)
+        self.assertIn("ordinary single-use products", sent_prompt)
 
 
 if __name__ == "__main__":
