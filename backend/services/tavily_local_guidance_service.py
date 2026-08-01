@@ -882,8 +882,30 @@ def build_search_query(
     location: dict[str, str],
 ) -> str:
     item = _item_phrase_for_query(classification)
+    category = normalize_guidance_phrase(
+        _category(classification) or _material(classification) or item
+    ) or item
     location_phrase = _location_phrase_for_query(location)
-    query = f"Official local disposal rules for {item} in {location_phrase}"
+    query = (
+        f"{item} ({category}) disposal or recycling for residents in {location_phrase}: "
+        "curbside rules, drop-off, take-back, accepted items, fees, appointments"
+    )
+    return re.sub(r"\s+", " ", query).strip()[:MAX_QUERY_LENGTH].rstrip()
+
+
+def build_fallback_search_query(
+    classification: dict[str, Any],
+    location: dict[str, str],
+) -> str:
+    item = _item_phrase_for_query(classification)
+    category = normalize_guidance_phrase(
+        _category(classification) or _material(classification) or item
+    ) or item
+    location_phrase = _location_phrase_for_query(location)
+    query = (
+        f"{category} recycling and take-back options for residents in {location_phrase}: "
+        "accepted items, drop-off, pickup, fees, eligibility"
+    )
     return re.sub(r"\s+", " ", query).strip()[:MAX_QUERY_LENGTH].rstrip()
 
 
@@ -1951,6 +1973,57 @@ def _is_timeout(exc: Exception) -> bool:
     return isinstance(exc, (TimeoutError, requests.Timeout)) or "timeout" in type(exc).__name__.casefold()
 
 
+def _search_request(client: Any, *, query: str, timeout_seconds: float) -> Any:
+    return client.search(
+        query=query,
+        topic="general",
+        search_depth="basic",
+        chunks_per_source=3,
+        max_results=5,
+        country="united states",
+        include_answer=False,
+        include_raw_content=False,
+        include_images=False,
+        auto_parameters=False,
+        exact_match=False,
+        include_usage=True,
+        timeout=timeout_seconds,
+    )
+
+
+def _validated_search_results(
+    payload: Any,
+    *,
+    classification: dict[str, Any],
+    location: dict[str, str],
+) -> tuple[int, list[dict[str, Any]], int]:
+    results = payload.get("results") if isinstance(payload, dict) else None
+    results = results if isinstance(results, list) else []
+    records = _source_records(results, location)
+    accepted: list[dict[str, Any]] = []
+    local_primary_count = 0
+    for record in records:
+        validation = _validation_result(
+            record,
+            classification=classification,
+            location=location,
+        )
+        _log_validation_result(record.position, validation)
+        if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
+            continue
+        evidence = _accepted_result_to_evidence(
+            record,
+            validation,
+            classification=classification,
+            location=location,
+        )
+        if evidence is not None:
+            accepted.append(evidence)
+            if validation.trust_level == LOCAL_PRIMARY:
+                local_primary_count += 1
+    return len(results), accepted, local_primary_count
+
+
 def search_local_guidance(
     classification: dict[str, Any],
     *,
@@ -2023,8 +2096,6 @@ def search_local_guidance(
         _log_outcome(outcome)
         return outcome
 
-    query = build_search_query(classification, location)
-    _log_query(query)
     timeout_seconds = _positive_float_env(
         "TAVILY_TIMEOUT_SECONDS",
         DEFAULT_TAVILY_TIMEOUT_SECONDS,
@@ -2037,19 +2108,63 @@ def search_local_guidance(
         return outcome
 
     request_started = perf_counter()
+    accepted: list[dict[str, Any]] = []
+    local_primary_count = 0
+    result_count = 0
+    reported_credits = 0
+    has_reported_credits = False
+    fallback_skip_reason: str | None = None
     try:
-        # Exactly one request. There are intentionally no retry or alternate-query paths.
-        payload = client.search(
-            query=query,
-            search_depth="basic",
-            auto_parameters=False,
-            include_answer=False,
-            include_raw_content="markdown",
-            include_images=False,
-            max_results=5,
-            include_usage=True,
-            timeout=timeout_seconds,
-        )
+        queries = [
+            build_search_query(classification, location),
+            build_fallback_search_query(classification, location),
+        ]
+        for search_index, query in enumerate(queries):
+            if search_index == 1:
+                if accepted:
+                    break
+                if not _LOCAL_BUDGET_GUARD.reserve(
+                    now_utc=current_time,
+                    daily_limit=daily_limit,
+                    monthly_limit=monthly_limit,
+                ):
+                    fallback_skip_reason = "fallback_local_budget_limit_reached"
+                    break
+                try:
+                    fallback_reservation = (
+                        tavily_budget_repository.reserve_tavily_search_budget(
+                            daily_limit=daily_limit,
+                            monthly_limit=monthly_limit,
+                            now_utc=current_time,
+                        )
+                    )
+                except tavily_budget_repository.TavilyBudgetRepositoryError:
+                    fallback_skip_reason = "fallback_budget_tracking_unavailable"
+                    break
+                if not fallback_reservation.allowed:
+                    fallback_skip_reason = "fallback_database_budget_limit_reached"
+                    break
+
+            _log_query(query)
+            payload = _search_request(
+                client,
+                query=query,
+                timeout_seconds=timeout_seconds,
+            )
+            payload_result_count, payload_accepted, payload_local_count = (
+                _validated_search_results(
+                    payload,
+                    classification=classification,
+                    location=location,
+                )
+            )
+            result_count += payload_result_count
+            accepted.extend(payload_accepted)
+            local_primary_count += payload_local_count
+            payload_credits = _credit_usage(payload)
+            if payload_credits is not None:
+                reported_credits += payload_credits
+                has_reported_credits = True
     except Exception as exc:
         status = "tavily_timeout" if _is_timeout(exc) else "tavily_error"
         outcome = _outcome(
@@ -2070,30 +2185,6 @@ def search_local_guidance(
                     request_context.get_predict_request_id(),
                 )
 
-    results = payload.get("results") if isinstance(payload, dict) else None
-    results = results if isinstance(results, list) else []
-    records = _source_records(results, location)
-    accepted: list[dict[str, Any]] = []
-    local_primary_count = 0
-    for record in records:
-        validation = _validation_result(
-            record,
-            classification=classification,
-            location=location,
-        )
-        _log_validation_result(record.position, validation)
-        if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
-            continue
-        evidence = _accepted_result_to_evidence(
-            record,
-            validation,
-            classification=classification,
-            location=location,
-        )
-        if evidence is not None:
-            accepted.append(evidence)
-            if validation.trust_level == LOCAL_PRIMARY:
-                local_primary_count += 1
     outcome = _outcome(
         (
             "tavily_verified_local"
@@ -2103,10 +2194,11 @@ def search_local_guidance(
             else "tavily_insufficient_evidence"
         ),
         called=True,
+        skip_reason=fallback_skip_reason,
         duration_ms=(perf_counter() - request_started) * 1000,
-        result_count=len(results),
+        result_count=result_count,
         trusted_source_count=local_primary_count,
-        credits=_credit_usage(payload),
+        credits=reported_credits if has_reported_credits else None,
         retrieval_results=accepted,
     )
     _log_outcome(outcome)

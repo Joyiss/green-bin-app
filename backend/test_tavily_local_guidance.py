@@ -113,13 +113,34 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
     def test_simple_query_uses_canonical_item_and_city_state(self):
         query = tavily.build_search_query(
-            _classification("Television", material_category="Electronics"),
+            _classification(
+                "Television",
+                material_category="Electronics",
+                category="Electronics",
+            ),
             {"city": "Austin", "county": "Travis County", "state": "Texas"},
         )
 
         self.assertEqual(
             query,
-            "Official local disposal rules for television in Austin, Texas",
+            "television (electronics) disposal or recycling for residents in Austin, Texas: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments",
+        )
+
+    def test_fallback_query_uses_broad_category_and_city_state(self):
+        query = tavily.build_fallback_search_query(
+            _classification(
+                "Television",
+                material_category="Electronics",
+                category="Electronics",
+            ),
+            {"city": "Austin", "county": "Travis County", "state": "Texas"},
+        )
+
+        self.assertEqual(
+            query,
+            "electronics recycling and take-back options for residents in Austin, Texas: "
+            "accepted items, drop-off, pickup, fees, eligibility",
         )
 
     def test_short_meaningful_labels_are_searchable_after_normalization(self):
@@ -179,7 +200,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(
             query,
-            "Official local disposal rules for calculator in Seattle, Washington",
+            "calculator (electronics) disposal or recycling for residents in Seattle, Washington: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
         self.assertNotIn("plastic calculator", query)
 
@@ -191,10 +213,11 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(
             query,
-            "Official local disposal rules for household batteries in King County, Washington",
+            "household batteries (battery) disposal or recycling for residents in King County, Washington: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
 
-    def test_query_removes_brand_and_avoids_disposal_keyword_lists(self):
+    def test_query_removes_brand_and_uses_requested_disposal_terms(self):
         query = tavily.build_search_query(
             _classification(
                 "Logitech computer mouse",
@@ -208,10 +231,11 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(
             query,
-            "Official local disposal rules for computer mouse in Seattle, Washington",
+            "computer mouse (electronics) disposal or recycling for residents in Seattle, Washington: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
-        for keyword in ("recycling", "trash", "compost", "curbside", "hazardous waste", "drop-off"):
-            self.assertNotIn(keyword, query)
+        self.assertNotIn("Official local disposal rules", query)
+        self.assertNotIn("Logitech", query)
 
     def test_query_keeps_meaningful_conditions_and_does_not_guess_battery_chemistry(self):
         generic = tavily.build_search_query(
@@ -230,13 +254,16 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(
             generic,
-            "Official local disposal rules for battery in Seattle, Washington",
+            "battery (battery) disposal or recycling for residents in Seattle, Washington: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
         self.assertNotIn("lithium", generic)
         self.assertNotIn("empty", specific)
         self.assertEqual(
             specific,
-            "Official local disposal rules for rechargeable lithium battery in Raleigh, North Carolina",
+            "rechargeable lithium battery (battery) disposal or recycling for residents in "
+            "Raleigh, North Carolina: curbside rules, drop-off, take-back, accepted items, "
+            "fees, appointments",
         )
 
     def test_official_matching_city_source_is_local_primary(self):
@@ -1028,7 +1055,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(outcome["skip_reason"], "missing_location")
         client.search.assert_not_called()
 
-    def test_eligible_scan_makes_exactly_one_basic_search_request(self):
+    def test_eligible_scan_uses_requested_tavily_parameters_and_stops_after_usable_result(self):
         client, env = self._search({"results": [_result()], "usage": {"credits": 1}})
         with (
             patch.dict(os.environ, env, clear=True),
@@ -1057,23 +1084,85 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         query = kwargs.pop("query")
         self.assertEqual(
             query,
-            "Official local disposal rules for household battery in Raleigh, North Carolina",
+            "household battery (battery) disposal or recycling for residents in Raleigh, "
+            "North Carolina: curbside rules, drop-off, take-back, accepted items, fees, "
+            "appointments",
         )
         self.assertLess(len(query), 400)
         self.assertEqual(
             kwargs,
             {
+                "topic": "general",
                 "search_depth": "basic",
-                "auto_parameters": False,
-                "include_answer": False,
-                "include_raw_content": "markdown",
-                "include_images": False,
+                "chunks_per_source": 3,
                 "max_results": 5,
+                "country": "united states",
+                "include_answer": False,
+                "include_raw_content": False,
+                "include_images": False,
+                "auto_parameters": False,
+                "exact_match": False,
                 "include_usage": True,
                 "timeout": 10.0,
             },
         )
+        self.assertIs(kwargs["include_raw_content"], False)
         self.assertEqual(outcome["credits"], 1)
+
+    def test_fallback_search_runs_only_when_primary_has_no_usable_result(self):
+        client, env = self._search({})
+        client.search.side_effect = [
+            {
+                "results": [
+                    _result(
+                        title="Local recycling discussion",
+                        url="https://reddit.com/r/raleigh/comments/recycling",
+                        content="People discuss Raleigh battery recycling.",
+                    )
+                ],
+                "usage": {"credits": 1},
+            },
+            {"results": [_result()], "usage": {"credits": 1}},
+        ]
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+        ):
+            outcome = tavily.search_local_guidance(
+                _classification(location={"city": "Raleigh", "state": "North Carolina"})
+            )
+
+        self.assertEqual(outcome["status"], "tavily_verified_local")
+        self.assertEqual(client.search.call_count, 2)
+        self.assertEqual(
+            client.search.call_args_list[1].kwargs["query"],
+            "battery recycling and take-back options for residents in Raleigh, North Carolina: "
+            "accepted items, drop-off, pickup, fees, eligibility",
+        )
+        for search_call in client.search.call_args_list:
+            self.assertIs(search_call.kwargs["include_raw_content"], False)
+        self.assertEqual(outcome["credits"], 2)
+
+    def test_scan_never_runs_more_than_two_tavily_searches(self):
+        client, env = self._search({"results": [], "usage": {"credits": 1}})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+        ):
+            outcome = tavily.search_local_guidance(
+                _classification(location={"city": "Raleigh", "state": "North Carolina"})
+            )
+
+        self.assertEqual(outcome["status"], "tavily_insufficient_evidence")
+        self.assertEqual(client.search.call_count, 2)
 
     def test_only_official_supporting_sources_are_not_verified_local(self):
         client, env = self._search(
@@ -1158,7 +1247,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(response["guidance_metadata"]["local_evidence_status"], "supporting")
         self.assertEqual(response["guidance_metadata"]["tavily_trusted_source_count"], 0)
 
-    def test_timeout_and_weak_results_never_retry(self):
+    def test_timeout_is_not_retried_and_weak_results_use_one_fallback(self):
         timeout_client, env = self._search({})
         timeout_client.search.side_effect = TimeoutError("slow")
         with (
@@ -1199,7 +1288,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
             )
         self.assertEqual(weak["status"], "tavily_insufficient_evidence")
-        weak_client.search.assert_called_once()
+        self.assertEqual(weak_client.search.call_count, 2)
 
     def test_failure_returns_general_guidance_message(self):
         outcome = {
