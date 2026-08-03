@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 import threading
@@ -12,6 +11,11 @@ from typing import Any, Callable
 
 import requests
 from dotenv import load_dotenv
+
+try:
+    from . import gemini_text_client
+except ImportError:
+    from services import gemini_text_client
 
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -25,8 +29,22 @@ CatalogMatcher = Callable[
 
 SUPPORTED_MATERIALS_TTL_SECONDS = 24 * 60 * 60
 STALE_CACHE_RETRY_SECONDS = 5 * 60
-DEFAULT_LLM_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_LLM_TIMEOUT_SECONDS = 10.0
+DEFAULT_LLM_MODEL = gemini_text_client.DEFAULT_MODEL
+DEFAULT_LLM_TIMEOUT_SECONDS = gemini_text_client.DEFAULT_TIMEOUT_SECONDS
+
+CATALOG_MATCH_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "type": "object",
+        "properties": {
+            "selection": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["high", "low"]},
+            "reason": {"type": "string"},
+        },
+        "required": ["selection", "confidence", "reason"],
+        "additionalProperties": False,
+    },
+}
 
 _CACHE_LOCK = threading.Lock()
 _CACHE_EXPIRES_AT = 0.0
@@ -602,21 +620,10 @@ def _env_truthy(value: Any) -> bool:
     return isinstance(value, str) and value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def _parse_llm_timeout() -> float:
-    try:
-        timeout = float(os.getenv("GUIDANCE_LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT_SECONDS))
-    except ValueError:
-        return DEFAULT_LLM_TIMEOUT_SECONDS
-    return timeout if math.isfinite(timeout) and timeout > 0 else DEFAULT_LLM_TIMEOUT_SECONDS
-
-
 def _llm_settings() -> dict[str, Any]:
     return {
         "enabled": _env_truthy(os.getenv("ENABLE_EARTH911_LLM_MATCHING")),
-        "provider": str(os.getenv("GUIDANCE_LLM_PROVIDER") or "").strip().casefold(),
-        "model": str(os.getenv("GUIDANCE_LLM_MODEL") or DEFAULT_LLM_MODEL).strip(),
-        "api_key": str(os.getenv("GROQ_API_KEY") or "").strip(),
-        "timeout_seconds": _parse_llm_timeout(),
+        **gemini_text_client.current_settings(),
     }
 
 
@@ -638,18 +645,6 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
     return parsed
 
 
-def _extract_groq_text(payload: Any) -> str:
-    if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list):
-        raise ValueError("Groq response did not contain choices.")
-    for choice in payload["choices"]:
-        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
-            continue
-        content = choice["message"].get("content")
-        if isinstance(content, str) and content.strip():
-            return content
-    raise ValueError("Groq response did not contain message content.")
-
-
 def _default_catalog_matcher(
     label: str,
     recognition_details: dict[str, Any] | None,
@@ -663,19 +658,13 @@ def _default_catalog_matcher(
             "reason": "Earth911 LLM matching is disabled.",
             "failure_reason": "llm_disabled",
         }
-    if settings["provider"] != "groq":
+    configuration_failure = gemini_text_client.configuration_failure_reason(settings)
+    if configuration_failure:
         return {
             "selection": "unsupported",
             "confidence": "low",
             "reason": "The configured LLM provider is unavailable for catalog matching.",
-            "failure_reason": "provider_not_groq",
-        }
-    if not settings["api_key"]:
-        return {
-            "selection": "unsupported",
-            "confidence": "low",
-            "reason": "The Groq API key is not configured.",
-            "failure_reason": "missing_groq_api_key",
+            "failure_reason": configuration_failure,
         }
 
     prompt = f"""You are a controlled matcher for the Earth911 supported-material catalog.
@@ -726,22 +715,14 @@ Return exactly one JSON object and nothing else.
 
 Keep reason under 20 words.
 """
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {settings['api_key']}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings["model"],
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=settings["timeout_seconds"],
+    raw_text = gemini_text_client.generate_text(
+        prompt,
+        settings=settings,
+        use_case="earth911_catalog_classification",
+        response_schema=CATALOG_MATCH_RESPONSE_FORMAT["json_schema"],
+        temperature=0,
     )
-    response.raise_for_status()
-    return _extract_json_object(_extract_groq_text(response.json()))
+    return _extract_json_object(raw_text)
 
 
 def _clean_debug_reason(value: Any) -> str | None:
@@ -893,6 +874,12 @@ def resolve_earth911_material(
         )
     try:
         llm_output = matcher(label, recognition_details, grouped_catalog)
+    except gemini_text_client.GeminiTextError as exc:
+        if exc.failure_reason == "timeout":
+            return result("none", None, validation_failure_reason="llm_timeout")
+        if exc.failure_reason == "malformed_response":
+            return result("none", None, validation_failure_reason="invalid_llm_response")
+        return result("none", None, validation_failure_reason="llm_request_error")
     except requests.Timeout:
         return result("none", None, validation_failure_reason="llm_timeout")
     except requests.RequestException:

@@ -163,7 +163,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("single_use", retrieval_inputs["condition_flags"])
         self.assertIn("food residue visible", retrieval_inputs["visual_evidence"])
 
-    def test_groq_grounded_response_wins_before_direct_json(self):
+    def test_cloudflare_gemma_grounded_response_wins_before_direct_json(self):
         classification = {
             "item": "Battery",
             "category": "Battery",
@@ -182,8 +182,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "json_rag_llm_generated",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "source_grounded",
                 "confidence": "high",
                 "sources_used": ["chunk-1"],
@@ -212,7 +212,10 @@ class GuidanceServiceTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
-        self.assertEqual(response["guidance_metadata"]["llm_provider"], "groq")
+        self.assertEqual(
+            response["guidance_metadata"]["llm_provider"],
+            "cloudflare_workers_ai",
+        )
         self.assertEqual(
             response["guidance_metadata"]["retrieved_chunk_ids"],
             ["chunk-1"],
@@ -334,6 +337,11 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
         self.assertTrue(response["guidance_metadata"]["guidance_cache_hit"])
         self.assertEqual(response["guidance_metadata"]["guidance_cache_key"], "cache-key")
+        self.assertEqual(response["guidance"]["summary"]["action_type"], "drop-off")
+        self.assertEqual(
+            response["guidance"]["preparation"]["steps"],
+            ["Tape exposed terminals."],
+        )
         mock_llm.assert_not_called()
         mock_write.assert_not_called()
 
@@ -412,7 +420,7 @@ class GuidanceServiceTests(unittest.TestCase):
         mock_llm.assert_called_once()
         self.assertEqual(response["summary"], "Use fresh battery drop-off guidance.")
 
-    def test_direct_json_remains_fallback_when_groq_output_is_invalid(self):
+    def test_direct_json_remains_fallback_when_cloudflare_output_is_invalid(self):
         classification = {
             "item": "Battery",
             "category": "Battery",
@@ -715,8 +723,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "safe_fallback",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -771,8 +779,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "safe_fallback",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -831,7 +839,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
         self.assertEqual(
             response["guidance_metadata"]["fallback_reason"],
-            "no_usable_sources",
+            "insufficient_evidence",
         )
         self.assertEqual(response["guidance_metadata"]["source_names"], [])
         self.assertEqual(response["guidance_metadata"]["source_urls"], [])
@@ -858,8 +866,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "safe_fallback",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -942,8 +950,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "safe_fallback",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],
@@ -1152,8 +1160,8 @@ class GuidanceServiceTests(unittest.TestCase):
             ],
             "guidance_source": "safe_fallback",
             "guidance_metadata": {
-                "llm_provider": "groq",
-                "llm_model": "llama-3.1-8b-instant",
+                "llm_provider": "cloudflare_workers_ai",
+                "llm_model": "@cf/google/gemma-4-26b-a4b-it",
                 "llm_mode": "general_safe_fallback",
                 "confidence": "low",
                 "sources_used": [],

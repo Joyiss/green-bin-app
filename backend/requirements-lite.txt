@@ -7,5 +7,4 @@ python-dotenv
 requests
 supabase
 zxing-cpp
-groq
 tavily-python

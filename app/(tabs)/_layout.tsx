@@ -2,14 +2,19 @@ import { Tabs } from 'expo-router';
 import React from 'react';
 
 import { BottomNavBar } from '@/components/bottom-nav-bar';
+import {
+  TabBarVisibilityProvider,
+  useTabBarVisibility,
+} from '@/components/tab-bar-visibility';
 
-export default function TabLayout() {
+function TabNavigator() {
+  const { hidden } = useTabBarVisibility();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
       }}
-      tabBar={(props) => <BottomNavBar {...props} />}>
+      tabBar={(props) => hidden ? null : <BottomNavBar {...props} />}>
       <Tabs.Screen
         name="index"
         options={{
@@ -35,5 +40,13 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+  );
+}
+
+export default function TabLayout() {
+  return (
+    <TabBarVisibilityProvider>
+      <TabNavigator />
+    </TabBarVisibilityProvider>
   );
 }

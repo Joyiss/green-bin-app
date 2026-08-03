@@ -1,0 +1,19 @@
+{
+  "overall": [
+    {
+      "model_label": "gpt_oss_20b",
+      "mode": "plain",
+      "calls": 1,
+      "complete_rate": 0.0,
+      "schema_valid_rate": 1.0,
+      "hallucination_rate": 1.0,
+      "timeout_rate": 0.0,
+      "api_error_rate": 0.0,
+      "median_latency_ms": 2160.5726999696344,
+      "p90_latency_ms": 2160.5726999696344,
+      "worst_latency_ms": 2160.5726999696344,
+      "estimated_cost_usd": 0.0001522,
+      "estimated_neurons": 13.836502
+    }
+  ]
+}

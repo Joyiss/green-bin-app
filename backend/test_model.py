@@ -9,6 +9,7 @@ from PIL import Image
 from services.vlm_service import (
     _build_detection_prompt,
     _build_open_detection_prompt,
+    _classify_cloudflare_429,
     _parse_open_detection_result,
 )
 
@@ -115,6 +116,40 @@ class RecognitionModeTests(unittest.TestCase):
 
     def test_open_mode_is_accepted(self):
         self.assertEqual(normalize_vlm_recognition_mode("  OPEN "), "open")
+
+    def test_cloudflare_429_reason_classification(self):
+        self.assertEqual(
+            _classify_cloudflare_429(
+                cloudflare_error_code=4006,
+                cloudflare_error_message="you have used up your daily free allocation of 10,000 neurons",
+                response_body="",
+            ),
+            "daily_neuron_quota_exhausted",
+        )
+        self.assertEqual(
+            _classify_cloudflare_429(
+                cloudflare_error_code=None,
+                cloudflare_error_message="Too many requests; requests per minute exceeded",
+                response_body="",
+            ),
+            "request_per_minute_rate_limit",
+        )
+        self.assertEqual(
+            _classify_cloudflare_429(
+                cloudflare_error_code=None,
+                cloudflare_error_message="Model temporarily unavailable due to capacity",
+                response_body="",
+            ),
+            "model_capacity_unavailable",
+        )
+        self.assertEqual(
+            _classify_cloudflare_429(
+                cloudflare_error_code=None,
+                cloudflare_error_message="429",
+                response_body="",
+            ),
+            "unknown_429",
+        )
 
 
 class DetectObjectApiTests(unittest.TestCase):
@@ -318,6 +353,67 @@ class DetectObjectApiTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unknown")
         self.assertEqual(result["candidate_labels"], [])
+
+    @patch("services.vlm_service.sleep")
+    @patch("model.requests.post")
+    def test_detect_object_429_uses_one_backoff_retry_then_clean_fallback(
+        self,
+        mock_post,
+        mock_sleep,
+    ):
+        body = {
+            "success": False,
+            "errors": [
+                {
+                    "code": 4006,
+                    "message": "AiError: you have used up your daily free allocation of 10,000 neurons",
+                }
+            ],
+            "messages": [],
+            "result": {},
+        }
+        first_response = Mock()
+        first_response.status_code = 429
+        first_response.headers = {"retry-after": "2"}
+        first_response.text = json.dumps(body)
+        first_response.json.return_value = body
+
+        second_response = Mock()
+        second_response.status_code = 429
+        second_response.headers = {"retry-after": "2"}
+        second_response.text = json.dumps(body)
+        second_response.json.return_value = body
+        mock_post.side_effect = [first_response, second_response]
+
+        with self.assertLogs("services.vlm_service", level="WARNING") as logs:
+            result = detect_object(self.image)
+
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(2.0)
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["candidate_labels"], [])
+        self.assertEqual(
+            result["error"],
+            "Image recognition is temporarily unavailable. Please try again shortly.",
+        )
+        self.assertEqual(
+            result["failure_type"],
+            "cloudflare_429_daily_neuron_quota_exhausted",
+        )
+        self.assertEqual(result["cloudflare_status_code"], 429)
+        self.assertEqual(result["cloudflare_error_code"], 4006)
+        self.assertEqual(result["cloudflare_retry_after"], "2")
+
+        joined_logs = "\n".join(logs.output)
+        self.assertIn("status_code=429", joined_logs)
+        self.assertIn("cloudflare_error_code=4006", joined_logs)
+        self.assertIn("daily free allocation", joined_logs)
+        self.assertIn("retry_after=2", joined_logs)
+        self.assertIn("model=", joined_logs)
+        self.assertIn("use_case=detection", joined_logs)
+        self.assertIn("latency_ms=", joined_logs)
+        self.assertIn("response_body=", joined_logs)
+        self.assertNotIn("api-token", joined_logs)
 
     @patch("model.requests.post")
     def test_detect_object_returns_empty_string_on_malformed_response(self, mock_post):

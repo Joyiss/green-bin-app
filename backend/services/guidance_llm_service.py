@@ -2,32 +2,105 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
+import hashlib
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-import requests
 from dotenv import load_dotenv
 
 try:
-    from . import request_context
+    from . import gemini_text_client, request_context
+    from .guidance_response_model import post_process_structured_guidance
 except ImportError:
-    from services import request_context
+    from services import gemini_text_client, request_context
+    from services.guidance_response_model import post_process_structured_guidance
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
-DEFAULT_GUIDANCE_LLM_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS = 10.0
+DEFAULT_GUIDANCE_LLM_MODEL = gemini_text_client.DEFAULT_MODEL
+DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS = gemini_text_client.DEFAULT_TIMEOUT_SECONDS
 MAX_LLM_SOURCE_CHUNKS = 3
 MAX_DIAGNOSTIC_CONTENT_CHARS = 12000
-MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS = 7200
+MAX_TOTAL_LLM_SOURCE_CONTEXT_CHARS = 4800
 MAX_SUMMARY_LENGTH = 240
-GUIDANCE_PROMPT_VERSION = "groq_applicability_guidance_v6"
+GUIDANCE_PROMPT_VERSION = "gemini_direct_source_guidance_v1"
+
+GUIDANCE_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": [
+                            "check local guidance",
+                            "compost",
+                            "donate/reuse",
+                            "drop-off",
+                            "household hazardous waste",
+                            "recycle",
+                            "trash",
+                        ],
+                    },
+                    "destination": {"type": "string"},
+                    "qualifier": {"type": ["string", "null"]},
+                },
+                "required": ["action_type", "destination", "qualifier"],
+                "additionalProperties": False,
+            },
+            "preparation": {
+                "type": "object",
+                "properties": {
+                    "required": {"type": "boolean"},
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 3,
+                    },
+                    "no_preparation_message": {"type": ["string", "null"]},
+                },
+                "required": ["required", "steps", "no_preparation_message"],
+                "additionalProperties": False,
+            },
+            "important_notes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 3,
+            },
+            "reasoning": {"type": "string"},
+            "references": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source_title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "supports_claim": {"type": "string"},
+                    },
+                    "required": ["source_title", "url", "supports_claim"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": [
+            "summary",
+            "preparation",
+            "important_notes",
+            "reasoning",
+            "references",
+        ],
+        "additionalProperties": False,
+    },
+}
 
 GENERAL_SAFE_ALLOWED_ACTIONS = {"donate/reuse", "trash", "check local guidance"}
 ALLOWED_DISPOSAL_ACTIONS = {
@@ -80,6 +153,143 @@ def _normalize_string_list(value: Any) -> list[str]:
     return result
 
 
+def _obvious_text_key(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    return re.sub(r"\b(dropoff|takeback)\b", lambda match: {
+        "dropoff": "drop off",
+        "takeback": "take back",
+    }[match.group(1)], normalized)
+
+
+def _dedupe_obvious_text(
+    values: list[str],
+    *,
+    against: list[str] | None = None,
+) -> list[str]:
+    seen = {_obvious_text_key(value) for value in (against or []) if value}
+    result: list[str] = []
+    for value in values:
+        key = _obvious_text_key(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+_GENERIC_WARNING_KEYS = {
+    "always dispose responsibly",
+    "check local guidelines",
+    "check local rules",
+    "contact your local authority",
+    "follow local guidance",
+    "recycling rules vary by location",
+    "when in doubt check locally",
+}
+
+
+def _filter_generic_warnings(
+    warnings: list[str],
+    chunks: list[dict[str, Any]],
+) -> list[str]:
+    # Keep the source text flat so generic wording is retained when a source actually says it.
+    evidence_text = " ".join(
+        str(value)
+        for chunk in chunks
+        for value in (
+            chunk.get("content"),
+            *(chunk.get("warnings") or []),
+            *(chunk.get("limitations") or []),
+        )
+        if value
+    ).casefold()
+    result: list[str] = []
+    for warning in warnings:
+        key = _obvious_text_key(warning)
+        if key in _GENERIC_WARNING_KEYS and warning.casefold() not in evidence_text:
+            continue
+        result.append(warning)
+    return _dedupe_obvious_text(result)
+
+
+_REUSE_CONFLICT_FLAGS = {
+    "broken",
+    "contaminated",
+    "damaged",
+    "disposable",
+    "food_soiled",
+    "nonfunctional",
+    "opened",
+    "single_use",
+    "wet",
+}
+
+
+def _filter_condition_conflicts(
+    values: list[str],
+    condition_flags: list[str],
+) -> list[str]:
+    confirmed_flags = {
+        str(flag).strip().casefold()
+        for flag in condition_flags
+        if str(flag).strip()
+    }
+    reuse_conflict = bool(confirmed_flags & _REUSE_CONFLICT_FLAGS)
+    result: list[str] = []
+    for value in values:
+        normalized = value.casefold()
+        if reuse_conflict and re.search(r"\b(donat|reuse|keep using|give away)\w*\b", normalized):
+            continue
+        unsafe_match = re.search(
+            r"\b(pry open|puncture|dismantle|disassemble|remove (?:the )?(?:built[ -]?in|internal) battery)\b",
+            normalized,
+        )
+        if unsafe_match:
+            prefix = normalized[max(0, unsafe_match.start() - 16):unsafe_match.start()]
+            if not re.search(r"(?:do not|don't|never|avoid)\s*$", prefix):
+                continue
+        result.append(value)
+    return result
+
+
+def _ground_structured_references(
+    structured_guidance: dict[str, Any],
+    chunks: list[dict[str, Any]],
+) -> None:
+    allowed_by_url: dict[str, dict[str, Any]] = {}
+    for chunk in chunks:
+        url = _normalize_optional_string(chunk.get("source_url"))
+        normalized_url = _normalized_source_url(url)
+        if url and normalized_url:
+            allowed_by_url[normalized_url] = chunk
+
+    grounded: list[dict[str, str]] = []
+    for reference in structured_guidance.get("references") or []:
+        if not isinstance(reference, dict):
+            continue
+        normalized_url = _normalized_source_url(reference.get("url"))
+        chunk = allowed_by_url.get(normalized_url or "")
+        if chunk is None:
+            continue
+        canonical_url = _normalize_optional_string(chunk.get("source_url"))
+        canonical_title = (
+            _normalize_optional_string(chunk.get("source_title"))
+            or _normalize_optional_string(chunk.get("title"))
+            or _normalize_optional_string(chunk.get("program_name"))
+            or _normalize_optional_string(chunk.get("source_name"))
+        )
+        supports_claim = _normalize_optional_string(reference.get("supports_claim"))
+        if canonical_url and canonical_title and supports_claim:
+            grounded.append(
+                {
+                    "source_title": canonical_title,
+                    "url": canonical_url,
+                    "supports_claim": supports_claim,
+                }
+            )
+    structured_guidance["references"] = grounded
+
+
 def _normalize_disposal_action(value: Any) -> str | None:
     normalized = _normalize_optional_string(value)
     if normalized is None:
@@ -95,31 +305,15 @@ def _normalize_disposal_action(value: Any) -> str | None:
         return None
     if action in {"reuse/donate", "donate / reuse", "reuse / donate"}:
         return "donate/reuse"
+    if "drop-off" in action or "dropoff" in action:
+        return "drop-off"
     return action
 
 
-def _parse_guidance_llm_timeout() -> float:
-    raw = _normalize_optional_string(os.getenv("GUIDANCE_LLM_TIMEOUT"))
-    if raw is None:
-        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
-    try:
-        timeout = float(raw)
-    except ValueError:
-        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
-    if not math.isfinite(timeout) or timeout <= 0:
-        return DEFAULT_GUIDANCE_LLM_TIMEOUT_SECONDS
-    return timeout
-
-
 def _current_llm_settings() -> dict[str, Any]:
-    provider = _normalize_optional_string(os.getenv("GUIDANCE_LLM_PROVIDER"))
     return {
         "enabled": _env_truthy(os.getenv("ENABLE_LLM_GUIDANCE")),
-        "provider": provider.casefold() if provider else None,
-        "model": _normalize_optional_string(os.getenv("GUIDANCE_LLM_MODEL"))
-        or DEFAULT_GUIDANCE_LLM_MODEL,
-        "api_key": _normalize_optional_string(os.getenv("GROQ_API_KEY")),
-        "timeout_seconds": _parse_guidance_llm_timeout(),
+        **gemini_text_client.current_settings(),
     }
 
 
@@ -127,11 +321,7 @@ def llm_skip_reason(settings: dict[str, Any] | None = None) -> str | None:
     effective = settings or _current_llm_settings()
     if not effective.get("enabled"):
         return "ENABLE_LLM_GUIDANCE_false"
-    if effective.get("provider") != "groq":
-        return "provider_not_groq"
-    if not effective.get("api_key"):
-        return "missing_GROQ_API_KEY"
-    return None
+    return gemini_text_client.configuration_failure_reason(effective)
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -145,35 +335,6 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("Parsed model response JSON is not an object.")
     return parsed
-
-
-def _extract_groq_text(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        raise ValueError("Groq response payload must be an object.")
-    choices = payload.get("choices")
-    if not isinstance(choices, list):
-        raise ValueError("Groq response did not contain choices.")
-    for choice in choices:
-        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
-            continue
-        content = choice["message"].get("content")
-        text = _normalize_optional_string(content)
-        if text:
-            return text
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = _normalize_optional_string(part.get("text"))
-                    if text:
-                        return text
-    raise ValueError("Groq response did not contain message content.")
-
-
-def _safe_endpoint_path(endpoint: str) -> str:
-    parsed = urlparse(endpoint)
-    if parsed.scheme and parsed.netloc:
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    return endpoint.split("?", 1)[0]
 
 
 def _sanitize_response_preview(value: Any, *, max_length: int = 500) -> str | None:
@@ -261,112 +422,247 @@ def _log_diagnostic(label: str, payload: dict[str, Any]) -> None:
     )
 
 
-def _groq_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
-    endpoint = "https://api.groq.com/openai/v1/chat/completions"
-    request_started = perf_counter()
+def _estimated_tokens(chars: int) -> int:
+    return max(1, (chars + 3) // 4) if chars > 0 else 0
+
+
+def _json_chars(value: Any) -> int:
+    if value is None:
+        return 0
     try:
-        response = requests.post(
-            endpoint,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {settings['api_key']}",
-            },
-            json={
-                "model": settings["model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=settings["timeout_seconds"],
-        )
-        _log_guidance_llm_timing(
-            "groq_http_request",
-            request_started,
-            provider=settings.get("provider"),
-            model=settings.get("model"),
-            mode=mode,
-            timeout_seconds=settings.get("timeout_seconds"),
-            prompt_chars=len(prompt),
-            proxy_env_present=any(
-                os.getenv(name)
-                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
-            ),
-            status_code=getattr(response, "status_code", "unknown"),
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        _log_guidance_llm_timing(
-            "groq_http_request",
-            request_started,
-            provider=settings.get("provider"),
-            model=settings.get("model"),
-            mode=mode,
-            timeout_seconds=settings.get("timeout_seconds"),
-            prompt_chars=len(prompt),
-            proxy_env_present=any(
-                os.getenv(name)
-                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
-            ),
-            result="exception",
-            error_type=type(exc).__name__,
-        )
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        body = _sanitize_response_preview(getattr(getattr(exc, "response", None), "text", None))
-        logger.info(
-            "LLM guidance request failed. provider=%s mode=%s error_class=%s status_code=%s body_preview=%s model=%s endpoint=%s",
-            settings.get("provider"), mode, exc.__class__.__name__, status, body,
-            settings.get("model"), _safe_endpoint_path(endpoint),
-        )
-        raise
-    extraction_started = perf_counter()
-    try:
-        raw_text = _extract_groq_text(response.json())
-    except Exception as exc:
-        _log_guidance_llm_timing(
-            "groq_response_extract",
-            extraction_started,
-            provider=settings.get("provider"),
-            model=settings.get("model"),
-            mode=mode,
-            result="exception",
-            error_type=type(exc).__name__,
-        )
-        raise
-    _log_guidance_llm_timing(
-        "groq_response_extract",
-        extraction_started,
-        provider=settings.get("provider"),
-        model=settings.get("model"),
-        mode=mode,
-        raw_output_chars=len(raw_text),
+        return len(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _short_hash(value: Any) -> str:
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            value = str(value)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _log_gemma_diagnostic(label: str, payload: dict[str, Any]) -> None:
+    logger.info(
+        "[GEMINI_DIAGNOSTIC] %s %s",
+        label,
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str),
     )
-    return raw_text
 
 
-def _strip_chunk_for_llm(chunk: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": _normalize_optional_string(chunk.get("id")),
-        "title": _normalize_optional_string(chunk.get("title")),
-        "section": _normalize_optional_string(chunk.get("section")),
-        "source_name": _normalize_optional_string(chunk.get("source_name")),
-        "source_url": _normalize_optional_string(chunk.get("source_url")),
+def _text_llm_request(prompt: str, *, settings: dict[str, Any], mode: str) -> str:
+    response_format = GUIDANCE_RESPONSE_FORMAT
+    schema_chars = _json_chars(response_format)
+    _log_gemma_diagnostic(
+        "use_case_prompt",
+        {
+            "request_id": request_context.get_predict_request_id(),
+            "mode": mode,
+            "prompt_chars": len(prompt),
+            "estimated_prompt_tokens": _estimated_tokens(len(prompt)),
+            "structured_output": True,
+            "schema_chars": schema_chars,
+            "estimated_schema_tokens": _estimated_tokens(schema_chars),
+            "schema_hash": _short_hash(response_format),
+            "prompt_hash": _short_hash(prompt),
+            "requested_max_output_tokens": None,
+        },
+    )
+    schema = response_format.get("json_schema", response_format)
+    return gemini_text_client.generate_text(
+        prompt,
+        settings=settings,
+        use_case=mode,
+        response_schema=schema,
+        temperature=0.1,
+    )
+
+
+def _normalized_source_url(value: Any) -> str | None:
+    url = _normalize_optional_string(value)
+    if url is None:
+        return None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url.casefold()
+    host = (parsed.hostname or "").casefold().removeprefix("www.")
+    if not host:
+        return url.casefold()
+    try:
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError:
+        return url.casefold()
+    path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/") or "/"
+    return f"{host}{port}{path}".casefold()
+
+
+def _dedupe_tavily_content(value: Any) -> str | None:
+    content = _normalize_optional_string(value)
+    if content is None:
+        return None
+    parts = re.split(r"\s*\[\s*\.\s*\.\s*\.\s*\]\s*", content)
+    unique_parts: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        normalized = re.sub(r"\s+", " ", part).strip()
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        unique_parts.append(normalized)
+    deduped = "\n".join(unique_parts).strip()
+    return deduped or None
+
+
+def _is_useful_llm_source_content(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    if normalized in {"n/a", "na", "none", "no content", "not available", "unknown"}:
+        return False
+    return len(normalized) >= 12 and len(re.findall(r"[a-z0-9]+", normalized)) >= 3
+
+
+_USEFUL_EVIDENCE_TERMS = (
+    "accept",
+    "appointment",
+    "available",
+    "bring",
+    "collection",
+    "cost",
+    "disposal",
+    "drop-off",
+    "drop off",
+    "drain",
+    "empty",
+    "eligible",
+    "fee",
+    "free",
+    "hours",
+    "keep",
+    "limit",
+    "must",
+    "not accepted",
+    "prepare",
+    "prohibit",
+    "recycle",
+    "remove",
+    "resident",
+    "restriction",
+    "rinse",
+    "route",
+    "schedule",
+    "secure",
+    "separate",
+    "tape",
+    "trash",
+)
+
+
+def _best_evidence_excerpt(content: str, relevance_terms: list[str]) -> str | None:
+    parts = [
+        " ".join(part.split())
+        for part in re.split(r"\n+|\s*\[\s*\.\s*\.\s*\.\s*\]\s*|(?<=[.!?])\s+", content)
+        if " ".join(part.split())
+    ]
+    ranked: list[tuple[int, int, str]] = []
+    for index, part in enumerate(parts):
+        lowered = part.casefold()
+        score = sum(3 for term in _USEFUL_EVIDENCE_TERMS if term in lowered)
+        for term in relevance_terms:
+            normalized = term.casefold().strip()
+            if normalized and normalized in lowered:
+                score += 5 if " " in normalized else 2
+        if score > 0:
+            ranked.append((-score, index, part))
+    if not ranked:
+        return None
+    chosen = sorted(sorted(ranked)[:8], key=lambda row: row[1])
+    excerpt = "\n".join(part for _, _, part in chosen)
+    return excerpt[:1800].rstrip() or None
+
+
+def _dedupe_excerpt_lines(content: str, seen: set[str]) -> str | None:
+    kept: list[str] = []
+    for line in content.splitlines():
+        key = re.sub(r"[^a-z0-9]+", " ", line.casefold()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(line)
+    return "\n".join(kept).strip() or None
+
+
+def _compact_conditions(value: Any) -> dict[str, list[str]]:
+    conditions = value if isinstance(value, dict) else {}
+    compact: dict[str, list[str]] = {}
+    for key in ("required", "confirmed", "missing", "contradicted"):
+        values = _normalize_string_list(conditions.get(key))
+        if values:
+            compact[key] = values
+    return compact
+
+
+def _compact_item_relevance(chunk: dict[str, Any]) -> dict[str, list[str]]:
+    applies_to = chunk.get("applies_to")
+    applies_to = applies_to if isinstance(applies_to, dict) else {}
+    compact: dict[str, list[str]] = {}
+    for key in ("item_labels", "materials", "categories", "condition_flags"):
+        values = _normalize_string_list(applies_to.get(key))
+        if values:
+            compact[key] = values
+    return compact
+
+
+def _compact_chunk_for_llm(
+    chunk: dict[str, Any],
+    result: dict[str, Any],
+    relevance_terms: list[str] | None = None,
+) -> dict[str, Any] | None:
+    content = _dedupe_tavily_content(chunk.get("content"))
+    if not _is_useful_llm_source_content(content):
+        return None
+    content = _best_evidence_excerpt(content, list(relevance_terms or []))
+    if not _is_useful_llm_source_content(content):
+        return None
+    source_metadata = chunk.get("source_metadata")
+    source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+    source_name = _normalize_optional_string(chunk.get("source_name")) or (
+        _normalize_optional_string(source_metadata.get("organization"))
+    )
+    program_name = _normalize_optional_string(chunk.get("program_name")) or (
+        _normalize_optional_string(source_metadata.get("program_name"))
+        or _normalize_optional_string(source_metadata.get("title"))
+    )
+    compact = {
+        "source_title": _normalize_optional_string(chunk.get("title")) or program_name or source_name,
+        "source_url": _normalize_optional_string(chunk.get("source_url"))
+        or _normalize_optional_string(source_metadata.get("url")),
+        "source_name": source_name,
         "source_role": _normalize_optional_string(chunk.get("source_role")),
         "claim_scope": _normalize_string_list(chunk.get("claim_scope")),
-        "location_scope": _normalize_optional_string(chunk.get("location_scope")),
-        "generalizable": bool(chunk.get("generalizable")),
-        "requires_location_check": bool(chunk.get("requires_location_check")),
-        "content": _normalize_optional_string(chunk.get("content")),
-        "source_excerpt": _normalize_optional_string(chunk.get("source_excerpt")),
-        "source_claim": _normalize_optional_string(chunk.get("source_claim")),
-        "decision_signals": chunk.get("decision_signals")
-        if isinstance(chunk.get("decision_signals"), dict)
-        else {},
-        "warnings": _normalize_string_list(chunk.get("warnings")),
-        "limitations": _normalize_string_list(chunk.get("limitations")),
-        "disposal_actions_supported": _normalize_string_list(
+        "jurisdiction": _normalize_optional_string(chunk.get("location_scope")),
+        "applicability": _normalize_optional_string(result.get("applicability"))
+        or "applicable",
+        "item_relevance": _compact_item_relevance(chunk),
+        "supported_disposal_actions": _normalize_string_list(
             chunk.get("disposal_actions_supported")
         ),
+        "content": content,
+        "conditions": _compact_conditions(result.get("source_conditions")),
+        "limitations": _normalize_string_list(chunk.get("limitations")),
+        "warnings": _normalize_string_list(chunk.get("warnings")),
+        "requires_location_check": bool(
+            result.get("requires_location_check") is True
+            or chunk.get("requires_location_check") is True
+        ),
     }
+    if program_name and program_name.casefold() != (source_name or "").casefold():
+        compact["program_name"] = program_name
+    return compact
 
 
 def _source_priority_label(result: dict[str, Any]) -> str:
@@ -418,11 +714,27 @@ def _source_priority_key(indexed_result: tuple[int, dict[str, Any]]) -> tuple[in
 def _prioritize_source_results(
     retrieval_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
+    prioritized = [
         result
         for _, result in sorted(
             enumerate(retrieval_results),
             key=_source_priority_key,
+        )
+    ]
+    has_stronger_local_evidence = any(
+        _source_priority_label(result) != "broad_official"
+        and str(result.get("applicability") or "applicable").casefold() != "not_applicable"
+        for result in prioritized
+    )
+    if not has_stronger_local_evidence:
+        return prioritized
+    return [
+        result
+        for result in prioritized
+        if "epa.gov" not in _domain_from_url(
+            (result.get("chunk") or {}).get("source_url")
+            if isinstance(result.get("chunk"), dict)
+            else None
         )
     ]
 
@@ -496,6 +808,80 @@ def _log_source_grounded_context(
     )
 
 
+def _source_text(chunks: list[dict[str, Any]]) -> str:
+    values: list[str] = []
+    for chunk in chunks:
+        values.extend(
+            [
+                str(chunk.get("content") or ""),
+                " ".join(_normalize_string_list(chunk.get("limitations"))),
+                " ".join(_normalize_string_list(chunk.get("warnings"))),
+                json.dumps(chunk.get("conditions") or {}, ensure_ascii=True),
+            ]
+        )
+    return " ".join(values).casefold()
+
+
+def _response_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for child in value.values() for text in _response_strings(child)]
+    if isinstance(value, list):
+        return [text for child in value for text in _response_strings(child)]
+    return []
+
+
+def _unsupported_critical_claims(
+    payload: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    recognized_item: str | None,
+) -> list[str]:
+    output_text = " ".join(_response_strings(payload)).casefold()
+    evidence_text = _source_text(chunks)
+    errors: list[str] = []
+    claim_groups = {
+        "fee": ("fee", "cost", "free"),
+        "appointment": ("appointment", "reservation"),
+        "eligibility": ("eligible", "eligibility", "resident", "residency"),
+        "availability": ("available", "availability", "hours"),
+    }
+    for name, terms in claim_groups.items():
+        if any(term in output_text for term in terms) and not any(
+            term in evidence_text for term in terms
+        ):
+            errors.append(f"unsupported_{name}_claim")
+
+    item_text = (recognized_item or "").casefold()
+    is_small_household_battery = any(
+        term in item_text for term in ("aa battery", "aaa battery", "alkaline battery")
+    )
+    unrelated_battery_terms = ("lead-acid", "lead acid", "electric vehicle", "ev battery")
+    if is_small_household_battery and any(
+        term in output_text for term in unrelated_battery_terms
+    ):
+        errors.append("unrelated_battery_restriction")
+    return errors
+
+
+def _check_ahead_is_supported(chunks: list[dict[str, Any]]) -> bool:
+    unknown_terms = ("fee", "appointment", "eligible", "eligibility", "available", "availability")
+    for chunk in chunks:
+        if chunk.get("requires_location_check") is True:
+            return True
+        missing = (chunk.get("conditions") or {}).get("missing", [])
+        if any(term in str(value).casefold() for value in missing for term in unknown_terms):
+            return True
+    return False
+
+
+def _remove_unneeded_check_ahead(values: list[str], *, allowed: bool) -> list[str]:
+    if allowed:
+        return values
+    phrases = ("check ahead", "call ahead", "verify ahead", "confirm ahead")
+    return [value for value in values if not any(phrase in value.casefold() for phrase in phrases)]
+
+
 def validate_guidance_basic(
     payload: Any,
     context: dict[str, Any],
@@ -504,13 +890,39 @@ def validate_guidance_basic(
         return None, ["invalid_json"]
 
     errors: list[str] = []
-    summary = _normalize_optional_string(payload.get("summary"))
+    raw_structured_summary = payload.get("summary")
+    raw_structured_preparation = payload.get("preparation")
+    is_structured = isinstance(raw_structured_summary, dict)
+
+    if is_structured:
+        summary_section = raw_structured_summary
+        preparation_section = (
+            raw_structured_preparation
+            if isinstance(raw_structured_preparation, dict)
+            else {}
+        )
+        disposal_action_value = summary_section.get("action_type")
+        destination = _normalize_optional_string(summary_section.get("destination"))
+        qualifier = _normalize_optional_string(summary_section.get("qualifier"))
+        summary = qualifier or destination
+        raw_prep_steps = preparation_section.get("steps")
+        next_step = destination
+        raw_alternatives: Any = []
+        raw_warnings = payload.get("important_notes")
+    else:
+        # Accept the previous model shape while cached and test fixtures migrate.
+        disposal_action_value = payload.get("disposal_action")
+        summary = _normalize_optional_string(payload.get("summary"))
+        raw_prep_steps = payload.get("prep_steps")
+        next_step = _normalize_optional_string(payload.get("next_step"))
+        raw_alternatives = payload.get("alternatives")
+        raw_warnings = payload.get("warnings")
+
     if summary is None:
         errors.append("missing_summary")
     elif len(summary) > MAX_SUMMARY_LENGTH:
         errors.append("summary_too_long")
 
-    raw_prep_steps = payload.get("prep_steps")
     prep_steps: list[str] = []
     if not isinstance(raw_prep_steps, list):
         errors.append("invalid_prep_steps")
@@ -521,7 +933,6 @@ def validate_guidance_basic(
                 break
             prep_steps.append(raw_step.strip())
 
-    next_step = _normalize_optional_string(payload.get("next_step"))
     if next_step is None:
         errors.append("missing_next_step")
 
@@ -530,24 +941,101 @@ def validate_guidance_basic(
         for value in context.get("allowed_disposal_actions", set())
         if (action := _normalize_disposal_action(value)) is not None
     }
-    disposal_action = _normalize_disposal_action(payload.get("disposal_action"))
+    disposal_action = _normalize_disposal_action(disposal_action_value)
     if disposal_action is None or disposal_action not in allowed_actions:
         errors.append("unsupported_disposal_action")
 
     if errors:
         return None, list(dict.fromkeys(errors))
 
+    condition_flags = _normalize_string_list(context.get("condition_flags"))
+    retrieved_chunks = context.get("retrieved_chunks")
+    retrieved_chunks = retrieved_chunks if isinstance(retrieved_chunks, list) else []
+    critical_claim_errors = _unsupported_critical_claims(
+        payload,
+        [chunk for chunk in retrieved_chunks if isinstance(chunk, dict)],
+        _normalize_optional_string(context.get("recognized_item")),
+    )
+    if critical_claim_errors:
+        return None, critical_claim_errors
+    check_ahead_allowed = _check_ahead_is_supported(retrieved_chunks)
+    prep_steps = _filter_condition_conflicts(prep_steps, condition_flags)
+    prep_steps = _remove_unneeded_check_ahead(
+        prep_steps,
+        allowed=check_ahead_allowed,
+    )
+    prep_steps = _dedupe_obvious_text(prep_steps, against=[summary, next_step])
+    alternatives = _filter_condition_conflicts(
+        _normalize_string_list(raw_alternatives),
+        condition_flags,
+    )
+    alternatives = _dedupe_obvious_text(
+        alternatives,
+        against=[summary, next_step, *prep_steps],
+    )
+    warnings = _filter_generic_warnings(
+        _normalize_string_list(raw_warnings),
+        [chunk for chunk in retrieved_chunks if isinstance(chunk, dict)],
+    )
+    warnings = _remove_unneeded_check_ahead(
+        warnings,
+        allowed=check_ahead_allowed,
+    )
+
+    if is_structured:
+        if qualifier and not check_ahead_allowed and any(
+            phrase in qualifier.casefold()
+            for phrase in ("check ahead", "call ahead", "verify ahead", "confirm ahead")
+        ):
+            qualifier = None
+            summary = destination
+        structured_input = {
+            "summary": {**raw_structured_summary, "qualifier": qualifier},
+            "preparation": {**preparation_section, "steps": prep_steps},
+            "important_notes": warnings,
+            "reasoning": payload.get("reasoning"),
+            "references": payload.get("references"),
+        }
+    else:
+        structured_input = {
+            "summary": {
+                "action_type": disposal_action,
+                "destination": next_step,
+                "qualifier": summary,
+            },
+            "preparation": {"required": bool(prep_steps), "steps": prep_steps},
+            "important_notes": warnings,
+            "reasoning": payload.get("reasoning")
+            or "This recommendation matches the available disposal guidance.",
+            "references": payload.get("references") or [],
+        }
+    structured_guidance = post_process_structured_guidance(
+        structured_input,
+        item=_normalize_optional_string(context.get("recognized_item")),
+        category=_normalize_optional_string(context.get("broad_category")),
+    )
+    if structured_guidance is None:
+        return None, ["invalid_structured_guidance"]
+    _ground_structured_references(
+        structured_guidance,
+        [chunk for chunk in retrieved_chunks if isinstance(chunk, dict)],
+    )
+    prep_steps = structured_guidance["preparation"]["steps"]
+    warnings = structured_guidance["important_notes"]
+
     return {
         "disposal_action": disposal_action,
         "summary": summary,
         "prep_steps": prep_steps,
         "next_step": next_step,
-        "alternatives": _normalize_string_list(payload.get("alternatives")),
+        "alternatives": alternatives,
         # Keep the established API field while clients move to the clearer
         # preparation/next-action split.
         "steps": [*prep_steps, next_step],
-        "warnings": _normalize_string_list(payload.get("warnings")),
-        "confidence": _normalize_optional_string(payload.get("confidence")) or "medium",
+        "warnings": warnings,
+        "confidence": _normalize_optional_string(payload.get("confidence"))
+        or ("low" if context.get("mode") == "general_safe_fallback" else "medium"),
+        "structured_guidance": structured_guidance,
         "validation_warnings": [],
     }, []
 
@@ -648,29 +1136,25 @@ def _source_grounded_mobile_policy() -> str:
         "\n"
         "- Use natural sentence casing for the item name.\n"
         "- Do not repeat the item name unnecessarily in every field.\n"
-        "- Do not repeat the same recommendation in the summary, prep steps, and next step.\n"
+        "- Every section must add unique information. Do not repeat the same recommendation across sections.\n"
         "- Be direct and specific, not vague or promotional.\n"
-        "- Never mention Green Bin, the app, buttons, screens, source IDs, citations, URLs, excerpts, or retrieval.\n"
+        "- Never mention Green Bin, the app, buttons, screens, source IDs, excerpts, or retrieval. Use source URLs only inside references.\n"
         "- Do not tell the user to search for a facility.\n"
         "- Do not invent programs, retailers, facilities, prices, rules, or acceptance details.\n"
         "\n"
         "Output field rules:\n"
         "\n"
-        "- summary: One short sentence stating the most important local conclusion. "
-        "Mention the jurisdiction or named local route when useful. Do not merely repeat disposal_action.\n"
-        "- prep_steps: Zero to three actions that must happen before disposal. "
-        "Do not include the final destination here and do not add filler.\n"
-        "- next_step: One concrete disposal action supported by the accepted evidence. Describe the destination or collection route without adding item types that are not present in the current recognition or accepted evidence. Do not describe the interface.\n"
-        "- alternatives: Zero to two genuinely different supported routes or conditional options. "
-        "Do not restate the main route and do not use generic \"check local guidance\" filler.\n"
-        "- warnings: Zero to three source-supported safety, acceptance, eligibility, fee, limit, or restriction statements. "
-        "Return an empty list when no useful warning exists.\n"
-        "- confidence:\n"
-        "  - high: exact-item applicable local evidence supports the action;\n"
-        "  - medium: a clearly containing local category or applicable statewide evidence supports the action;\n"
-        "  - low: important item properties or local acceptance remain uncertain.\n"
+        "- summary.action_type: Only what to do; it must be one allowed_disposal_action.\n"
+        "- summary.destination: Only where it goes, using a supported program, service, collection route, or destination.\n"
+        "- summary.qualifier: At most one key supported condition or eligibility qualifier; use null when none exists.\n"
+        "- preparation.required: true only when at least one preparation action is necessary.\n"
+        "- preparation.steps: Zero to three necessary actions performed before disposal, such as removing a removable battery, rinsing, draining, or taping terminals. Each step must add a new action. Never put the destination or disposal recommendation in a preparation step and never invent a step to fill the UI.\n"
+        "- preparation.no_preparation_message: Use null unless supplied evidence explicitly supports a no-preparation statement. Never infer this from missing preparation evidence.\n"
+        "- important_notes: Zero to three item-relevant fees, restrictions, residency rules, appointment requirements, or safety notes only. Do not repeat summary or preparation content.\n"
+        "- reasoning: One short sentence explaining why this recommendation applies to the recognized item.\n"
+        "- references: Each entry must use a supplied source title and URL and briefly state the claim that source supports. Do not invent or alter sources.\n"
         "\n"
-        "The disposal_action must be one of allowed_disposal_actions.\n"
+        "summary.action_type must be one of allowed_disposal_actions.\n"
         "\n"
         "INPUT CONTEXT — DO NOT COPY THIS INTO THE RESPONSE:\n"
         "\n"
@@ -705,13 +1189,11 @@ def _fallback_mobile_policy() -> str:
         "\n"
         "Output field rules:\n"
         "\n"
-        "- summary: One short sentence describing the conservative recommendation.\n"
-        "- prep_steps: Zero to two necessary actions.\n"
-        "- next_step: One clear action the user can take.\n"
-        "- alternatives: Zero to one realistic alternative.\n"
-        "- warnings: Zero to two important warnings.\n"
+        "- Use the summary, preparation, important_notes, reasoning, and references sections in the output schema.\n"
+        "- references must be an empty list because no retrieved source is available.\n"
+        "- Do not repeat information across sections or invent content to fill a section.\n"
         "\n"
-        "The disposal_action must be one of allowed_disposal_actions.\n"
+        "summary.action_type must be one of allowed_disposal_actions.\n"
         "\n"
         "INPUT CONTEXT — DO NOT COPY THIS INTO THE RESPONSE:\n"
         "\n"
@@ -725,16 +1207,14 @@ def _source_grounded_output_requirements() -> str:
         "\n"
         "Return exactly one JSON object and nothing else.\n"
         "\n"
-        "Do not include the input context, retrieved chunks, source IDs, URLs, or additional fields.\n"
+        "Do not include the input context, retrieved chunks, source IDs, or additional fields.\n"
         "\n"
         "{\n"
-        '  "disposal_action": "",\n'
-        '  "summary": "",\n'
-        '  "prep_steps": [],\n'
-        '  "next_step": "",\n'
-        '  "alternatives": [],\n'
-        '  "warnings": [],\n'
-        '  "confidence": ""\n'
+        '  "summary": {"action_type": "", "destination": "", "qualifier": null},\n'
+        '  "preparation": {"required": false, "steps": [], "no_preparation_message": null},\n'
+        '  "important_notes": [],\n'
+        '  "reasoning": "",\n'
+        '  "references": [{"source_title": "", "url": "", "supports_claim": ""}]\n'
         "}\n"
     )
 
@@ -749,13 +1229,11 @@ def _fallback_output_requirements() -> str:
         "Do not include the input context or additional fields.\n"
         "\n"
         "{\n"
-        '  "disposal_action": "",\n'
-        '  "summary": "",\n'
-        '  "prep_steps": [],\n'
-        '  "next_step": "",\n'
-        '  "alternatives": [],\n'
-        '  "warnings": [],\n'
-        '  "confidence": "low"\n'
+        '  "summary": {"action_type": "", "destination": "", "qualifier": null},\n'
+        '  "preparation": {"required": false, "steps": [], "no_preparation_message": null},\n'
+        '  "important_notes": [],\n'
+        '  "reasoning": "",\n'
+        '  "references": []\n'
         "}\n"
     )
 
@@ -777,14 +1255,10 @@ def _build_source_grounded_prompt(
 ) -> str:
     context = {
         "recognized_item": recognized_item,
-        "normalized_item_label": normalized_item_label,
         "material": material,
         "broad_category": broad_category,
         "condition_flags": condition_flags,
         "special_flags": special_flags,
-        "visual_evidence": visual_evidence,
-        "visual_observations": list(visual_observations or []),
-        "candidates": candidates,
         "location": location,
         "allowed_disposal_actions": allowed_disposal_actions,
         "retrieved_chunks": chunks,
@@ -890,12 +1364,14 @@ def _build_source_guidance(
         "next_step": validated["next_step"],
         "alternatives": validated["alternatives"],
         "steps": validated["steps"],
+        "structured_guidance": validated["structured_guidance"],
         "guidance_source": "json_rag_llm_generated",
         "guidance_metadata": {
-            "llm_provider": "groq", "llm_model": settings["model"],
+            "llm_provider": settings["provider"], "llm_model": settings["model"],
             "llm_mode": "source_grounded", "confidence": validated["confidence"],
             "final_generation_path": "repaired_llm" if repaired else "original_llm",
             **_contract_metadata_values(),
+            "structured_guidance": validated["structured_guidance"],
             **_build_standardized_metadata(
                 chunks=used_chunks, sources_used=used_ids,
                 why_this_action="The selected action matches retrieved source evidence.",
@@ -916,15 +1392,18 @@ def _build_general_guidance(
         "impact_level": "Low Confidence Guidance", "summary": validated["summary"],
         "prep_steps": validated["prep_steps"], "next_step": validated["next_step"],
         "alternatives": validated["alternatives"],
-        "steps": validated["steps"], "guidance_source": "llm_general_fallback",
+        "steps": validated["steps"],
+        "structured_guidance": validated["structured_guidance"],
+        "guidance_source": "llm_general_fallback",
         "guidance_metadata": {
-            "llm_provider": "groq", "llm_model": settings["model"],
+            "llm_provider": settings["provider"], "llm_model": settings["model"],
             "llm_mode": "general_safe_fallback", "confidence": "low", "sources_used": [],
             "final_generation_path": "repaired_llm" if repaired else "original_llm",
             "low_risk_reason": low_risk_reason, "matched_terms": matched_terms,
             "claims_used": [], "source_excerpts": [], "source_names": [], "source_urls": [],
             "limitations": [], "retrieved_chunk_ids": [],
             "why_this_action": "The model used conservative low-risk item context.",
+            "structured_guidance": validated["structured_guidance"],
             **_contract_metadata_values(),
         },
     }
@@ -953,7 +1432,7 @@ def _generate_once(
         settings.get("timeout_seconds"),
     )
     try:
-        raw_response = _groq_request(prompt, settings=settings, mode=mode)
+        raw_response = _text_llm_request(prompt, settings=settings, mode=mode)
         _log_diagnostic(
             "GUIDANCE_LLM_RAW_OUTPUT",
             {
@@ -964,8 +1443,8 @@ def _generate_once(
             },
         )
         parsed = _extract_json_object(raw_response)
-    except requests.RequestException as exc:
-        reason = "timeout" if isinstance(exc, requests.Timeout) else "request_error"
+    except gemini_text_client.GeminiTextError as exc:
+        reason = exc.failure_reason
         _log_guidance_llm_timing(
             "attempt_total",
             attempt_started,
@@ -1033,63 +1512,95 @@ def try_generate_source_grounded_guidance(
     special_flags: list[str] | None = None, visual_evidence: str | None = None,
     visual_observations: list[dict[str, Any]] | None = None,
     candidates: list[str] | None = None, location: dict[str, Any] | None,
-    retrieval_results: list[dict[str, Any]],
+    retrieval_results: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     settings = _current_llm_settings()
     skip = llm_skip_reason(settings)
     if skip:
         return _llm_result(guidance=None, failure_reason=skip)
-    chunks: list[dict[str, Any]] = []
+    full_chunks: list[dict[str, Any]] = []
+    prompt_chunks: list[dict[str, Any]] = []
     tavily_chunks: list[dict[str, Any]] = []
+    seen_source_urls: set[str] = set()
+    seen_excerpt_lines: set[str] = set()
+    relevance_terms = _dedupe_preserve_order(
+        [
+            value
+            for value in [recognized_item, normalized_item_label, material, broad_category]
+            if isinstance(value, str) and value.strip()
+        ]
+    )
     evidence_results = [
         result
-        for result in retrieval_results
+        for result in (retrieval_results or [])
         if not (
             isinstance(result.get("chunk"), dict)
             and result["chunk"].get("source_role") == "discovery_only"
         )
+        and str(result.get("applicability") or "applicable").casefold()
+        != "not_applicable"
     ]
     prioritized_results = _prioritize_source_results(evidence_results)
-    for result in prioritized_results[:MAX_LLM_SOURCE_CHUNKS]:
+    for result in prioritized_results:
+        if len(prompt_chunks) >= MAX_LLM_SOURCE_CHUNKS:
+            break
         raw_chunk = result.get("chunk")
         if not isinstance(raw_chunk, dict):
             continue
-        chunk = _strip_chunk_for_llm(raw_chunk)
-        chunk.update(
-            {
-                "applicability": result.get("applicability") or "applicable",
-                "applicability_reason_codes": list(
-                    result.get("applicability_reason_codes") or []
-                ),
-                "source_conditions": result.get("source_conditions")
-                if isinstance(result.get("source_conditions"), dict)
-                else {},
-                "matched_fields": list(result.get("matched_fields") or []),
-                "evidence_priority": _source_priority_label(result),
-            }
+        source_metadata = raw_chunk.get("source_metadata")
+        source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+        normalized_url = _normalized_source_url(
+            raw_chunk.get("source_url") or source_metadata.get("url")
         )
-        chunks.append(chunk)
+        if normalized_url and normalized_url in seen_source_urls:
+            continue
+        compact_chunk = _compact_chunk_for_llm(raw_chunk, result, relevance_terms)
+        if compact_chunk is None:
+            continue
+        compact_chunk["content"] = _dedupe_excerpt_lines(
+            str(compact_chunk["content"]), seen_excerpt_lines
+        )
+        if not _is_useful_llm_source_content(compact_chunk["content"]):
+            continue
+        if normalized_url:
+            seen_source_urls.add(normalized_url)
+        full_chunks.append(raw_chunk)
+        prompt_chunks.append(compact_chunk)
         if raw_chunk.get("dynamic_source") == "tavily":
-            tavily_chunks.append(chunk)
-    if not chunks:
+            tavily_chunks.append(raw_chunk)
+    if not prompt_chunks:
         return _llm_result(guidance=None, failure_reason="no_chunks")
-    _enforce_total_source_context_limit(chunks)
-    allowed_actions = set(ALLOWED_DISPOSAL_ACTIONS)
+    _enforce_total_source_context_limit(prompt_chunks)
+    allowed_actions = {
+        action
+        for chunk in prompt_chunks
+        for value in chunk.get("supported_disposal_actions", [])
+        if (action := _normalize_disposal_action(value)) in ALLOWED_DISPOSAL_ACTIONS
+    }
+    if not allowed_actions:
+        return _llm_result(guidance=None, failure_reason="insufficient_evidence")
     prompt = _build_source_grounded_prompt(
         recognized_item=recognized_item, normalized_item_label=normalized_item_label,
         material=material, broad_category=broad_category,
         condition_flags=list(condition_flags or []), special_flags=list(special_flags or []),
         visual_evidence=visual_evidence, visual_observations=list(visual_observations or []),
         candidates=list(candidates or []), location=location,
-        chunks=chunks, allowed_disposal_actions=sorted(allowed_actions),
+        chunks=prompt_chunks, allowed_disposal_actions=sorted(allowed_actions),
     )
-    _log_source_grounded_context(chunks, tavily_chunks)
-    context = {"allowed_disposal_actions": allowed_actions, "retrieved_chunks": chunks}
+    _log_source_grounded_context(full_chunks, tavily_chunks)
+    context = {
+        "mode": "source_grounded",
+        "recognized_item": recognized_item,
+        "broad_category": broad_category,
+        "allowed_disposal_actions": allowed_actions,
+        "retrieved_chunks": prompt_chunks,
+        "condition_flags": list(condition_flags or []),
+    }
     return _generate_once(
         mode="source_grounded", prompt=prompt, settings=settings, context=context,
         item=recognized_item,
         accepted_builder=lambda validated, repaired: _build_source_guidance(
-            validated, chunks, settings, repaired=repaired
+            validated, full_chunks, settings, repaired=repaired
         ),
     )
 
@@ -1195,7 +1706,14 @@ def try_generate_general_safe_guidance(
         allowed_actions=allowed_actions, low_risk_reason=low_risk_reason,
         matched_terms=list(matched_terms or []),
     )
-    context = {"allowed_disposal_actions": allowed_actions, "retrieved_chunks": []}
+    context = {
+        "mode": "general_safe_fallback",
+        "recognized_item": recognized_item,
+        "broad_category": broad_category,
+        "allowed_disposal_actions": allowed_actions,
+        "retrieved_chunks": [],
+        "condition_flags": list(condition_flags or []),
+    }
     return _generate_once(
         mode="general_safe_fallback", prompt=prompt, settings=settings, context=context,
         item=recognized_item,

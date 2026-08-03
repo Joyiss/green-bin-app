@@ -1,0 +1,62 @@
+{
+  "benchmark_version": "cloudflare_text_model_benchmark_v1",
+  "created_at": "2026-08-02T17:57:37.065823+00:00",
+  "models": [
+    {
+      "label": "gemma_configured",
+      "model": "@cf/google/gemma-4-26b-a4b-it",
+      "notes": "Currently configured Cloudflare text model."
+    },
+    {
+      "label": "gpt_oss_20b",
+      "model": "@cf/openai/gpt-oss-20b",
+      "notes": "Cloudflare docs list function calling and reasoning; JSON schema support is empirically tested."
+    },
+    {
+      "label": "llama_3_3_70b_fast",
+      "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "notes": "Cloudflare docs list function calling and batch; JSON schema support is empirically tested."
+    }
+  ],
+  "case_count": 15,
+  "case_ids": [
+    "analyzer_seattle_mouse_split",
+    "analyzer_austin_mouse_municipal",
+    "analyzer_aa_battery_no_lead_acid",
+    "analyzer_lead_acid_special_handling",
+    "analyzer_compost_banana_peel",
+    "analyzer_plastic_bag_store_takeback",
+    "analyzer_paint_hhw",
+    "analyzer_reuse_winter_coat",
+    "analyzer_conflicting_curbside",
+    "analyzer_insufficient_similar_item",
+    "guidance_mouse_no_fee_claim",
+    "guidance_aa_battery_no_ev_restrictions",
+    "guidance_exclusion_not_positive",
+    "classify_aa_alkaline",
+    "classify_computer_mouse"
+  ],
+  "settings": {
+    "provider": "cloudflare_workers_ai",
+    "model": "@cf/google/gemma-4-26b-a4b-it",
+    "account_id_present": true,
+    "api_token_present": true,
+    "api_base_url": "https://api.cloudflare.com/client/v4",
+    "timeout_seconds": 60.0
+  },
+  "args": {
+    "runs": 3,
+    "timeout_seconds": 35.0,
+    "temperature": 0.1,
+    "mode": "both",
+    "model": null,
+    "case": null,
+    "run_id": "cf-text-models-full-20260802"
+  },
+  "docs": {
+    "cloudflare_json_mode": "https://developers.cloudflare.com/workers-ai/features/json-mode/",
+    "gpt_oss_20b": "https://developers.cloudflare.com/workers-ai/models/gpt-oss-20b/",
+    "llama_3_3_70b": "https://developers.cloudflare.com/workers-ai/models/llama-3.3-70b-instruct-fp8-fast/",
+    "pricing": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+  }
+}

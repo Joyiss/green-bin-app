@@ -226,60 +226,52 @@ class Earth911MaterialResolverTests(unittest.TestCase):
             [_family("Construction", 7, [51])],
         )
         response = Mock()
-        response.raise_for_status.return_value = None
+        response.ok = True
+        response.status_code = 200
         response.json.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
+            "candidates": [
+                {"content": {"parts": [{"text": (
                             '{"selection":"Ceramic Fixtures","confidence":"high",'
                             '"reason":"The sink is a ceramic fixture."}'
-                        )
-                    }
-                }
+                        )}]}}
             ]
         }
         env = {
             "ENABLE_EARTH911_LLM_MATCHING": "true",
-            "GUIDANCE_LLM_PROVIDER": "groq",
-            "GUIDANCE_LLM_MODEL": "test-model",
-            "GROQ_API_KEY": "test-key",
+            "GEMINI_TEXT_MODEL": "test-model",
+            "GEMINI_API_KEY": "test-key",
         }
 
         with (
             patch.dict(os.environ, env),
-            patch("services.earth911_material_resolver.requests.post", return_value=response) as post,
+            patch("services.gemini_text_client.requests.post", return_value=response) as post,
         ):
             result = resolve_earth911_material("porcelain sink", None, fetch)
 
         self.assertEqual(result["material_id"], 51)
         self.assertEqual(result["match_type"], "llm")
         request_payload = post.call_args.kwargs["json"]
-        prompt = request_payload["messages"][0]["content"]
+        prompt = request_payload["contents"][0]["parts"][0]["text"]
         self.assertIn("## Construction", prompt)
         self.assertIn("- Ceramic Fixtures", prompt)
         self.assertNotIn("## 7", prompt)
 
     def test_earth911_prompt_includes_complete_dynamic_catalog(self):
         response = Mock()
-        response.raise_for_status.return_value = None
+        response.ok = True
+        response.status_code = 200
         response.json.return_value = {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
+            "candidates": [
+                {"content": {"parts": [{"text": (
                             '{"selection":"unsupported","confidence":"low",'
                             '"reason":"Two catalog entries are plausible."}'
-                        )
-                    }
-                }
+                        )}]}}
             ]
         }
         env = {
             "ENABLE_EARTH911_LLM_MATCHING": "true",
-            "GUIDANCE_LLM_PROVIDER": "groq",
-            "GUIDANCE_LLM_MODEL": "test-model",
-            "GROQ_API_KEY": "test-key",
+            "GEMINI_TEXT_MODEL": "test-model",
+            "GEMINI_API_KEY": "test-key",
         }
         grouped_catalog = {
             "Construction": ["Ceramic Fixtures", "Porcelain"],
@@ -288,7 +280,7 @@ class Earth911MaterialResolverTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, env),
-            patch("services.earth911_material_resolver.requests.post", return_value=response) as post,
+            patch("services.gemini_text_client.requests.post", return_value=response) as post,
         ):
             result = _default_catalog_matcher(
                 "porcelain sink",
@@ -297,7 +289,7 @@ class Earth911MaterialResolverTests(unittest.TestCase):
             )
 
         self.assertEqual(result["selection"], "unsupported")
-        prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+        prompt = post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("You are a controlled matcher for the Earth911 supported-material catalog.", prompt)
         self.assertIn("Recognized item:\nporcelain sink", prompt)
         self.assertIn('"recognized_item": "porcelain sink"', prompt)

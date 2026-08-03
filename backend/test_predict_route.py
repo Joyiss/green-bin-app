@@ -688,7 +688,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertIn("pencil", response.json()["summary"].lower())
         self.assertEqual(
             response.json()["guidance_metadata"]["fallback_reason"],
-            "no_usable_sources",
+            "insufficient_evidence",
         )
 
     def test_predict_open_supported_match_can_use_existing_trusted_guidance(self):

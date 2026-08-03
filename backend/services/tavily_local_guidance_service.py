@@ -1302,10 +1302,6 @@ def _source_records(raw_results: list[Any], location: dict[str, str]) -> list[_S
         url = str(raw_result.get("url") or "").strip()
         domain = _host(url)
         rejection_reasons: list[str] = []
-        if not title:
-            rejection_reasons.append("missing_or_unsafe_title")
-        if not url.startswith("https://"):
-            rejection_reasons.append("non_https_url")
         if not domain:
             rejection_reasons.append("missing_domain")
         if rejection_reasons:
@@ -1322,7 +1318,7 @@ def _source_records(raw_results: list[Any], location: dict[str, str]) -> list[_S
             max_length=MAX_RAW_CONTENT_CHARS_FOR_EXTRACTION,
         )
         snippet = _sanitize_untrusted_content(raw_result.get("content"))[:1000]
-        content = (raw_content or snippet or title)[:6000]
+        content = (raw_content or snippet)[:6000]
         try:
             relevance_score = float(raw_result.get("score"))
         except (TypeError, ValueError):
@@ -1330,7 +1326,7 @@ def _source_records(raw_results: list[Any], location: dict[str, str]) -> list[_S
         records.append(
             _SourceRecord(
                 position=position,
-                title=title,
+                title=title or domain,
                 url=url,
                 domain=domain,
                 organization=_organization(title, domain, location),
@@ -1864,14 +1860,8 @@ def _accepted_result_to_evidence(
     classification: dict[str, Any],
     location: dict[str, str],
 ) -> dict[str, Any] | None:
-    if (
-        validation.trust_level in {REJECTED, DISCOVERY_ONLY}
-        or validation.source_role == DISCOVERY_ONLY_ROLE
-        or not validation.title
-    ):
-        return None
     item = _normalized_item(classification)
-    if not item:
+    if not item or not (record.raw_content or record.snippet or record.content):
         return None
     local_primary = validation.trust_level == LOCAL_PRIMARY
     provider_specific = validation.source_role in {
@@ -1888,7 +1878,7 @@ def _accepted_result_to_evidence(
         "title": validation.title,
         "organization": validation.organization or validation.domain,
         "url": validation.url,
-        "trusted": True,
+        "trusted": validation.trust_level not in {REJECTED, DISCOVERY_ONLY},
         "local": local_primary,
         "status": (
             "trusted_local"
@@ -1956,7 +1946,7 @@ def _accepted_result_to_evidence(
         "warnings": [],
         "limitations": [],
         "confidence": "high" if guidance_applicable else "medium",
-        "verified": True,
+        "verified": validation.trust_level not in {REJECTED, DISCOVERY_ONLY},
         "source_grounded": True,
         "human_reviewed": False,
         "review_status": (
@@ -2179,7 +2169,19 @@ def _validated_search_results(
             location=location,
         )
         _log_validation_result(record.position, validation)
-        if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
+        # Provider role, page type, exact wording, and unconfirmed applicability
+        # are analyzer concerns. Reject here only deterministic blocked-domain or
+        # obvious item/location mismatches.
+        basic_rejections = {
+            "social_or_forum_source",
+            "wrong_state",
+            "different_city",
+            "different_county",
+            "jurisdiction_mismatch",
+            "unrelated_source",
+            "item_relevance_not_established",
+        }
+        if set(validation.rejection_reasons) & basic_rejections:
             continue
         evidence = _accepted_result_to_evidence(
             record,

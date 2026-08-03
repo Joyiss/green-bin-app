@@ -3,9 +3,8 @@ import os
 import unittest
 from unittest.mock import patch
 
-import requests
-
 from services import guidance_service
+from services.gemini_text_client import GeminiTextError
 from services.guidance_llm_service import validate_guidance_basic
 from services.recognition_router import _build_open_vlm_classification
 from services import tavily_local_guidance_service as tavily
@@ -105,8 +104,7 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             os.environ,
             {
                 "ENABLE_LLM_GUIDANCE": "true",
-                "GUIDANCE_LLM_PROVIDER": "groq",
-                "GROQ_API_KEY": "test-key",
+                "GEMINI_API_KEY": "test-key",
             },
             clear=False,
         )
@@ -296,16 +294,22 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
         self.assertIn("invalid_prep_steps", errors)
         self.assertIn("missing_next_step", errors)
 
-    def test_valid_llm_guidance_reaches_the_response_unchanged(self):
+    def test_valid_llm_guidance_reaches_the_response_with_condition_cleanup(self):
         result = _chunk()
         payload = {
-            "disposal_action": "donate/reuse",
-            "summary": "Keep using this wrapper as a craft material if it is clean.",
-            "prep_steps": ["Keep it intact."],
-            "next_step": "Donate it through an accepted local reuse program.",
-            "alternatives": ["Reuse it only if it is clean."],
-            "warnings": [],
-            "confidence": "medium",
+            "summary": {
+                "action_type": "donate/reuse",
+                "destination": "Donate it through an accepted local reuse program.",
+                "qualifier": "Keep using this wrapper as a craft material if it is clean.",
+            },
+            "preparation": {
+                "required": True,
+                "steps": ["Keep it intact."],
+                "no_preparation_message": None,
+            },
+            "important_notes": [],
+            "reasoning": "The validated source supports this disposal route.",
+            "references": [],
         }
         with (
             self._llm_env(),
@@ -313,37 +317,37 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             patch("services.guidance_service.tavily_local_guidance_service.search_local_guidance", return_value=_outcome()),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[result]),
             patch("services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance", return_value=None),
-            patch("services.guidance_llm_service._groq_request", return_value=json.dumps(payload)),
+            patch("services.guidance_llm_service._text_llm_request", return_value=json.dumps(payload)),
         ):
             response = guidance_service.build_prediction_response(_classification())
 
         self.assertEqual(response["guidance_source"], "json_rag_llm_generated")
-        self.assertEqual(response["summary"], payload["summary"])
-        self.assertEqual(response["prep_steps"], payload["prep_steps"])
-        self.assertEqual(response["next_step"], payload["next_step"])
-        self.assertEqual(response["alternatives"], payload["alternatives"])
-        self.assertEqual(response["steps"], [*payload["prep_steps"], payload["next_step"]])
+        self.assertEqual(response["summary"], payload["summary"]["qualifier"])
+        self.assertEqual(response["prep_steps"], payload["preparation"]["steps"])
+        self.assertEqual(response["next_step"], payload["summary"]["destination"])
+        self.assertEqual(response["alternatives"], [])
+        self.assertEqual(response["steps"], [*payload["preparation"]["steps"], payload["summary"]["destination"]])
+        self.assertEqual(response["guidance"]["summary"]["action_type"], "donate/reuse")
+        self.assertEqual(
+            response["guidance"]["preparation"]["steps"],
+            payload["preparation"]["steps"],
+        )
+        self.assertIsNone(
+            response["guidance"]["preparation"]["no_preparation_message"]
+        )
+        self.assertEqual(
+            response["guidance"]["reasoning"],
+            payload["reasoning"],
+        )
         self.assertTrue(response["guidance_metadata"]["location_search_recommended"])
         self.assertEqual(response["guidance_metadata"]["location_search_provider"], "earth911")
         self.assertEqual(response["guidance_metadata"]["guidance_generation_status"], "succeeded")
+        accepted_source = response["guidance_metadata"]["accepted_sources"][0]
+        self.assertEqual(accepted_source["source_id"], "source-1")
+        self.assertIn("donate/reuse", accepted_source["supported_disposal_actions"])
         self.assertEqual(
-            response["guidance_metadata"]["accepted_sources"],
-            [
-                {
-                    "source_id": "source-1",
-                    "title": "Official disposal guidance",
-                    "url": "https://agency.gov/disposal",
-                    "organization": "Official Agency",
-                    "trust_level": "OFFICIAL_SUPPORTING",
-                    "jurisdiction": {
-                        "location_scope": "federal",
-                        "applicability": "applicable",
-                        "applicability_label": None,
-                        "requires_location_check": False,
-                        "matched_fields": [],
-                    },
-                }
-            ],
+            accepted_source["support_description"],
+            "Official disposal guidance applies.",
         )
 
     def test_llm_failure_preserves_manual_local_evidence(self):
@@ -351,7 +355,10 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             self._llm_env(),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_cache_service.build_source_grounded_cache_context", return_value=None),
-            patch("services.guidance_llm_service._groq_request", side_effect=requests.Timeout()),
+            patch(
+                "services.guidance_llm_service._text_llm_request",
+                side_effect=GeminiTextError("timeout", "timed out"),
+            ),
         ):
             response = guidance_service.build_prediction_response(
                 _classification("Laptop", normalized={"disposal_category": "Electronics"}),
@@ -367,20 +374,22 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
     def test_verified_local_requires_applicable_local_evidence(self):
         federal = _chunk(requires_location_check=True)
         federal_payload = {
-            "disposal_action": "drop-off",
-            "summary": "Use an appropriate drop-off.",
-            "prep_steps": ["Keep it intact."],
-            "next_step": "Take it to an approved collection site.",
-            "alternatives": [],
-            "warnings": [],
-            "confidence": "medium",
+            "summary": {
+                "action_type": "drop-off",
+                "destination": "Take it to an approved collection site.",
+                "qualifier": "Use an appropriate drop-off.",
+            },
+            "preparation": {"required": True, "steps": ["Keep it intact."], "no_preparation_message": None},
+            "important_notes": [],
+            "reasoning": "The validated source supports this disposal route.",
+            "references": [],
         }
         with (
             self._llm_env(),
             patch("services.guidance_service.local_guidance_matcher.match_local_guidance", return_value={"status": "no_match"}),
             patch("services.guidance_service.tavily_local_guidance_service.search_local_guidance", return_value=_outcome("tavily_official_supporting", [federal])),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
-            patch("services.guidance_llm_service._groq_request", return_value=json.dumps(federal_payload)),
+            patch("services.guidance_llm_service._text_llm_request", return_value=json.dumps(federal_payload)),
         ):
             response = guidance_service.build_prediction_response(
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
@@ -392,7 +401,7 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             self._llm_env(),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_cache_service.build_source_grounded_cache_context", return_value=None),
-            patch("services.guidance_llm_service._groq_request", return_value=json.dumps(local_payload)),
+            patch("services.guidance_llm_service._text_llm_request", return_value=json.dumps(local_payload)),
         ):
             local_response = guidance_service.build_prediction_response(
                 _classification("Laptop", normalized={"disposal_category": "Electronics"}),

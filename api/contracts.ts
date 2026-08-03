@@ -50,6 +50,32 @@ export type LocalGuidance = {
   destinations: LocalGuidanceDestination[];
 };
 
+export type GuidanceSummary = {
+  action_type: string;
+  destination: string | null;
+  qualifier: string | null;
+};
+
+export type GuidancePreparation = {
+  required: boolean;
+  steps: string[];
+  no_preparation_message: string | null;
+};
+
+export type GuidanceReference = {
+  source_title: string;
+  url: string;
+  supports_claim: string;
+};
+
+export type StructuredGuidance = {
+  summary: GuidanceSummary;
+  preparation: GuidancePreparation;
+  important_notes: string[];
+  reasoning: string;
+  references: GuidanceReference[];
+};
+
 export type RawPredictionCandidate =
   | string
   | {
@@ -76,6 +102,7 @@ export type PredictionResponse = {
   material_code: string | null;
   impact_level: string | null;
   summary?: string | null;
+  guidance?: StructuredGuidance;
   prep_steps: string[];
   next_step: string | null;
   alternatives: string[];
@@ -193,6 +220,90 @@ function optionalHttpsUrl(value: unknown) {
   }
 }
 
+function optionalSourceUrl(value: unknown) {
+  const candidate = text(value);
+  if (!candidate) {
+    return null;
+  }
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:'
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function obviousDuplicate(first?: string | null, second?: string | null) {
+  if (!first || !second) return false;
+  const normalize = (candidate: string) => candidate
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const left = normalize(first);
+  const right = normalize(second);
+  return left === right || (
+    Math.min(left.length, right.length) >= 24
+    && (left.includes(right) || right.includes(left))
+  );
+}
+
+function normalizeStructuredGuidance(value: unknown): StructuredGuidance | undefined {
+  if (!isRecord(value) || !isRecord(value.summary) || !isRecord(value.preparation)) {
+    return undefined;
+  }
+  const actionType = text(value.summary.action_type);
+  if (!actionType) return undefined;
+  const destination = text(value.summary.destination);
+  const rawQualifier = text(value.summary.qualifier);
+  let qualifier = obviousDuplicate(rawQualifier, actionType)
+    || obviousDuplicate(rawQualifier, destination)
+    ? null
+    : rawQualifier;
+  const rawSteps = stringArray(value.preparation.steps);
+  if (qualifier && rawSteps.some((step) => obviousDuplicate(step, qualifier))) {
+    qualifier = null;
+  }
+  const summaryValues = [actionType, destination, qualifier];
+  const steps = rawSteps.filter(
+    (step, index, all) => !summaryValues.some((existing) => obviousDuplicate(step, existing))
+      && all.findIndex((existing) => obviousDuplicate(step, existing)) === index,
+  );
+  const importantNotes = stringArray(value.important_notes).filter(
+    (note, index, all) => ![...summaryValues, ...steps].some(
+      (existing) => obviousDuplicate(note, existing),
+    ) && all.findIndex((existing) => obviousDuplicate(note, existing)) === index,
+  );
+  const references = Array.isArray(value.references)
+    ? value.references.flatMap((candidate) => {
+        if (!isRecord(candidate)) return [];
+        const sourceTitle = text(candidate.source_title);
+        const url = optionalSourceUrl(candidate.url);
+        const supportsClaim = text(candidate.supports_claim);
+        return sourceTitle && url && supportsClaim
+          ? [{ source_title: sourceTitle, url, supports_claim: supportsClaim }]
+          : [];
+      }).filter((reference, index, all) => all.findIndex(
+        (candidate) => candidate.url.toLocaleLowerCase().replace(/\/+$/, '')
+          === reference.url.toLocaleLowerCase().replace(/\/+$/, ''),
+      ) === index)
+    : [];
+  return {
+    summary: { action_type: actionType, destination, qualifier },
+    preparation: {
+      required: steps.length > 0,
+      steps,
+      no_preparation_message: steps.length
+        ? null
+        : text(value.preparation.no_preparation_message),
+    },
+    important_notes: importantNotes,
+    reasoning: text(value.reasoning) ?? '',
+    references,
+  };
+}
+
 function normalizeLocalGuidance(value: unknown): LocalGuidance | undefined {
   if (!isRecord(value)) {
     return undefined;
@@ -253,7 +364,7 @@ function normalizeLocalGuidance(value: unknown): LocalGuidance | undefined {
             return null;
           }
           const title = text(source.title);
-          const url = optionalHttpsUrl(source.url);
+          const url = optionalSourceUrl(source.url);
           return title && url
             ? {
                 source_id: text(source.source_id),
@@ -345,6 +456,7 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
     material_code: text(value.material_code),
     impact_level: text(value.impact_level),
     summary: text(value.summary),
+    guidance: normalizeStructuredGuidance(value.guidance),
     prep_steps: stringArray(value.prep_steps),
     next_step: text(value.next_step),
     alternatives: stringArray(value.alternatives),

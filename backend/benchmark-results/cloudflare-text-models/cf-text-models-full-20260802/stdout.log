@@ -1,0 +1,25 @@
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=plain run=1
+DONE complete=False failure=timeout latency_ms=35100.46300000977
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=schema run=1
+DONE complete=False failure=None latency_ms=27997.441500017885
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=2233.5702999844216
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=3040.4474000097252
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=JSONDecodeError:Expecting ',' delimiter: line 30 column 10 (char 1069) latency_ms=4478.387100039981
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=None latency_ms=10646.5739000123
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=plain run=1
+DONE complete=False failure=timeout latency_ms=35081.8076999858
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=schema run=1
+DONE complete=False failure=timeout latency_ms=35063.19610000355
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=1771.0499000386335
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=2754.0577999898233
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=None latency_ms=1581.0695000109263
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=None latency_ms=7505.431300029159
+RUN case=analyzer_aa_battery_no_lead_acid model=gemma_configured mode=plain run=1

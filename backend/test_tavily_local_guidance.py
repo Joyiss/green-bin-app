@@ -731,11 +731,12 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(directory.source_role, tavily.DISCOVERY_ONLY_ROLE)
         self.assertEqual(directory.trust_level, tavily.DISCOVERY_ONLY)
-        self.assertIsNone(
-            tavily._accepted_result_to_evidence(
-                directory_record, directory, classification=classification, location=location
-            )
+        directory_evidence = tavily._accepted_result_to_evidence(
+            directory_record, directory, classification=classification, location=location
         )
+        self.assertIsNotNone(directory_evidence)
+        self.assertEqual(directory_evidence["applicability"], "conditional")
+        self.assertFalse(directory_evidence["chunk"]["source_metadata"]["trusted"])
         self.assertEqual(article.source_role, tavily.REPUTABLE_SUPPORTING_ROLE)
         self.assertEqual(article.claim_scope, ("supporting_context",))
         self.assertEqual(article_evidence["applicability"], "conditional")
@@ -1043,7 +1044,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         ]
         captured = {}
 
-        def fake_groq(prompt, *, settings, mode):
+        def fake_text_llm(prompt, *, settings, mode):
             captured["prompt"] = prompt
             return json.dumps(
                 {
@@ -1061,12 +1062,11 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 os.environ,
                 {
                     "ENABLE_LLM_GUIDANCE": "true",
-                    "GUIDANCE_LLM_PROVIDER": "groq",
-                    "GROQ_API_KEY": "test-key",
+                    "GEMINI_API_KEY": "test-key",
                 },
                 clear=True,
             ),
-            patch("services.guidance_llm_service._groq_request", side_effect=fake_groq),
+            patch("services.guidance_llm_service._text_llm_request", side_effect=fake_text_llm),
         ):
             guidance_llm_service.try_generate_source_grounded_guidance(
                 recognized_item="Battery",
@@ -1121,7 +1121,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         )
         captured = {}
 
-        def fake_groq(prompt, *, settings, mode):
+        def fake_text_llm(prompt, *, settings, mode):
             captured["prompt"] = prompt
             return json.dumps(
                 {
@@ -1140,8 +1140,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 {
                     **env,
                     "ENABLE_LLM_GUIDANCE": "true",
-                    "GUIDANCE_LLM_PROVIDER": "groq",
-                    "GROQ_API_KEY": "test-key",
+                    "GEMINI_API_KEY": "test-key",
                 },
                 clear=True,
             ),
@@ -1154,7 +1153,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
                 return_value=[],
             ),
-            patch("services.guidance_llm_service._groq_request", side_effect=fake_groq),
+            patch("services.guidance_llm_service._text_llm_request", side_effect=fake_text_llm),
         ):
             response = guidance_service.build_prediction_response(
                 _classification(
@@ -1237,7 +1236,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 return_value=_reservation(),
             ),
             patch("services.tavily_local_guidance_service._get_client", return_value=client),
-            patch("services.guidance_llm_service._groq_request") as evidence_llm,
+            patch("services.guidance_llm_service._text_llm_request") as evidence_llm,
         ):
             outcome = tavily.search_local_guidance(
                 _classification(

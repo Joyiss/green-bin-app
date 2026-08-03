@@ -1,0 +1,598 @@
+[
+  {
+    "case_id": "analyzer_seattle_mouse_split",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Computer Mouse",
+    "location": {
+      "city": "Seattle",
+      "state": "Washington"
+    },
+    "sources": [
+      {
+        "chunk_id": "pnw",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "pnw",
+          "title": "PNW Reuse Depot electronics",
+          "source_name": "PNW Reuse Depot",
+          "source_url": "https://pnw.example/seattle-electronics",
+          "source_role": "direct_service_provider",
+          "content": "Menu. Search. Subscribe to newsletter. Recycling tips vary by location. Menu. Search. Subscribe to newsletter. Recycling tips vary by location. PNW Reuse Depot offers residential drop-off for Seattle residents at its Ballard location. Accepted items include computer mice, keyboards, cables, and small computer peripherals."
+        }
+      },
+      {
+        "chunk_id": "ecology",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "ecology",
+          "title": "E-Cycle Washington",
+          "source_name": "Washington Department of Ecology",
+          "source_url": "https://ecology.wa.gov/e-cycle",
+          "source_role": "official_primary",
+          "content": "E-Cycle Washington accepts televisions, computers, laptops, monitors, tablets, e-readers, and portable DVD players. Computer peripherals such as keyboards and mice are not included in the E-Cycle Washington program."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "drop_off",
+      "destination_contains": "PNW",
+      "required_evidence": [
+        "PNW Reuse Depot offers residential drop-off for Seattle residents at its Ballard location.",
+        "Accepted items include computer mice, keyboards, cables, and small computer peripherals.",
+        "Computer peripherals such as keyboards and mice are not included in the E-Cycle Washington program."
+      ],
+      "required_source_ids": [
+        "pnw",
+        "ecology"
+      ],
+      "excluded_route_contains": "E-Cycle",
+      "forbidden_terms": [
+        "hazardous waste accepts computer mice",
+        "curbside accepts computer mice"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_austin_mouse_municipal",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Computer Mouse",
+    "location": {
+      "city": "Austin",
+      "state": "Texas"
+    },
+    "sources": [
+      {
+        "chunk_id": "austin",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "austin",
+          "title": "Austin electronics recycling",
+          "source_name": "City of Austin",
+          "source_url": "https://austintexas.gov/electronics",
+          "source_role": "official_primary",
+          "content": "Austin residents may bring electronics to the Westpark Consumer Recycling Center. Proof of Austin residency may be required."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "drop_off",
+      "destination_contains": "Westpark",
+      "required_evidence": [
+        "Austin residents may bring electronics to the Westpark Consumer Recycling Center.",
+        "Proof of Austin residency may be required."
+      ],
+      "required_source_ids": [
+        "austin"
+      ],
+      "evidence_gap_terms": [
+        "fee",
+        "appointment"
+      ],
+      "forbidden_terms": [
+        "free",
+        "appointment is required",
+        "curbside"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_aa_battery_no_lead_acid",
+    "use_case": "evidence_analysis",
+    "recognized_item": "AA Battery",
+    "location": {
+      "city": "Austin",
+      "state": "Texas"
+    },
+    "sources": [
+      {
+        "chunk_id": "battery",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "battery",
+          "title": "Household battery drop-off",
+          "source_name": "Austin Resource Recovery",
+          "source_url": "https://austin.example/batteries",
+          "source_role": "official_primary",
+          "content": "Residents may bring AA and AAA alkaline batteries to the household battery drop-off kiosk. Lead-acid, marine, EV, and oversized batteries are handled through a separate hazardous battery program."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "drop_off",
+      "destination_contains": "battery",
+      "required_evidence": [
+        "Residents may bring AA and AAA alkaline batteries to the household battery drop-off kiosk."
+      ],
+      "required_source_ids": [
+        "battery"
+      ],
+      "forbidden_terms": [
+        "EV batteries are accepted",
+        "lead-acid batteries are accepted",
+        "oversized batteries are accepted"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_lead_acid_special_handling",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Lead-acid Battery",
+    "location": {
+      "city": "Denver",
+      "state": "Colorado"
+    },
+    "sources": [
+      {
+        "chunk_id": "denver",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "denver",
+          "title": "Hazardous materials",
+          "source_name": "Denver Household Hazardous Waste",
+          "source_url": "https://denver.example/hhw",
+          "source_role": "official_primary",
+          "content": "Lead-acid vehicle batteries are accepted at the household hazardous waste collection facility by appointment."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "household_hazardous_waste",
+      "destination_contains": "hazardous",
+      "required_evidence": [
+        "Lead-acid vehicle batteries are accepted at the household hazardous waste collection facility by appointment."
+      ],
+      "required_source_ids": [
+        "denver"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_compost_banana_peel",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Banana Peel",
+    "location": {
+      "city": "Portland",
+      "state": "Oregon"
+    },
+    "sources": [
+      {
+        "chunk_id": "portland",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "portland",
+          "title": "Food scraps compost",
+          "source_name": "City of Portland",
+          "source_url": "https://portland.example/compost",
+          "source_role": "official_primary",
+          "content": "Portland residents may place fruit and vegetable scraps, including banana peels, in the green compost cart."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "compost",
+      "destination_contains": "compost",
+      "required_evidence": [
+        "Portland residents may place fruit and vegetable scraps, including banana peels, in the green compost cart."
+      ],
+      "required_source_ids": [
+        "portland"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_plastic_bag_store_takeback",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Plastic Bag",
+    "location": {
+      "city": "Chicago",
+      "state": "Illinois"
+    },
+    "sources": [
+      {
+        "chunk_id": "city",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "city",
+          "title": "Chicago recycling",
+          "source_name": "City of Chicago",
+          "source_url": "https://chicago.example/recycling",
+          "source_role": "official_primary",
+          "content": "Do not place plastic bags or plastic film in the blue cart."
+        }
+      },
+      {
+        "chunk_id": "store",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "store",
+          "title": "Store film drop-off",
+          "source_name": "Neighborhood Grocery",
+          "source_url": "https://store.example/film",
+          "source_role": "direct_service_provider",
+          "content": "Our Chicago stores accept clean, dry plastic bags and plastic film in the front-of-store recycling bin."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "drop_off",
+      "destination_contains": "store",
+      "required_evidence": [
+        "Do not place plastic bags or plastic film in the blue cart.",
+        "Our Chicago stores accept clean, dry plastic bags and plastic film in the front-of-store recycling bin."
+      ],
+      "required_source_ids": [
+        "city",
+        "store"
+      ],
+      "excluded_route_contains": "blue cart"
+    }
+  },
+  {
+    "case_id": "analyzer_paint_hhw",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Oil-based Paint Can",
+    "location": {
+      "city": "Raleigh",
+      "state": "North Carolina"
+    },
+    "sources": [
+      {
+        "chunk_id": "wake",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "wake",
+          "title": "Household hazardous waste",
+          "source_name": "Wake County",
+          "source_url": "https://wake.example/hhw",
+          "source_role": "official_primary",
+          "content": "Oil-based paint is accepted at the household hazardous waste facility. Latex paint is not accepted at household hazardous waste sites."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "household_hazardous_waste",
+      "destination_contains": "hazardous",
+      "required_evidence": [
+        "Oil-based paint is accepted at the household hazardous waste facility."
+      ],
+      "forbidden_terms": [
+        "latex paint is accepted"
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_reuse_winter_coat",
+    "use_case": "evidence_analysis",
+    "recognized_item": "Winter Coat",
+    "location": {
+      "city": "Boston",
+      "state": "Massachusetts"
+    },
+    "sources": [
+      {
+        "chunk_id": "reuse",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "reuse",
+          "title": "Textile reuse",
+          "source_name": "Boston Public Works",
+          "source_url": "https://boston.example/textiles",
+          "source_role": "official_primary",
+          "content": "Reusable clothing, including coats, may be donated through textile drop boxes and reuse organizations."
+        }
+      }
+    ],
+    "expected": {
+      "status": "usable",
+      "action": "donate_reuse",
+      "destination_contains": "textile",
+      "required_evidence": [
+        "Reusable clothing, including coats, may be donated through textile drop boxes and reuse organizations."
+      ]
+    }
+  },
+  {
+    "case_id": "analyzer_conflicting_curbside",
+    "use_case": "conflict_handling",
+    "recognized_item": "Black Plastic Takeout Container",
+    "location": {
+      "city": "Madison",
+      "state": "Wisconsin"
+    },
+    "sources": [
+      {
+        "chunk_id": "city",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "city",
+          "title": "Madison recycling rules",
+          "source_name": "City of Madison",
+          "source_url": "https://madison.example/recycling",
+          "source_role": "official_primary",
+          "content": "Black plastic containers are not accepted in Madison curbside recycling carts."
+        }
+      },
+      {
+        "chunk_id": "blog",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "blog",
+          "title": "Recycling tips",
+          "source_name": "Recycling Tips Blog",
+          "source_url": "https://tips.example/madison",
+          "source_role": "reputable_supporting",
+          "content": "Madison residents can recycle black plastic takeout containers curbside according to our local recycling guide."
+        }
+      }
+    ],
+    "expected": {
+      "status": "conflicting",
+      "required_evidence": [
+        "Black plastic containers are not accepted in Madison curbside recycling carts.",
+        "Madison residents can recycle black plastic takeout containers curbside according to our local recycling guide."
+      ],
+      "manual_review": true
+    }
+  },
+  {
+    "case_id": "analyzer_insufficient_similar_item",
+    "use_case": "insufficient_evidence",
+    "recognized_item": "AA Battery",
+    "location": {
+      "city": "Seattle",
+      "state": "Washington"
+    },
+    "sources": [
+      {
+        "chunk_id": "aaa",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "aaa",
+          "title": "AAA battery program",
+          "source_name": "Battery Program",
+          "source_url": "https://battery.example/aaa",
+          "source_role": "direct_service_provider",
+          "content": "AAA rechargeable batteries are accepted at the counter. This page does not list AA batteries."
+        }
+      },
+      {
+        "chunk_id": "ev",
+        "applicability": "conditional",
+        "applicability_reason_codes": [],
+        "chunk": {
+          "id": "ev",
+          "title": "EV battery restrictions",
+          "source_name": "Battery Program",
+          "source_url": "https://battery.example/ev",
+          "source_role": "direct_service_provider",
+          "content": "Electric vehicle battery packs require prior approval and are not accepted in household battery bins."
+        }
+      }
+    ],
+    "expected": {
+      "status": "insufficient_evidence",
+      "forbidden_terms": [
+        "AA batteries are accepted",
+        "EV battery packs are accepted"
+      ],
+      "manual_review": false
+    }
+  },
+  {
+    "case_id": "guidance_mouse_no_fee_claim",
+    "use_case": "guidance_generation",
+    "packet": {
+      "status": "usable",
+      "primary_route": {
+        "action": "drop_off",
+        "destination_name": "Westpark Consumer Recycling Center",
+        "confidence": "medium",
+        "supporting_claims": [
+          {
+            "claim": "Austin residents may bring electronics to the Westpark Consumer Recycling Center.",
+            "source_id": "austin",
+            "evidence_text": "Austin residents may bring electronics to the Westpark Consumer Recycling Center."
+          }
+        ]
+      },
+      "alternatives": [],
+      "conditions": [
+        {
+          "claim": "Proof of Austin residency may be required.",
+          "source_id": "austin",
+          "evidence_text": "Proof of Austin residency may be required."
+        }
+      ],
+      "excluded_routes": [],
+      "evidence_gaps": [
+        "The packet does not state whether a fee applies."
+      ]
+    },
+    "expected": {
+      "action": "drop-off",
+      "destination_contains": "Westpark",
+      "required_text": [
+        "Proof of Austin residency may be required."
+      ],
+      "forbidden_terms": [
+        "free",
+        "appointment",
+        "curbside",
+        "hazardous"
+      ]
+    }
+  },
+  {
+    "case_id": "guidance_aa_battery_no_ev_restrictions",
+    "use_case": "guidance_generation",
+    "packet": {
+      "status": "usable",
+      "primary_route": {
+        "action": "drop_off",
+        "destination_name": "Household battery drop-off kiosk",
+        "confidence": "medium",
+        "supporting_claims": [
+          {
+            "claim": "Residents may bring AA and AAA alkaline batteries to the household battery drop-off kiosk.",
+            "source_id": "battery",
+            "evidence_text": "Residents may bring AA and AAA alkaline batteries to the household battery drop-off kiosk."
+          }
+        ]
+      },
+      "alternatives": [],
+      "conditions": [],
+      "excluded_routes": [],
+      "evidence_gaps": [
+        "The packet does not state whether a fee applies."
+      ]
+    },
+    "expected": {
+      "action": "drop-off",
+      "destination_contains": "battery",
+      "forbidden_terms": [
+        "lead-acid",
+        "marine",
+        "EV",
+        "oversized"
+      ]
+    }
+  },
+  {
+    "case_id": "guidance_exclusion_not_positive",
+    "use_case": "guidance_generation",
+    "packet": {
+      "status": "usable",
+      "primary_route": {
+        "action": "drop_off",
+        "destination_name": "PNW Reuse Depot Ballard location",
+        "confidence": "medium",
+        "supporting_claims": [
+          {
+            "claim": "PNW Reuse Depot offers residential drop-off for Seattle residents at its Ballard location.",
+            "source_id": "pnw",
+            "evidence_text": "PNW Reuse Depot offers residential drop-off for Seattle residents at its Ballard location."
+          },
+          {
+            "claim": "Accepted items include computer mice, keyboards, cables, and small computer peripherals.",
+            "source_id": "pnw",
+            "evidence_text": "Accepted items include computer mice, keyboards, cables, and small computer peripherals."
+          }
+        ]
+      },
+      "alternatives": [],
+      "conditions": [],
+      "excluded_routes": [
+        {
+          "route": "E-Cycle Washington",
+          "supporting_claims": [
+            {
+              "claim": "Computer peripherals such as keyboards and mice are not included in the E-Cycle Washington program.",
+              "source_id": "ecology",
+              "evidence_text": "Computer peripherals such as keyboards and mice are not included in the E-Cycle Washington program."
+            }
+          ]
+        }
+      ],
+      "evidence_gaps": [
+        "The packet does not state whether a fee applies."
+      ]
+    },
+    "expected": {
+      "action": "drop-off",
+      "destination_contains": "PNW",
+      "forbidden_terms": [
+        "E-Cycle Washington accepts",
+        "hazardous waste"
+      ]
+    }
+  },
+  {
+    "case_id": "classify_aa_alkaline",
+    "use_case": "item_normalization_classification",
+    "label": "AA alkaline battery",
+    "recognition_details": {
+      "normalized": {
+        "item": "AA Battery",
+        "material_category": "Battery"
+      }
+    },
+    "catalog": {
+      "Batteries": [
+        "Alkaline Batteries",
+        "Lead-Acid Batteries",
+        "Electric Vehicle Batteries"
+      ]
+    },
+    "expected": {
+      "selection": "Alkaline Batteries",
+      "forbidden_terms": [
+        "Lead-Acid",
+        "Electric Vehicle"
+      ]
+    }
+  },
+  {
+    "case_id": "classify_computer_mouse",
+    "use_case": "item_normalization_classification",
+    "label": "Computer mouse",
+    "recognition_details": {
+      "normalized": {
+        "item": "Computer Mouse",
+        "disposal_category": "Electronics"
+      }
+    },
+    "catalog": {
+      "Electronics": [
+        "Computer Peripherals",
+        "Computers",
+        "Mice and Rodents"
+      ]
+    },
+    "expected": {
+      "selection": "Computer Peripherals",
+      "forbidden_terms": [
+        "Mice and Rodents"
+      ]
+    }
+  }
+]

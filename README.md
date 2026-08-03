@@ -44,10 +44,12 @@ From the **repository root** (`green-bin-app/`):
    CLOUDFLARE_ACCOUNT_ID=your-cloudflare-account-id
    CLOUDFLARE_API_TOKEN=your-workers-ai-api-token
    CLOUDFLARE_AI_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+   GEMINI_API_KEY=your-google-ai-studio-api-key
+   GEMINI_TEXT_MODEL=gemini-3.5-flash-lite
+   GEMINI_TEXT_TIMEOUT_SECONDS=20
+   GEMINI_TEXT_MAX_OUTPUT_TOKENS=700
    ENABLE_LLM_GUIDANCE=true
-   GUIDANCE_LLM_PROVIDER=groq
-   GUIDANCE_LLM_MODEL=llama-3.1-8b-instant
-   GROQ_API_KEY=your-groq-api-key
+   ENABLE_EARTH911_LLM_MATCHING=true
    ENABLE_TAVILY_LOCAL_GUIDANCE=true
    TAVILY_API_KEY=your-tavily-api-key
    TAVILY_TIMEOUT_SECONDS=10
@@ -61,8 +63,9 @@ From the **repository root** (`green-bin-app/`):
    SUPABASE_KEY=your-backend-only-service-role-key
    ```
 
-   `CLOUDFLARE_AI_MODEL` is optional unless you want to point Green Bin at a different Workers AI model.
-   `GUIDANCE_LLM_MODEL` defaults to `llama-3.1-8b-instant` if you omit it.
+   `CLOUDFLARE_AI_MODEL` configures only the unchanged Cloudflare vision path. Text-only guidance and Earth911 catalog classification call Google AI Studio directly with `GEMINI_API_KEY`.
+   `GEMINI_TEXT_MODEL` defaults to `gemini-3.5-flash-lite`, `GEMINI_TEXT_TIMEOUT_SECONDS` defaults to `20`, and `GEMINI_TEXT_MAX_OUTPUT_TOKENS` defaults to `700`.
+   In `/predict`, the text flow is retrieval -> one Gemini guidance call -> local validation -> result sheet. Cache hits, clarification responses, and insufficient-evidence fallbacks make no text-model call.
    `ENABLE_TAVILY_LOCAL_GUIDANCE` defaults to `true`, but searches remain disabled unless `TAVILY_API_KEY` and the Supabase budget migration are configured.
    `TAVILY_TIMEOUT_SECONDS` defaults to `10`. Each eligible scan makes at most one basic Search request and never retries it.
    `TAVILY_DAILY_CREDIT_LIMIT` and `TAVILY_MONTHLY_CREDIT_LIMIT` default to `100` and `1000`. Reservations are fail-closed and reset at UTC day/month boundaries.
@@ -76,7 +79,7 @@ From the **repository root** (`green-bin-app/`):
 
 5. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
 
-The prediction endpoint sends the uploaded image to Cloudflare Workers AI, so response time depends on network availability and remote inference latency.
+The prediction endpoint still sends uploaded images to Cloudflare Workers AI. Only text generation moved to Gemini.
 
 ## Learn more
 

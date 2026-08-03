@@ -3,14 +3,13 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-import requests
-
+from services.gemini_text_client import GeminiTextError
 from services.guidance_llm_service import (
     DEFAULT_GUIDANCE_LLM_MODEL,
     _build_general_safe_prompt,
     _build_source_grounded_prompt,
     _general_safe_allowed_actions,
-    _groq_request,
+    _text_llm_request,
     try_generate_general_safe_guidance,
     try_generate_source_grounded_guidance,
     validate_guidance_basic,
@@ -55,11 +54,19 @@ def _official_result(
             "title": f"Official guidance for {chunk_id}",
             "source_name": "Official waste agency",
             "source_url": f"https://example.gov/{chunk_id}",
+            "source_role": "official_primary",
+            "claim_scope": ["jurisdiction_wide_rules", "public_programs"],
             "location_scope": location_scope,
             "generalizable": applicability_label == "official_supporting",
             "content": content,
             "source_excerpt": content,
             "source_claim": content,
+            "applies_to": {
+                "item_labels": ["television"],
+                "materials": ["electronics"],
+                "categories": ["electronics"],
+                "condition_flags": [],
+            },
             "decision_signals": {
                 "applicability_label": applicability_label,
                 "tavily_trust_level": (
@@ -107,11 +114,18 @@ def _payload(**overrides):
     return payload
 
 
+def _prompt_context(prompt):
+    context_start = prompt.index("{", prompt.index("INPUT CONTEXT"))
+    context_end = prompt.index("\n\nOUTPUT REQUIREMENTS:", context_start)
+    return json.loads(prompt[context_start:context_end])
+
+
 class BasicValidatorTests(unittest.TestCase):
-    def context(self, chunks=None, actions=None):
+    def context(self, chunks=None, actions=None, condition_flags=None):
         return {
             "allowed_disposal_actions": actions or {"drop-off"},
             "retrieved_chunks": chunks or [_chunk()],
+            "condition_flags": condition_flags or [],
         }
 
     def test_valid_short_output_is_accepted(self):
@@ -125,11 +139,106 @@ class BasicValidatorTests(unittest.TestCase):
     def test_empty_prep_steps_are_accepted_without_filler(self):
         validated, errors = validate_guidance_basic(
             _payload(prep_steps=[], next_step="Set the cart out for scheduled collection."),
-            self.context(),
+            self.context(
+                chunks=[
+                    _chunk(
+                        claim="County battery collection is for residents only. Appointments are required on Saturdays."
+                    )
+                ]
+            ),
         )
         self.assertEqual(errors, [])
         self.assertEqual(validated["prep_steps"], [])
         self.assertEqual(validated["steps"], ["Set the cart out for scheduled collection."])
+
+    def test_structured_sections_remove_duplicate_routes_and_normalize_no_preparation(self):
+        validated, errors = validate_guidance_basic(
+            {
+                "summary": {
+                    "action_type": "drop-off",
+                    "destination": "County battery collection site",
+                    "qualifier": "Residents only.",
+                },
+                "preparation": {
+                    "required": True,
+                    "steps": [
+                        "Take it to the County battery collection site.",
+                        "Take it to the County battery collection site.",
+                    ],
+                    "no_preparation_message": None,
+                },
+                "important_notes": [
+                    "Residents only.",
+                    "Appointments are required on Saturdays.",
+                ],
+                "reasoning": "Batteries use a dedicated collection route.",
+                "references": [],
+            },
+            self.context(
+                chunks=[
+                    _chunk(
+                        claim="County battery collection is for residents only. Appointments are required on Saturdays."
+                    )
+                ]
+            ),
+        )
+
+        self.assertEqual(errors, [])
+        structured = validated["structured_guidance"]
+        self.assertEqual(structured["preparation"]["steps"], [])
+        self.assertFalse(structured["preparation"]["required"])
+        self.assertEqual(
+            structured["preparation"]["no_preparation_message"],
+            None,
+        )
+        self.assertEqual(
+            structured["important_notes"],
+            ["Appointments are required on Saturdays."],
+        )
+
+    def test_structured_references_are_limited_to_retrieved_sources(self):
+        source = _chunk()
+        validated, errors = validate_guidance_basic(
+            {
+                "summary": {
+                    "action_type": "drop-off",
+                    "destination": "An approved electronics site",
+                    "qualifier": None,
+                },
+                "preparation": {
+                    "required": False,
+                    "steps": [],
+                    "no_preparation_message": "No special preparation needed.",
+                },
+                "important_notes": [],
+                "reasoning": "The source directs electronics to collection sites.",
+                "references": [
+                    {
+                        "source_title": "Paraphrased title",
+                        "url": source["source_url"],
+                        "supports_claim": "Electronics collection is supported.",
+                    },
+                    {
+                        "source_title": "Invented source",
+                        "url": "https://invented.example/claim",
+                        "supports_claim": "An unsupported claim.",
+                    },
+                ],
+            },
+            self.context(chunks=[source]),
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            validated["structured_guidance"]["references"],
+            [
+                {
+                    "source_title": source["title"],
+                    "url": source["source_url"],
+                    "supports_claim": "Electronics collection is supported.",
+                }
+            ],
+        )
 
     def test_style_imperfections_are_not_rejected(self):
         validated, errors = validate_guidance_basic(
@@ -143,13 +252,15 @@ class BasicValidatorTests(unittest.TestCase):
         self.assertIsNotNone(validate_guidance_basic(_payload(summary="x" * 240), self.context())[0])
         self.assertIn("summary_too_long", validate_guidance_basic(_payload(summary="x" * 241), self.context())[1])
 
-    def test_duplicate_steps_do_not_trigger_semantic_rejection(self):
+    def test_obvious_duplicate_steps_are_removed_without_rejection(self):
         validated, errors = validate_guidance_basic(
             _payload(steps=["Use electronics drop-off!", " use   electronics dropoff ", "Use electronics drop-off."]),
             self.context(),
         )
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
+        self.assertEqual(validated["prep_steps"], [])
+        self.assertEqual(validated["steps"], ["Use electronics drop-off."])
 
     def test_near_duplicates_are_allowed(self):
         validated, errors = validate_guidance_basic(
@@ -204,6 +315,53 @@ class BasicValidatorTests(unittest.TestCase):
         )
         self.assertIsNotNone(validated)
         self.assertEqual(errors, [])
+
+    def test_named_route_text_is_preserved(self):
+        validated, errors = validate_guidance_basic(
+            _payload(
+                summary="River County Device Recovery is the supported local route.",
+                next_step="Schedule drop-off with River County Device Recovery.",
+            ),
+            self.context(),
+        )
+        self.assertEqual(errors, [])
+        self.assertIn("River County Device Recovery", validated["summary"])
+        self.assertIn("River County Device Recovery", validated["next_step"])
+
+    def test_reuse_advice_is_removed_only_for_explicit_conflicting_conditions(self):
+        payload = _payload(
+            prep_steps=["Donate the device if another person can use it.", "Wipe dust from the case."],
+            alternatives=["Reuse it through a community exchange."],
+        )
+        unknown, _ = validate_guidance_basic(payload, self.context())
+        broken, _ = validate_guidance_basic(
+            payload,
+            self.context(condition_flags=["broken"]),
+        )
+        self.assertEqual(unknown["prep_steps"], ["Wipe dust from the case."])
+        self.assertEqual(unknown["alternatives"], payload["alternatives"])
+        self.assertEqual(broken["prep_steps"], ["Wipe dust from the case."])
+        self.assertEqual(broken["alternatives"], [])
+
+    def test_only_known_generic_unsupported_warnings_are_removed(self):
+        validated, errors = validate_guidance_basic(
+            _payload(
+                warnings=[
+                    "Check local rules.",
+                    "Appointments are required for Saturday drop-off.",
+                ]
+            ),
+            self.context(
+                chunks=[
+                    _chunk(claim="Appointments are required for Saturday drop-off.")
+                ]
+            ),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            validated["warnings"],
+            ["Appointments are required for Saturday drop-off."],
+        )
 
     def test_negated_battery_safety_steps_are_allowed(self):
         validated, errors = validate_guidance_basic(
@@ -272,9 +430,8 @@ class GenerationFlowTests(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {
             "ENABLE_LLM_GUIDANCE": "true",
-            "GUIDANCE_LLM_PROVIDER": "groq",
-            "GUIDANCE_LLM_MODEL": DEFAULT_GUIDANCE_LLM_MODEL,
-            "GROQ_API_KEY": "test-key",
+            "GEMINI_TEXT_MODEL": DEFAULT_GUIDANCE_LLM_MODEL,
+            "GEMINI_API_KEY": "test-key",
         }, clear=False)
         self.env.start()
 
@@ -288,7 +445,7 @@ class GenerationFlowTests(unittest.TestCase):
             visual_evidence=None, candidates=[], location=None, retrieval_results=[_result(_chunk())],
         )
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_seattle_battery_regression_keeps_supported_local_details(self, request):
         local_evidence = (
             "Seattle residents may use city household-battery drop-off for alkaline, "
@@ -339,12 +496,14 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertNotIn("search", " ".join(guidance["steps"] + guidance["alternatives"]).casefold())
         self.assertNotIn("green bin", json.dumps(guidance).casefold())
         prompt = request.call_args.args[0]
-        self.assertIn(local_evidence, prompt)
-        self.assertIn('"evidence_priority": "exact_local"', prompt)
+        for sentence in local_evidence.split(". "):
+            self.assertIn(sentence.rstrip("."), prompt)
+        self.assertIn('"jurisdiction": "Seattle, Washington"', prompt)
+        self.assertNotIn('"evidence_priority"', prompt)
         self.assertIn("supported programs, pickup services, fees, limits", prompt)
         self.assertIn("Never mention Green Bin, the app, buttons, screens", prompt)
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_local_detail_handling_spans_categories_and_jurisdictions(self, request):
         cases = [
             {
@@ -439,11 +598,12 @@ class GenerationFlowTests(unittest.TestCase):
                 guidance = result["guidance"]
                 self.assertEqual(guidance["prep_steps"], case["response"]["prep_steps"])
                 self.assertEqual(guidance["next_step"], case["response"]["next_step"])
-                self.assertIn(case["evidence"], request.call_args.args[0])
+                first_evidence_sentence = case["evidence"].split(". ", 1)[0]
+                self.assertIn(first_evidence_sentence, request.call_args.args[0])
                 self.assertNotIn("green bin", json.dumps(guidance).casefold())
                 self.assertNotIn("search online", json.dumps(guidance).casefold())
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_exact_local_evidence_is_prioritized_before_state_and_federal(self, request):
         request.return_value = json.dumps(
             {
@@ -505,15 +665,177 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
         prompt = request.call_args.args[0]
-        self.assertLess(prompt.index('"id": "city-tv"'), prompt.index('"id": "state-tv"'))
-        self.assertLess(prompt.index('"id": "county-tv"'), prompt.index('"id": "state-tv"'))
-        self.assertNotIn('"id": "federal-tv"', prompt)
+        self.assertLess(
+            prompt.index("Omaha electronics collection accepts intact televisions."),
+            prompt.index("Nebraska statewide electronics information."),
+        )
+        self.assertLess(
+            prompt.index("Douglas County accepts televisions with a two-unit household limit."),
+            prompt.index("Nebraska statewide electronics information."),
+        )
+        self.assertNotIn("Federal electronics stewardship overview.", prompt)
+        self.assertNotIn('"id"', prompt)
         self.assertEqual(
             result["guidance"]["guidance_metadata"]["retrieved_chunk_ids"],
             ["city-tv", "county-tv", "state-tv"],
         )
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
+    def test_final_cloudflare_prompt_uses_compact_deduplicated_sources(self, request):
+        request.return_value = json.dumps(
+            _payload(
+                summary="Use the supported local electronics collection route.",
+                prep_steps=["Keep the device intact."],
+                next_step="Use the local electronics collection program.",
+            )
+        )
+        repeated_rule = "Residents may use the electronics collection program."
+        primary = _official_result(
+            "primary-source",
+            content=(
+                f"{repeated_rule} [...] {repeated_rule} [...] "
+                "Appointments are required on weekends."
+            ),
+            action="Drop-off",
+            applicability_label="city_exact",
+            location_scope="Lakewood, Colorado",
+            score=20.0,
+        )
+        primary["chunk"].update(
+            {
+                "source_url": "https://example.gov/program/electronics?utm_source=test",
+                "section": "Accepted Items",
+                "source_excerpt": "LONG EXCERPT THAT MUST NOT ENTER THE PROMPT",
+                "source_claim": "DUPLICATE CLAIM THAT MUST NOT ENTER THE PROMPT",
+                "raw_content": "RAW WEBPAGE MARKER THAT MUST STAY OUTSIDE CLOUDFLARE_GEMMA",
+                "limitations": ["Residents only."],
+                "warnings": ["Keep devices intact."],
+                "dynamic_source": "tavily",
+                "decision_signals": {
+                    "source_context_extraction_reasons": ["selection reason"],
+                    "source_context_original_chars": 9000,
+                    "source_context_final_chars": 300,
+                },
+            }
+        )
+        primary["source_conditions"] = {
+            "required": ["resident"],
+            "confirmed": ["resident"],
+            "missing": [],
+            "contradicted": [],
+        }
+        duplicate_url = _official_result(
+            "duplicate-url",
+            content="DUPLICATE URL CONTENT MUST NOT ENTER THE PROMPT.",
+            action="Drop-off",
+            applicability_label="city_exact",
+            location_scope="Lakewood, Colorado",
+            score=19.0,
+        )
+        duplicate_url["chunk"]["source_url"] = (
+            "https://www.example.gov/program/electronics/?tracking=duplicate#details"
+        )
+        empty = _official_result(
+            "empty-source",
+            content="N/A",
+            action="Drop-off",
+            applicability_label="city_exact",
+            location_scope="Lakewood, Colorado",
+            score=30.0,
+        )
+        county = _official_result(
+            "county-source",
+            content="County residents may use the staffed electronics drop-off.",
+            action="Drop-off",
+            applicability_label="county_exact",
+            location_scope="Jefferson County, Colorado",
+            score=18.0,
+        )
+        state = _official_result(
+            "state-source",
+            content="State guidance allows electronics collection through approved programs.",
+            action="Drop-off",
+            applicability_label="statewide_rule",
+            location_scope="Colorado",
+            score=17.0,
+        )
+        fourth = _official_result(
+            "fourth-source",
+            content="A fourth useful source must remain outside the three-source prompt limit.",
+            action="Drop-off",
+            applicability_label="official_supporting",
+            location_scope="United States",
+            score=16.0,
+        )
+        retrieval_results = [empty, primary, duplicate_url, county, state, fourth]
+        full_snapshot = json.dumps(retrieval_results, sort_keys=True)
+
+        with patch(
+            "services.guidance_llm_service._log_source_grounded_context"
+        ) as log_context:
+            result = try_generate_source_grounded_guidance(
+                recognized_item="Portable media player",
+                normalized_item_label="Portable media player",
+                material="Electronics",
+                broad_category="electronics",
+                condition_flags=[],
+                special_flags=["electronics"],
+                visual_evidence=None,
+                candidates=[],
+                location={"city": "Lakewood", "state": "Colorado"},
+                retrieval_results=retrieval_results,
+            )
+
+        prompt = request.call_args.args[0]
+        prompt_sources = _prompt_context(prompt)["retrieved_chunks"]
+        self.assertEqual(len(prompt_sources), 3)
+        self.assertEqual(prompt.count(repeated_rule), 1)
+        self.assertNotIn("DUPLICATE URL CONTENT", prompt)
+        self.assertNotIn("RAW WEBPAGE MARKER", prompt)
+        self.assertNotIn("LONG EXCERPT", prompt)
+        self.assertNotIn("DUPLICATE CLAIM", prompt)
+        self.assertIn("https://example.gov/program/electronics?utm_source=test", prompt)
+        for forbidden_field in (
+            "id",
+            "section",
+            "source_excerpt",
+            "source_claim",
+            "matched_fields",
+            "decision_signals",
+            "evidence_priority",
+            "source_context_extraction_reasons",
+            "source_context_original_chars",
+            "source_context_final_chars",
+            "score",
+        ):
+            self.assertNotIn(forbidden_field, prompt_sources[0])
+        self.assertEqual(prompt_sources[0]["source_role"], "official_primary")
+        self.assertEqual(
+            prompt_sources[0]["source_url"],
+            "https://example.gov/program/electronics?utm_source=test",
+        )
+        self.assertEqual(
+            prompt_sources[0]["claim_scope"],
+            ["jurisdiction_wide_rules", "public_programs"],
+        )
+        self.assertEqual(prompt_sources[0]["jurisdiction"], "Lakewood, Colorado")
+        self.assertEqual(prompt_sources[0]["conditions"]["confirmed"], ["resident"])
+        self.assertEqual(prompt_sources[0]["limitations"], ["Residents only."])
+        self.assertEqual(json.dumps(retrieval_results, sort_keys=True), full_snapshot)
+        logged_full_chunks = log_context.call_args.args[0]
+        self.assertEqual(logged_full_chunks[0]["source_url"], primary["chunk"]["source_url"])
+        self.assertIn("raw_content", logged_full_chunks[0])
+        metadata = result["guidance"]["guidance_metadata"]
+        self.assertEqual(
+            metadata["retrieved_chunk_ids"],
+            ["primary-source", "county-source", "state-source"],
+        )
+        self.assertEqual(
+            metadata["source_urls"][0],
+            "https://example.gov/program/electronics?utm_source=test",
+        )
+
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_conditional_chunk_is_prompt_context_not_main_action_authority(self, request):
         request.return_value = json.dumps(
             _payload(
@@ -567,20 +889,21 @@ class GenerationFlowTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(result["guidance"]["disposal_action"], "trash")
+        self.assertIsNone(result["guidance"])
+        self.assertEqual(result["failure_reason"], "unsupported_disposal_action")
         prompt = request.call_args.args[0]
         self.assertIn('"applicability": "conditional"', prompt)
-        self.assertIn('"check local guidance"', prompt)
-        self.assertIn('"trash"', prompt)
+        self.assertIn('"allowed_disposal_actions": ["recycle"]', prompt)
+        self.assertNotIn('"trash"', prompt)
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_original_safe_output_has_original_path(self, request):
         request.return_value = json.dumps(_payload())
         guidance = self.source_call()["guidance"]
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
         request.assert_called_once()
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_duplicate_reaches_response_without_repair(self, request):
         request.return_value = json.dumps(_payload(steps=["Use drop-off.", "Use drop-off."]))
         result = self.source_call()
@@ -588,14 +911,14 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIsNotNone(result["guidance"])
         self.assertIsNone(result["failure_reason"])
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_style_imperfection_does_not_repair_or_fallback(self, request):
         request.return_value = json.dumps(_payload(summary="Drop-off.", steps=["Backup maybe", "Keep charger nearby"]))
         guidance = self.source_call()["guidance"]
         request.assert_called_once()
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_source_name_warning_does_not_trigger_repair(self, request):
         request.return_value = json.dumps(
             _payload(
@@ -613,7 +936,7 @@ class GenerationFlowTests(unittest.TestCase):
             "original_llm",
         )
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_keyword_output_is_not_replaced_by_validator(self, request):
         request.return_value = json.dumps(_payload(steps=["Disassemble the laptop.", "Use drop-off."]))
         with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
@@ -624,7 +947,10 @@ class GenerationFlowTests(unittest.TestCase):
         combined = " ".join(logs.output)
         self.assertIn("validation succeeded", combined)
 
-    @patch("services.guidance_llm_service._groq_request", side_effect=requests.Timeout())
+    @patch(
+        "services.guidance_llm_service._text_llm_request",
+        side_effect=GeminiTextError("timeout", "timed out"),
+    )
     def test_request_failure_returns_no_guidance_without_repair(self, request):
         with self.assertLogs("services.guidance_llm_service", level="INFO") as logs:
             result = self.source_call()
@@ -633,7 +959,7 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertEqual(result["failure_reason"], "timeout")
         self.assertIn("result=request_exception", " ".join(logs.output))
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_invalid_json_fails_without_repair(self, request):
         request.return_value = "not json"
         result = self.source_call()
@@ -653,12 +979,12 @@ class GenerationFlowTests(unittest.TestCase):
         )
         self.assertLess(
             prompt.index('"retrieved_chunks"'),
-            prompt.index('"disposal_action": ""'),
+            prompt.index('"summary": {"action_type": ""'),
         )
-        self.assertTrue(prompt.rstrip().endswith('  "confidence": ""\n}'))
-        self.assertIn('"prep_steps": []', prompt)
-        self.assertIn('"next_step": ""', prompt)
-        self.assertIn('"alternatives": []', prompt)
+        self.assertTrue(prompt.rstrip().endswith('  "references": [{"source_title": "", "url": "", "supports_claim": ""}]\n}'))
+        self.assertIn('"preparation": {"required": false, "steps": []', prompt)
+        self.assertIn('"important_notes": []', prompt)
+        self.assertIn('"reasoning": ""', prompt)
         self.assertNotIn('"sources_used"', prompt)
         self.assertIn("You are a source-grounded disposal guidance writer.", prompt)
         self.assertIn("Do not tell the user to search for a facility.", prompt)
@@ -692,7 +1018,7 @@ class GenerationFlowTests(unittest.TestCase):
             prompt,
         )
         self.assertIn('"recognized_item": "Opened single-use chip bag"', prompt)
-        self.assertIn('"visual_evidence": "Crinkly snack pouch with crumbs."', prompt)
+        self.assertNotIn('"visual_evidence"', prompt)
 
     def test_source_prompt_has_no_object_specific_destination_example(self):
         prompt = _build_source_grounded_prompt(
@@ -710,7 +1036,7 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "- next_step: One concrete disposal action supported by the accepted evidence. Describe the destination or collection route without adding item types that are not present in the current recognition or accepted evidence. Do not describe the interface.",
+            "- summary.destination: Only where it goes, using a supported program, service, collection route, or destination.",
             prompt,
         )
         self.assertNotIn("computer peripherals", prompt)
@@ -751,7 +1077,7 @@ class GenerationFlowTests(unittest.TestCase):
         self.assertIn("State provider claims as provider-specific, never as citywide rules.", prompt)
         self.assertIn("cannot by itself support a strong local rule", prompt)
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_discovery_only_result_is_not_sent_to_guidance_llm(self, request):
         discovery_chunk = _chunk(
             action="Drop-off",
@@ -816,9 +1142,9 @@ class GenerationFlowTests(unittest.TestCase):
         )
         self.assertLess(
             prompt.index('"recognized_item"'),
-            prompt.index('"disposal_action": ""'),
+            prompt.index('"summary": {"action_type": ""'),
         )
-        self.assertTrue(prompt.rstrip().endswith('  "confidence": "low"\n}'))
+        self.assertTrue(prompt.rstrip().endswith('  "references": []\n}'))
         self.assertIn("No retrieved disposal evidence is available.", prompt)
         self.assertIn("Use household trash only for ordinary low-risk disposable items", prompt)
         self.assertIn('"allowed_disposal_actions": ["trash"]', prompt)
@@ -863,25 +1189,33 @@ class GenerationFlowTests(unittest.TestCase):
             {"check local guidance"},
         )
 
-    @patch("services.guidance_llm_service.requests.post")
-    def test_groq_request_uses_configured_model_and_json_mode(self, post):
-        response = Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {"choices": [{"message": {"content": '{"ok":true}'}}]}
-        post.return_value = response
-        settings = {"api_key": "secret", "model": DEFAULT_GUIDANCE_LLM_MODEL, "timeout_seconds": 7, "provider": "groq"}
-        self.assertEqual(_groq_request("prompt", settings=settings, mode="test"), '{"ok":true}')
-        sent = post.call_args.kwargs
-        self.assertEqual(sent["json"]["model"], "llama-3.3-70b-versatile")
-        self.assertEqual(sent["json"]["response_format"], {"type": "json_object"})
+    @patch(
+        "services.guidance_llm_service.gemini_text_client.generate_text",
+        return_value='{"ok":true}',
+    )
+    def test_text_llm_request_uses_guidance_json_schema(self, generate_text):
+        settings = {"model": DEFAULT_GUIDANCE_LLM_MODEL, "provider": "google_ai_studio"}
+        self.assertEqual(_text_llm_request("prompt", settings=settings, mode="test"), '{"ok":true}')
+        sent = generate_text.call_args.kwargs
+        self.assertEqual(sent["use_case"], "test")
+        self.assertIn("summary", sent["response_schema"]["properties"])
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_general_safe_output_keeps_public_shape(self, request):
         request.return_value = json.dumps({
-            "disposal_action": "donate/reuse", "summary": "Donate this drum if it still plays.",
-            "prep_steps": ["Wipe dust from the shell."],
-            "next_step": "Donate it through an accepted reuse program if it is playable.",
-            "alternatives": [], "warnings": [], "confidence": "low",
+            "summary": {
+                "action_type": "donate/reuse",
+                "destination": "An accepted reuse program",
+                "qualifier": "Only if it still plays.",
+            },
+            "preparation": {
+                "required": True,
+                "steps": ["Wipe dust from the shell."],
+                "no_preparation_message": None,
+            },
+            "important_notes": [],
+            "reasoning": "A playable drum can remain in use instead of becoming waste.",
+            "references": [],
         })
         result = try_generate_general_safe_guidance(
             recognized_item="Drum", normalized_item_label="Drum", material="Wood",
@@ -891,11 +1225,11 @@ class GenerationFlowTests(unittest.TestCase):
         guidance = result["guidance"]
         self.assertEqual(guidance["guidance_metadata"]["final_generation_path"], "original_llm")
         self.assertEqual(
-            {"disposal_action", "material_code", "impact_level", "summary", "prep_steps", "next_step", "alternatives", "steps", "guidance_source", "guidance_metadata"},
+            {"disposal_action", "material_code", "impact_level", "summary", "prep_steps", "next_step", "alternatives", "steps", "structured_guidance", "guidance_source", "guidance_metadata"},
             set(guidance),
         )
 
-    @patch("services.guidance_llm_service._groq_request")
+    @patch("services.guidance_llm_service._text_llm_request")
     def test_general_safe_generation_uses_trash_for_single_use_packaging(self, request):
         request.return_value = json.dumps({
             "disposal_action": "trash",

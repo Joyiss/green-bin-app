@@ -55,6 +55,197 @@ import {
   saveDevelopmentLocationSettings,
   shouldShowDevelopmentLocation,
 } from '../app/development-location.ts';
+import { scannerChromeVisibility } from '../app/confident-result-state.ts';
+import {
+  buildResultSheetPresentation,
+  resultSheetMaxHeight,
+  sourceUrlKey,
+  splitGuidanceStep,
+} from '../app/result-sheet-model.ts';
+
+function resultFixture(overrides = {}) {
+  return {
+    item: 'Portable speaker',
+    category: 'Electronics',
+    status: 'confident',
+    disposal_action: 'drop-off',
+    material_code: null,
+    impact_level: 'Source-Grounded Guidance',
+    summary: 'Use River County Device Recovery for drop-off.',
+    prep_steps: ['Preparation: Keep the device intact.'],
+    next_step: 'Schedule a drop-off with River County Device Recovery.',
+    alternatives: [],
+    steps: [
+      'Preparation: Keep the device intact.',
+      'Schedule a drop-off with River County Device Recovery.',
+    ],
+    warnings: [],
+    guidance_metadata: {
+      confidence: 'high',
+      accepted_sources: [
+        {
+          title: 'River County Device Recovery',
+          organization: 'River County Device Recovery',
+          url: 'http://provider.example/takeback?campaign=one',
+          source_role: 'direct_service_provider',
+          program_name: 'River County Device Recovery Program',
+          claim_scope: ['own_accepted_items', 'own_services'],
+          support_description: 'Accepts small devices by appointment.',
+          jurisdiction: { location_scope: 'River City, Ohio' },
+        },
+        {
+          title: 'Duplicate source',
+          url: 'https://www.provider.example/takeback/#details',
+          source_role: 'direct_service_provider',
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
+test('result presentation preserves named routes and conservative step text', () => {
+  const presentation = buildResultSheetPresentation(resultFixture(), {
+    location: { city: 'River City', state: 'Ohio' },
+    showNearbyButton: true,
+  });
+
+  assert.match(presentation.bestOption, /River County Device Recovery/);
+  assert.equal(presentation.destinationLabel, 'River County Device Recovery Program');
+  assert.equal(presentation.keyQualifier, 'Keep the device intact.');
+  assert.deepEqual(presentation.preparationSteps, [{
+    title: 'Preparation',
+    body: 'Keep the device intact.',
+  }]);
+  assert.deepEqual(presentation.steps[0], {
+    title: 'Preparation',
+    body: 'Keep the device intact.',
+  });
+  assert.deepEqual(
+    splitGuidanceStep('Keep the original guidance exactly as written'),
+    { title: 'Keep the original guidance exactly as written' },
+  );
+  assert.equal(presentation.primaryAction?.label, 'Find Drop-Off Options');
+  assert.equal(presentation.primaryAction?.behavior, 'nearby');
+});
+
+test('result metadata prefers the disposal stream over casing material', () => {
+  const presentation = buildResultSheetPresentation(
+    resultFixture({
+      category: 'Special waste',
+      recognition_details: {
+        normalized: {
+          disposal_category: 'Electronics',
+          material_category: 'Plastic',
+        },
+      },
+    }),
+    { location: { city: 'River City', state: 'Ohio' } },
+  );
+  assert.deepEqual(presentation.status[0], { label: 'Category', value: 'Electronics' });
+});
+
+test('references deduplicate comparison URLs while preserving the original link', () => {
+  assert.equal(
+    sourceUrlKey('http://provider.example/takeback?campaign=one'),
+    sourceUrlKey('https://www.provider.example/takeback/#details'),
+  );
+  const presentation = buildResultSheetPresentation(resultFixture());
+  assert.equal(presentation.references.length, 1);
+  assert.equal(
+    presentation.references[0].url,
+    'http://provider.example/takeback?campaign=one',
+  );
+  assert.equal(presentation.references[0].role, 'Local service provider');
+  assert.equal(
+    presentation.references[0].description,
+    'Accepts small devices by appointment.',
+  );
+});
+
+test('route-specific primary labels and instruction behavior are deterministic', () => {
+  const cases = [
+    ['drop-off', 'Use the staffed site.', true, 'Find Drop-Off Options', 'nearby'],
+    ['recycle', 'Schedule pickup for collection.', true, 'View Collection Options', 'nearby'],
+    ['donate/reuse', 'Donate through the reuse program.', true, 'Find Reuse Options', 'nearby'],
+    ['recycle', 'Place it in the curbside cart.', false, 'View Curbside Instructions', 'scroll_steps'],
+    ['compost', 'Place it in the organics cart.', false, 'View Compost Instructions', 'scroll_steps'],
+    ['trash', 'Place it in household trash.', false, 'View Disposal Instructions', 'scroll_steps'],
+  ];
+  for (const [action, nextStep, nearby, label, behavior] of cases) {
+    const presentation = buildResultSheetPresentation(
+      resultFixture({ disposal_action: action, next_step: nextStep }),
+      { showNearbyButton: nearby },
+    );
+    assert.equal(presentation.primaryAction?.label, label);
+    assert.equal(presentation.primaryAction?.behavior, behavior);
+  }
+});
+
+test('unsupported result-sheet sections and actions are omitted', () => {
+  const presentation = buildResultSheetPresentation(
+    resultFixture({
+      disposal_action: 'check local guidance',
+      guidance_metadata: {},
+      next_step: null,
+      prep_steps: [],
+      steps: [],
+      warnings: [],
+    }),
+  );
+  assert.equal(presentation.primaryAction, null);
+  assert.equal(presentation.references.length, 0);
+  assert.equal(presentation.warnings.length, 0);
+  assert.equal(presentation.evidence, null);
+});
+
+test('result sheet height uses nearly all safe available space', () => {
+  assert.equal(resultSheetMaxHeight(844, 44, 96), 692);
+});
+
+test('confident result hides scanner chrome and closing restores it', () => {
+  assert.deepEqual(scannerChromeVisibility('confident'), {
+    showBottomTabs: false,
+    showCamera: false,
+    showDevelopmentLocation: false,
+  });
+  assert.deepEqual(scannerChromeVisibility('idle'), {
+    showBottomTabs: true,
+    showCamera: true,
+    showDevelopmentLocation: true,
+  });
+  assert.deepEqual(scannerChromeVisibility('uncertain'), {
+    showBottomTabs: true,
+    showCamera: true,
+    showDevelopmentLocation: true,
+  });
+});
+
+test('full-screen result uses loaded Fredoka and Inter faces and hides the custom tab bar', async () => {
+  const [typographySource, resultSource, scannerSource, tabLayoutSource] = await Promise.all([
+    readFile(new URL('../constants/typography.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../components/confident-result-screen.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/(tabs)/index.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../app/(tabs)/_layout.tsx', import.meta.url), 'utf8'),
+  ]);
+  for (const [alias, source] of [
+    ['Fredoka-Medium', 'Fredoka_500Medium'],
+    ['Fredoka-SemiBold', 'Fredoka_600SemiBold'],
+    ['Inter-Regular', 'Inter_400Regular'],
+    ['Inter-Medium', 'Inter_500Medium'],
+    ['Inter-SemiBold', 'Inter_600SemiBold'],
+  ]) {
+    assert.match(typographySource, new RegExp(`FONT_SOURCES\\['${alias}'\\] = ${source}`));
+  }
+  assert.match(resultSource, /FREDOKA_TEXT_STYLES/);
+  assert.match(resultSource, /INTER_TEXT_STYLES/);
+  assert.doesNotMatch(resultSource, /MANROPE_TEXT_STYLES/);
+  assert.doesNotMatch(resultSource, /SourceSans|serif/);
+  assert.match(resultSource, /warning-outline/);
+  assert.match(scannerSource, /scannerChrome\.showCamera/);
+  assert.match(scannerSource, /scannerChrome\.showDevelopmentLocation/);
+  assert.match(tabLayoutSource, /hidden \? null : <BottomNavBar/);
+});
 
 test('jurisdiction detection requires a Georgia county-level Forsyth match', () => {
   assert.equal(
@@ -688,7 +879,7 @@ test('prediction contract preserves safe structured local guidance', () => {
           accessed: '2026-07-26',
         },
         {
-          title: 'Unsafe source',
+          title: 'HTTP source',
           url: 'http://unsafe.example.test',
         },
       ],
@@ -709,11 +900,61 @@ test('prediction contract preserves safe structured local guidance', () => {
   assert.equal(prediction.jurisdiction_id, 'forsyth_county_ga');
   assert.equal(prediction.local_guidance?.rule_id, 'fc_electronics');
   assert.equal(prediction.local_guidance?.fees?.line_items[0].amount, 2);
-  assert.equal(prediction.local_guidance?.sources.length, 1);
+  assert.equal(prediction.local_guidance?.sources.length, 2);
+  assert.equal(
+    prediction.local_guidance?.sources[1].url,
+    'http://unsafe.example.test/',
+  );
   assert.equal(
     prediction.local_guidance?.destinations[0].location_id,
     'tolbert_street_center',
   );
+});
+
+test('structured guidance normalizes empty preparation and removes cross-section duplicates', () => {
+  const prediction = normalizePredictionResponse({
+    status: 'confident',
+    item: 'Battery',
+    category: 'Special waste',
+    disposal_action: 'drop-off',
+    material_code: null,
+    impact_level: 'Source-Grounded Guidance',
+    prep_steps: [],
+    next_step: 'County battery site',
+    alternatives: [],
+    steps: [],
+    guidance: {
+      summary: {
+        action_type: 'drop-off',
+        destination: 'County battery site',
+        qualifier: 'Residents only.',
+      },
+      preparation: {
+        required: true,
+        steps: ['County battery site', 'County battery site'],
+        no_preparation_message: null,
+      },
+      important_notes: ['Residents only.', 'Appointments are required.'],
+      reasoning: 'The county handles batteries through a dedicated collection route.',
+      references: [{
+        source_title: 'County battery program',
+        url: 'https://county.example/batteries',
+        supports_claim: 'Batteries are accepted at the county site.',
+      }],
+    },
+  });
+
+  assert.deepEqual(prediction.guidance?.preparation, {
+    required: false,
+    steps: [],
+    no_preparation_message: null,
+  });
+  assert.deepEqual(prediction.guidance?.important_notes, ['Appointments are required.']);
+  const presentation = buildResultSheetPresentation(prediction);
+  assert.equal(presentation.action, 'Drop off');
+  assert.equal(presentation.destinationLabel, 'County battery site');
+  assert.equal(presentation.noPreparationMessage, undefined);
+  assert.equal(presentation.evidence?.summary, prediction.guidance?.reasoning);
 });
 
 test('endpoint validators enforce acknowledgements and safe location defaults', () => {
@@ -766,6 +1007,15 @@ test('scan limit validation ignores malformed metadata', () => {
     },
   );
   assert.equal(normalizeScanLimitResponse({ error: 'other' }), null);
+});
+
+test('mobile predict requests allow at least 60 seconds', async () => {
+  const clientSource = await readFile(new URL('../api/client.ts', import.meta.url), 'utf8');
+  const match = clientSource.match(/PREDICT_TIMEOUT_MS\s*=\s*([0-9_]+)/);
+  assert.ok(match);
+  const timeoutMs = Number(match[1].replaceAll('_', ''));
+  assert.ok(timeoutMs >= 60_000);
+  assert.match(clientSource, /timeoutMs:\s*PREDICT_TIMEOUT_MS/);
 });
 
 test('safe GET policy retries one transient server failure', async () => {

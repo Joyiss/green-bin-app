@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { SECONDARY_TEXT_STYLES } from '@/constants/typography';
+import { INTER_TEXT_STYLES } from '@/constants/typography';
 
 type FeedbackAnswer = boolean | null;
 
@@ -67,7 +67,9 @@ export function ResultFeedback({
   return (
     <View style={styles.container}>
       <View style={styles.row}>
-        <Text style={styles.question}>Was the item identified correctly?</Text>
+        <Text maxFontSizeMultiplier={1.4} style={styles.question}>
+          Was the item identified correctly?
+        </Text>
         <AnswerButtons
           answer={itemAnswer}
           disabled={disabled}
@@ -77,7 +79,9 @@ export function ResultFeedback({
       </View>
       {showGuidanceQuestion ? (
         <View style={styles.row}>
-          <Text style={styles.question}>Was this disposal guidance helpful?</Text>
+          <Text maxFontSizeMultiplier={1.4} style={styles.question}>
+            Was this disposal guidance helpful?
+          </Text>
           <AnswerButtons
             answer={guidanceAnswer}
             disabled={disabled}
@@ -96,11 +100,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   container: {
-    borderTopColor: '#E8E4DE',
-    borderTopWidth: 1,
-    gap: 10,
-    marginTop: 4,
-    paddingTop: 14,
+    gap: 12,
   },
   iconButton: {
     alignItems: 'center',
@@ -123,12 +123,12 @@ const styles = StyleSheet.create({
     borderColor: '#050505',
   },
   question: {
-    color: '#333333',
+    color: '#4A4642',
     flex: 1,
-    fontSize: 13,
-    fontWeight: '700',
-    lineHeight: 18,
-    ...SECONDARY_TEXT_STYLES.bold,
+    fontSize: 15,
+    lineHeight: 21,
+    ...INTER_TEXT_STYLES.medium,
+    fontWeight: '500',
   },
   row: {
     alignItems: 'center',

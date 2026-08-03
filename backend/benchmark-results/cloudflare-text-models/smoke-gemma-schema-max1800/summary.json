@@ -1,0 +1,19 @@
+{
+  "overall": [
+    {
+      "model_label": "gemma_configured",
+      "mode": "schema",
+      "calls": 1,
+      "complete_rate": 0.0,
+      "schema_valid_rate": 0.0,
+      "hallucination_rate": 0.0,
+      "timeout_rate": 0.0,
+      "api_error_rate": 1.0,
+      "median_latency_ms": 21390.958500036504,
+      "p90_latency_ms": 21390.958500036504,
+      "worst_latency_ms": 21390.958500036504,
+      "estimated_cost_usd": 0.0006455,
+      "estimated_neurons": 58.682405
+    }
+  ]
+}

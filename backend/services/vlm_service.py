@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 
 import requests
 from dotenv import load_dotenv
@@ -36,6 +36,10 @@ except ImportError:
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
+
+IMAGE_RECOGNITION_TEMPORARILY_UNAVAILABLE = (
+    "Image recognition is temporarily unavailable. Please try again shortly."
+)
 
 CONFIDENT_THRESHOLD = 0.20
 MARGIN_THRESHOLD = 0.05
@@ -260,6 +264,55 @@ UNCERTAIN_SCORE_STEP = 0.02
 
 def _duration_ms(started: float) -> float:
     return (perf_counter() - started) * 1000
+
+
+class CloudflareVLMError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        message: str,
+        status_code: int | None = None,
+        response_body: str | None = None,
+        cloudflare_error_code: object | None = None,
+        cloudflare_error_message: str | None = None,
+        retry_after: str | None = None,
+        rate_limit_type: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_body = response_body
+        self.cloudflare_error_code = cloudflare_error_code
+        self.cloudflare_error_message = cloudflare_error_message
+        self.retry_after = retry_after
+        self.rate_limit_type = rate_limit_type
+
+    @property
+    def failure_type(self) -> str:
+        if self.status_code == 429 and self.rate_limit_type:
+            return f"cloudflare_429_{self.rate_limit_type}"
+        if self.status_code == 429:
+            return "cloudflare_429_unknown"
+        return "cloudflare_api_error"
+
+
+def _cloudflare_error_result_fields(exc: CloudflareVLMError) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "failure_type": exc.failure_type,
+        "error": (
+            IMAGE_RECOGNITION_TEMPORARILY_UNAVAILABLE
+            if exc.status_code == 429
+            else "Cloudflare Workers AI vision request failed."
+        ),
+    }
+    if exc.status_code is not None:
+        fields["cloudflare_status_code"] = exc.status_code
+    if exc.cloudflare_error_code is not None:
+        fields["cloudflare_error_code"] = exc.cloudflare_error_code
+    if exc.retry_after is not None:
+        fields["cloudflare_retry_after"] = exc.retry_after
+    if exc.rate_limit_type is not None:
+        fields["cloudflare_rate_limit_type"] = exc.rate_limit_type
+    return fields
 
 
 def _log_vlm_timing(stage: str, started: float, **fields: object) -> None:
@@ -876,6 +929,171 @@ def _extract_cloudflare_response_text(response_json: dict[str, object]) -> str:
     raise ValueError("Cloudflare Workers AI response did not include text output.")
 
 
+def _response_status_code(response: requests.Response) -> int:
+    status_code = getattr(response, "status_code", None)
+    return status_code if isinstance(status_code, int) else 200
+
+
+def _header_value(response: requests.Response, name: str) -> str | None:
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    try:
+        value = headers.get(name) or headers.get(name.lower()) or headers.get(name.title())
+    except AttributeError:
+        return None
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _safe_response_body_preview(value: object, *, max_chars: int = 2000) -> str:
+    text = "" if value is None else str(value)
+    if CLOUDFLARE_API_TOKEN:
+        text = text.replace(CLOUDFLARE_API_TOKEN, "[redacted]")
+    text = re.sub(
+        r'(?i)("?(?:authorization|api[_-]?token|token|secret|password)"?\s*[:=]\s*)("[^"]+"|\S+)',
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"data:image/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+",
+        "data:image/[redacted]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip() + "...[truncated]"
+
+
+def _cloudflare_error_details(response: requests.Response) -> tuple[object | None, str | None]:
+    try:
+        payload = response.json()
+    except Exception:
+        return None, None
+    return _cloudflare_error_details_from_payload(payload)
+
+
+def _cloudflare_error_details_from_payload(payload: object) -> tuple[object | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return None, None
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        code = error.get("code")
+        message = error.get("message")
+        return code, str(message).strip() if message is not None else None
+    return None, None
+
+
+def _json_preview(value: object) -> str:
+    try:
+        return _safe_response_body_preview(json.dumps(value, ensure_ascii=True, default=str))
+    except (TypeError, ValueError):
+        return _safe_response_body_preview(value)
+
+
+def _classify_cloudflare_429(
+    *,
+    cloudflare_error_code: object | None,
+    cloudflare_error_message: str | None,
+    response_body: str | None,
+) -> str:
+    text = " ".join(
+        str(value or "")
+        for value in (cloudflare_error_code, cloudflare_error_message, response_body)
+    ).casefold()
+    if (
+        "daily free allocation" in text
+        or ("daily" in text and "neuron" in text)
+        or ("quota" in text and ("neuron" in text or "daily" in text))
+        or "exhausted" in text
+    ):
+        return "daily_neuron_quota_exhausted"
+    if (
+        "requests per minute" in text
+        or "request per minute" in text
+        or "rpm" in text
+        or "too many requests" in text
+        or "rate limit" in text
+        or "ratelimit" in text
+    ):
+        return "request_per_minute_rate_limit"
+    if (
+        "capacity" in text
+        or "overloaded" in text
+        or "unavailable" in text
+        or "temporarily unavailable" in text
+        or "try again later" in text
+        or "model is busy" in text
+    ):
+        return "model_capacity_unavailable"
+    return "unknown_429"
+
+
+def _retry_backoff_seconds(retry_after: str | None) -> float:
+    if retry_after:
+        try:
+            parsed = float(retry_after)
+        except ValueError:
+            parsed = 1.0
+        return min(max(parsed, 0.5), 5.0)
+    return 1.0
+
+
+def _build_cloudflare_response_error(
+    response: requests.Response,
+    *,
+    request_label: str,
+    latency_ms: float,
+) -> CloudflareVLMError:
+    status_code = _response_status_code(response)
+    response_body = _safe_response_body_preview(getattr(response, "text", ""))
+    error_code, error_message = _cloudflare_error_details(response)
+    retry_after = _header_value(response, "retry-after")
+    rate_limit_type = (
+        _classify_cloudflare_429(
+            cloudflare_error_code=error_code,
+            cloudflare_error_message=error_message,
+            response_body=response_body,
+        )
+        if status_code == 429
+        else None
+    )
+    logger.warning(
+        "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+        CLOUDFLARE_AI_MODEL,
+        request_label,
+        latency_ms,
+        status_code,
+        error_code,
+        error_message,
+        retry_after,
+        rate_limit_type,
+        response_body,
+    )
+    message = (
+        IMAGE_RECOGNITION_TEMPORARILY_UNAVAILABLE
+        if status_code == 429
+        else "Cloudflare Workers AI vision request failed."
+    )
+    return CloudflareVLMError(
+        message=message,
+        status_code=status_code,
+        response_body=response_body,
+        cloudflare_error_code=error_code,
+        cloudflare_error_message=error_message,
+        retry_after=retry_after,
+        rate_limit_type=rate_limit_type,
+    )
+
+
 def _call_vision_model(
     image_base64: str,
     prompt_text: str,
@@ -907,15 +1125,37 @@ def _call_vision_model(
         max_tokens=max_tokens,
     )
 
-    request_started = perf_counter()
-    try:
-        response = requests.post(
-            _cloudflare_api_url(),
-            headers=headers,
-            json=payload,
-            timeout=60,
-        )
-    except Exception as exc:
+    response: requests.Response | None = None
+    last_error: CloudflareVLMError | None = None
+    for attempt in range(2):
+        request_started = perf_counter()
+        try:
+            response = requests.post(
+                _cloudflare_api_url(),
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+        except Exception as exc:
+            _log_vlm_timing(
+                "cloudflare_http_request",
+                request_started,
+                provider="cloudflare",
+                model=CLOUDFLARE_AI_MODEL,
+                request=request_label,
+                timeout_seconds=60,
+                proxy_env_present=any(
+                    os.getenv(name)
+                    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+                ),
+                result="exception",
+                error_type=type(exc).__name__,
+                attempt=attempt + 1,
+            )
+            raise
+
+        latency_ms = _duration_ms(request_started)
+        status_code = _response_status_code(response)
         _log_vlm_timing(
             "cloudflare_http_request",
             request_started,
@@ -927,29 +1167,64 @@ def _call_vision_model(
                 os.getenv(name)
                 for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
             ),
-            result="exception",
-            error_type=type(exc).__name__,
+            status_code=status_code,
+            attempt=attempt + 1,
         )
-        raise
-    else:
-        _log_vlm_timing(
-            "cloudflare_http_request",
-            request_started,
-            provider="cloudflare",
-            model=CLOUDFLARE_AI_MODEL,
-            request=request_label,
-            timeout_seconds=60,
-            proxy_env_present=any(
-                os.getenv(name)
-                for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
-            ),
-            status_code=getattr(response, "status_code", "unknown"),
+        if status_code < 400:
+            last_error = None
+            break
+
+        last_error = _build_cloudflare_response_error(
+            response,
+            request_label=request_label,
+            latency_ms=latency_ms,
         )
-    response.raise_for_status()
+        if status_code != 429 or attempt == 1:
+            raise last_error
+
+        backoff_seconds = _retry_backoff_seconds(last_error.retry_after)
+        logger.warning(
+            "cloudflare_vlm_retry provider=cloudflare model=%s use_case=%s status_code=%s rate_limit_type=%s retry_after=%s backoff_seconds=%.1f next_attempt=%s",
+            CLOUDFLARE_AI_MODEL,
+            request_label,
+            status_code,
+            last_error.rate_limit_type,
+            last_error.retry_after,
+            backoff_seconds,
+            attempt + 2,
+        )
+        sleep(backoff_seconds)
+
+    if response is None:
+        raise last_error or RuntimeError("Cloudflare Workers AI request did not return a response.")
 
     extraction_started = perf_counter()
     try:
         response_json = response.json()
+        if isinstance(response_json, dict) and response_json.get("success") is False:
+            error_code, error_message = _cloudflare_error_details_from_payload(response_json)
+            response_body = _json_preview(response_json)
+            status_code = _response_status_code(response)
+            logger.warning(
+                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+                CLOUDFLARE_AI_MODEL,
+                request_label,
+                _duration_ms(extraction_started),
+                status_code,
+                error_code,
+                error_message,
+                _header_value(response, "retry-after"),
+                None,
+                response_body,
+            )
+            raise CloudflareVLMError(
+                message="Cloudflare Workers AI vision request failed.",
+                status_code=status_code,
+                response_body=response_body,
+                cloudflare_error_code=error_code,
+                cloudflare_error_message=error_message,
+                retry_after=_header_value(response, "retry-after"),
+            )
         raw_output = _extract_cloudflare_response_text(response_json)
     except Exception as exc:
         _log_vlm_timing(
@@ -961,6 +1236,19 @@ def _call_vision_model(
             result="exception",
             error_type=type(exc).__name__,
         )
+        if not isinstance(exc, CloudflareVLMError):
+            logger.warning(
+                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+                CLOUDFLARE_AI_MODEL,
+                request_label,
+                _duration_ms(extraction_started),
+                _response_status_code(response),
+                None,
+                None,
+                _header_value(response, "retry-after"),
+                None,
+                _safe_response_body_preview(getattr(response, "text", "")),
+            )
         raise
     _log_vlm_timing(
         "cloudflare_response_extract",
@@ -1543,13 +1831,27 @@ def _detect_object_constrained(
                 result["primary_label"] = result["candidate_labels"][0]
 
     except Exception as exc:
-        print(f"Cloudflare Workers AI error: {exc}")
+        if isinstance(exc, CloudflareVLMError):
+            logger.warning(
+                "Constrained VLM request failed. failure_type=%s status_code=%s rate_limit_type=%s",
+                exc.failure_type,
+                exc.status_code,
+                exc.rate_limit_type,
+            )
+            extra_fields = _cloudflare_error_result_fields(exc)
+        else:
+            logger.warning(
+                "Constrained VLM request failed. failure_type=cloudflare_request_error error_type=%s",
+                type(exc).__name__,
+            )
+            extra_fields = {"error": str(exc), "failure_type": "cloudflare_request_error"}
+        print(f"Cloudflare Workers AI error: {extra_fields.get('error')}")
         return {
             "status": "unknown",
             "primary_label": "",
             "candidate_labels": [],
             "raw_output": "",
-            "error": str(exc),
+            **extra_fields,
         }
 
     print(f"Cloudflare Vision parsed result: {result!r}")
@@ -1616,7 +1918,11 @@ def _detect_object_open(
             candidate_count=len(result.get("candidates", [])),
         )
     except Exception as exc:
-        if isinstance(exc, requests.RequestException):
+        cloudflare_fields: dict[str, object] = {}
+        if isinstance(exc, CloudflareVLMError):
+            failure_type = exc.failure_type
+            cloudflare_fields = _cloudflare_error_result_fields(exc)
+        elif isinstance(exc, requests.RequestException):
             failure_type = "cloudflare_transport_error"
         elif isinstance(exc, ValueError):
             failure_type = "cloudflare_response_error"
@@ -1629,13 +1935,18 @@ def _detect_object_open(
             failure_type,
             type(exc).__name__,
         )
-        print(f"Cloudflare Workers AI error: {exc}")
+        fallback_error = cloudflare_fields.get("error") or str(exc)
+        print(f"Cloudflare Workers AI error: {fallback_error}")
         return _unknown_open_detection_result(
             "",
-            error=str(exc),
+            error=str(fallback_error),
             failure_type=failure_type,
             parse_mode="request_failed",
-        )
+        ) | {
+            key: value
+            for key, value in cloudflare_fields.items()
+            if key not in {"error", "failure_type"}
+        }
 
     print(f"Cloudflare Vision open parsed result: {result!r}")
     return result

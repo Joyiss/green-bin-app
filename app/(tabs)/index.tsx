@@ -49,7 +49,8 @@ import {
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 import { ResultSheet } from '@/components/result-sheet';
 import { ResultFeedback } from '@/components/result-feedback';
-import { LocalGuidanceDetails } from '@/components/local-guidance-details';
+import { ConfidentResultScreen } from '@/components/confident-result-screen';
+import { useTabBarVisibility } from '@/components/tab-bar-visibility';
 import {
   ensureApiReady,
   fetchPrediction,
@@ -96,6 +97,11 @@ import {
   type DevelopmentLocationSettings,
 } from '@/app/development-location';
 import { getAppLocationContext } from '@/app/location-context';
+import { scannerChromeVisibility } from '@/app/confident-result-state';
+import {
+  buildResultSheetPresentation,
+  type ResultSheetPresentation,
+} from '@/app/result-sheet-model';
 import {
   appendCoarseDisposalLocation,
   appendJurisdictionId,
@@ -239,6 +245,7 @@ type ScannerResultData = {
   supportsDonationReuse: boolean;
   jurisdictionId: string | null;
   localGuidance: LocalGuidance | null;
+  presentation: ResultSheetPresentation;
 };
 
 type NormalizedGuidanceMetadata = Record<string, unknown> & {
@@ -507,7 +514,10 @@ function createActiveScanSession(imageUri: string): ActiveScanSession {
   };
 }
 
-function toSheetData(response: PredictionResponse): ScannerResultData {
+function toSheetData(
+  response: PredictionResponse,
+  coarseLocation?: CoarseDisposalLocation | null,
+): ScannerResultData {
   const action = getDisposalActionText(response.disposal_action);
   const normalizedItem = getNormalizedRecognitionValue(response, 'normalized_item');
   const normalizedDisposalCategory = getNormalizedRecognitionValue(
@@ -519,6 +529,7 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
   const broadCategory = getNormalizedRecognitionValue(response, 'broad_category');
   const materialCategory = getNormalizedRecognitionValue(response, 'material_category');
   const guidanceMetadata = getNormalizedGuidanceMetadata(response);
+  const showNearbyButton = shouldShowNearbyButton(response);
 
   return {
     item: response.item,
@@ -530,7 +541,7 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
     warnings: Array.isArray(response.warnings) ? response.warnings : [],
     guidanceSource: response.guidanceSource ?? response.guidance_source,
     guidanceMetadata,
-    showNearbyButton: shouldShowNearbyButton(response),
+    showNearbyButton,
     normalizedItem,
     disposalCategory,
     broadCategory,
@@ -546,6 +557,10 @@ function toSheetData(response: PredictionResponse): ScannerResultData {
     }),
     jurisdictionId: response.jurisdiction_id ?? null,
     localGuidance: response.local_guidance ?? null,
+    presentation: buildResultSheetPresentation(response, {
+      location: coarseLocation,
+      showNearbyButton,
+    }),
   };
 }
 
@@ -1181,6 +1196,7 @@ function CameraArea({
 export default function ScannerScreen() {
   const router = useRouter();
   const isScreenFocused = useIsFocused();
+  const { setHidden: setTabBarHidden } = useTabBarVisibility();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const cameraRef = useRef<CameraView | null>(null);
@@ -1231,6 +1247,13 @@ export default function ScannerScreen() {
   const resultSheetBottomOffset =
     bottomNavOffset + BOTTOM_NAV_BAR_TOTAL_HEIGHT + RESULT_SHEET_NAV_GAP;
   const hiddenSheetOffset = Math.max(sheetHeight + resultSheetBottomOffset + 24, windowHeight);
+  const scannerChrome = scannerChromeVisibility(visibleSheetState);
+
+  useEffect(() => {
+    const shouldHide = isScreenFocused && !scannerChrome.showBottomTabs;
+    setTabBarHidden(shouldHide);
+    return () => setTabBarHidden(false);
+  }, [isScreenFocused, scannerChrome.showBottomTabs, setTabBarHidden]);
 
   useEffect(() => {
     if (
@@ -1503,6 +1526,7 @@ export default function ScannerScreen() {
   };
 
   const resetScanner = () => {
+    const wasConfident = visibleSheetState === 'confident';
     predictRequestRef.current += 1;
     predictAbortControllerRef.current?.abort();
     predictAbortControllerRef.current = null;
@@ -1518,6 +1542,14 @@ export default function ScannerScreen() {
     resetManualEntry();
     setItemFeedback(null);
     setGuidanceFeedback(null);
+
+    if (wasConfident) {
+      setVisibleSheetState('idle');
+      setResult(null);
+      setCandidates([]);
+      setSheetHeight(0);
+      return;
+    }
 
     if (visibleSheetState === 'idle') {
       setResult(null);
@@ -1555,7 +1587,7 @@ export default function ScannerScreen() {
       requestSource === 'selection' ||
       (predictedItem !== null &&
         normalizeLabelKey(predictedItem) !== normalizeLabelKey(finalItem));
-    const resultSnapshot = toSheetData(prediction);
+    const resultSnapshot = toSheetData(prediction, activeSession.coarseDisposalLocation);
     const nextRecentScan: RecentScan = {
       id: activeSession.id,
       predictedItem,
@@ -1638,7 +1670,10 @@ export default function ScannerScreen() {
     }
 
     if (nextFlowStatus === 'confident' && prediction.item) {
-      const nextResult = toSheetData(prediction);
+      const nextResult = toSheetData(
+        prediction,
+        activeScanSessionRef.current?.coarseDisposalLocation,
+      );
       setLastNearbyScanContext({
         scanSessionId:
           activeScanSessionRef.current?.id ?? `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2110,6 +2145,10 @@ export default function ScannerScreen() {
   const activeSheetBottomOffset = isManualCorrectionVisible
     ? resultSheetBottomOffset + manualKeyboardOffset
     : resultSheetBottomOffset;
+  const showDevelopmentLocationBanner = scannerChrome.showDevelopmentLocation && shouldShowDevelopmentLocation(
+    DEVELOPMENT_LOCATION_TOOLS_ENABLED,
+    developmentLocationSettings.location,
+  );
   const normalSheetMaxHeight = Math.min(
     windowHeight * 0.78,
     windowHeight - insets.top - resultSheetBottomOffset - 72,
@@ -2128,15 +2167,10 @@ export default function ScannerScreen() {
     260,
     windowHeight - insets.top - insets.bottom - BOTTOM_NAV_BAR_TOTAL_HEIGHT - 64,
   );
-  const showDevelopmentLocationBanner = shouldShowDevelopmentLocation(
-    DEVELOPMENT_LOCATION_TOOLS_ENABLED,
-    developmentLocationSettings.location,
-  );
-
   return (
     <SafeAreaView edges={[]} style={styles.page}>
       <View style={styles.shell}>
-        {permissionDenied ? (
+        {!scannerChrome.showCamera ? null : permissionDenied ? (
           <CameraPermissionNotice
             canAskAgain={permission.canAskAgain}
             onRequestPermission={() => {
@@ -2156,7 +2190,11 @@ export default function ScannerScreen() {
             isTorchOn={isTorchOn}
             topInset={insets.top}
             onCameraReady={handleCameraReady}
-            onClose={visibleSheetState !== 'idle' ? resetScanner : undefined}
+            onClose={
+              visibleSheetState !== 'idle' && visibleSheetState !== 'confident'
+                ? resetScanner
+                : undefined
+            }
             onToggleTorch={() => setIsTorchOn((current) => !current)}
             onPickImage={handlePickImage}
             onTakePhoto={handleTakePhoto}
@@ -2205,8 +2243,52 @@ export default function ScannerScreen() {
           </View>
         ) : null}
 
+        {visibleSheetState === 'confident' && result ? (
+          <ConfidentResultScreen
+            bottomInset={insets.bottom}
+            onChangeItem={handleChangeItem}
+            onClose={resetScanner}
+            onPrimaryAction={
+              result.presentation.primaryAction?.behavior === 'nearby'
+                ? () =>
+                    router.navigate({
+                      pathname: '/(tabs)/nearby',
+                      params: {
+                        autoSearch: 'true',
+                        item: result.item,
+                        normalizedItem: result.normalizedItem ?? undefined,
+                        disposalCategory: result.disposalCategory ?? undefined,
+                        broadCategory: result.broadCategory ?? undefined,
+                        materialCategory: result.materialCategory ?? undefined,
+                        disposalAction: result.disposalAction ?? undefined,
+                        requiresLocationCheck: String(result.requiresLocationCheck),
+                        scanSessionId: activeScanSessionRef.current?.id ?? undefined,
+                        supportsDonationReuse: String(result.supportsDonationReuse),
+                        jurisdictionId: result.jurisdictionId ?? undefined,
+                        localRuleId: result.localGuidance?.rule_id ?? undefined,
+                      },
+                    })
+                : undefined
+            }
+            presentation={result.presentation}
+            topInset={insets.top}>
+            <ResultFeedback
+              disabled={requestState === 'loading'}
+              guidanceAnswer={guidanceFeedback}
+              itemAnswer={itemFeedback}
+              onGuidanceAnswer={handleGuidanceFeedback}
+              onItemAnswer={handleItemFeedback}
+              showGuidanceQuestion={shouldShowGuidanceFeedback({
+                disposalAction: result.disposalAction,
+                guidanceSource: result.guidanceSource,
+                clarificationRequired: false,
+              })}
+            />
+          </ConfidentResultScreen>
+        ) : null}
+
         <View pointerEvents="box-none" style={styles.sheetOverlay}>
-          {visibleSheetState !== 'idle' ? (
+          {visibleSheetState !== 'idle' && visibleSheetState !== 'confident' ? (
             <Animated.View
               onLayout={handleSheetLayout}
               pointerEvents={sheetState === 'idle' ? 'none' : 'auto'}
@@ -2218,63 +2300,6 @@ export default function ScannerScreen() {
                   transform: [{ translateY: sheetAnimation }],
                 },
               ]}>
-              {visibleSheetState === 'confident' && result ? (
-                <ResultSheet
-                  buttonIconName="location-outline"
-                  buttonLabel={result.showNearbyButton ? 'Find Nearby Locations' : undefined}
-                  displayMode="expandable"
-                  guidanceMetadata={result.guidanceMetadata}
-                  guidanceSource={result.guidanceSource}
-                  label={result.label}
-                  materialTag={result.materialTag}
-                  onButtonPress={
-                    result.showNearbyButton
-                      ? () =>
-                          router.navigate({
-                            pathname: '/(tabs)/nearby',
-                            params: {
-                              autoSearch: 'true',
-                              item: result.item,
-                              normalizedItem: result.normalizedItem ?? undefined,
-                              disposalCategory: result.disposalCategory ?? undefined,
-                              broadCategory: result.broadCategory ?? undefined,
-                              materialCategory: result.materialCategory ?? undefined,
-                              disposalAction: result.disposalAction ?? undefined,
-                              requiresLocationCheck: String(result.requiresLocationCheck),
-                              scanSessionId: activeScanSessionRef.current?.id ?? undefined,
-                              supportsDonationReuse: String(result.supportsDonationReuse),
-                              jurisdictionId: result.jurisdictionId ?? undefined,
-                              localRuleId: result.localGuidance?.rule_id ?? undefined,
-                            },
-                          })
-                      : undefined
-                  }
-                  secondaryButtonIconName="swap-horizontal-outline"
-                  secondaryButtonLabel="Change Item"
-                  onSecondaryButtonPress={handleChangeItem}
-                  steps={result.steps}
-                  summary={result.summary}
-                  title={result.title}
-                  warnings={result.warnings}
-                >
-                  {result.localGuidance ? (
-                    <LocalGuidanceDetails guidance={result.localGuidance} />
-                  ) : null}
-                  <ResultFeedback
-                    disabled={requestState === 'loading'}
-                    guidanceAnswer={guidanceFeedback}
-                    itemAnswer={itemFeedback}
-                    onGuidanceAnswer={handleGuidanceFeedback}
-                    onItemAnswer={handleItemFeedback}
-                    showGuidanceQuestion={shouldShowGuidanceFeedback({
-                      disposalAction: result.disposalAction,
-                      guidanceSource: result.guidanceSource,
-                      clarificationRequired: false,
-                    })}
-                  />
-                </ResultSheet>
-              ) : null}
-
               {visibleSheetState === 'uncertain' ? (
                 <ResultSheet
                   buttonIconName="camera-outline"
@@ -2816,20 +2841,20 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     backgroundColor: '#FFF4D6',
     borderColor: '#E4B85A',
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     left: 16,
     maxWidth: 560,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     position: 'absolute',
     right: 16,
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
     zIndex: 30,
   },
   developmentLocationBannerText: {
@@ -2838,31 +2863,31 @@ const styles = StyleSheet.create({
   },
   developmentLocationEyebrow: {
     color: '#7A4E00',
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 1.3,
+    fontSize: 8,
+    fontWeight: '600',
+    letterSpacing: 1.1,
     ...PRIMARY_TEXT_STYLES.label,
   },
   developmentLocationLabel: {
     color: '#4D3304',
-    fontSize: 12,
-    fontWeight: '800',
-    lineHeight: 16,
-    ...SECONDARY_TEXT_STYLES.extraBold,
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 15,
+    ...PRIMARY_TEXT_STYLES.label,
   },
   developmentLocationReset: {
     backgroundColor: '#FFFFFF',
     borderColor: '#D9AE50',
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
   },
   developmentLocationResetText: {
     color: '#5E3C00',
-    fontSize: 10,
-    fontWeight: '900',
-    ...PRIMARY_TEXT_STYLES.button,
+    fontSize: 9,
+    fontWeight: '600',
+    ...PRIMARY_TEXT_STYLES.label,
   },
   sheetWrap: {
     left: 16,

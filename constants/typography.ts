@@ -1,4 +1,13 @@
 import {
+  Fredoka_500Medium,
+  Fredoka_600SemiBold,
+} from '@expo-google-fonts/fredoka';
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+} from '@expo-google-fonts/inter';
+import {
   Manrope_400Regular,
   Manrope_500Medium,
   Manrope_600SemiBold,
@@ -78,6 +87,11 @@ function addFontSources(
 export const FONT_SOURCES: Record<string, FontSource> = {};
 addFontSources(FONT_SOURCES, primaryFont);
 addFontSources(FONT_SOURCES, secondaryFont);
+FONT_SOURCES['Fredoka-Medium'] = Fredoka_500Medium;
+FONT_SOURCES['Fredoka-SemiBold'] = Fredoka_600SemiBold;
+FONT_SOURCES['Inter-Regular'] = Inter_400Regular;
+FONT_SOURCES['Inter-Medium'] = Inter_500Medium;
+FONT_SOURCES['Inter-SemiBold'] = Inter_600SemiBold;
 
 function textStyle(fontFamily: string): Pick<TextStyle, 'fontFamily' | 'fontWeight'> {
   return {
@@ -93,6 +107,24 @@ export const PRIMARY_TEXT_STYLES = {
   label: textStyle(primaryFont.families.semiBold),
   tab: textStyle(primaryFont.families.bold),
   loading: textStyle(primaryFont.families.extraBold),
+} as const;
+
+export const MANROPE_TEXT_STYLES = {
+  regular: textStyle(FONT_OPTIONS.manrope.families.regular),
+  medium: textStyle(FONT_OPTIONS.manrope.families.medium),
+  semiBold: textStyle(FONT_OPTIONS.manrope.families.semiBold),
+  bold: textStyle(FONT_OPTIONS.manrope.families.bold),
+} as const;
+
+export const FREDOKA_TEXT_STYLES = {
+  medium: textStyle('Fredoka-Medium'),
+  semiBold: textStyle('Fredoka-SemiBold'),
+} as const;
+
+export const INTER_TEXT_STYLES = {
+  regular: textStyle('Inter-Regular'),
+  medium: textStyle('Inter-Medium'),
+  semiBold: textStyle('Inter-SemiBold'),
 } as const;
 
 export const SECONDARY_TEXT_STYLES = {

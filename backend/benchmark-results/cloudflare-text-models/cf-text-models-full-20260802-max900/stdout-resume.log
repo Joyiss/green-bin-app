@@ -1,0 +1,503 @@
+RUN case=analyzer_lead_acid_special_handling model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=9803.639899997506
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=plain run=1
+DONE complete=True failure=None latency_ms=5474.389300041366
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=9130.07169996854
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=2960.4744000243954
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=9136.799400032032
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=10533.55220000958
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=10775.79909999622
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=5098.068699997384
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=schema run=1
+DONE complete=True failure=None latency_ms=5205.804999975953
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=None latency_ms=2602.0048999926075
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=10501.686300034635
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=10619.828000024427
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=11947.450299980119
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=6238.326399994548
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=5329.285699990578
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=3679.443300003186
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=23225.263600004837
+RUN case=analyzer_paint_hhw model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=12340.486900007818
+RUN case=analyzer_paint_hhw model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=12627.433699963149
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=plain run=1
+DONE complete=True failure=None latency_ms=4574.987899977714
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=schema run=1
+DONE complete=True failure=None latency_ms=6410.865000041667
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=3105.2858000039123
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=18509.98089998029
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=10439.94140002178
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=10999.321800016332
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=plain run=1
+DONE complete=True failure=None latency_ms=5999.822000041604
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=schema run=1
+DONE complete=True failure=None latency_ms=7436.719799996354
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=3037.6745999674313
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=20044.18229998555
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=11308.12549998518
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=11979.367699997965
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=9495.757099997718
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=5691.406199999619
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=None latency_ms=1291.3674000301398
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=None latency_ms=25882.776900019962
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=11615.701499977149
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=11272.186899965163
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=None latency_ms=4815.409999981057
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=6100.749999983236
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=2457.973000011407
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=17497.152899974026
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=10349.876500025857
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=schema run=1
+DONE complete=False failure=timeout latency_ms=35075.757000013255
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=None latency_ms=2712.0256000198424
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=None latency_ms=4444.358699955046
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=1991.1863000015728
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=timeout latency_ms=35279.921200009994
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=11774.997200001962
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=10398.81600002991
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=None latency_ms=2407.769500045106
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=None latency_ms=1705.56500001112
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=None latency_ms=1753.200100036338
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=timeout latency_ms=35083.99469999131
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=11476.773099973798
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=11642.624099971727
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=None latency_ms=3622.5928000058047
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=schema run=1
+DONE complete=False failure=None latency_ms=3394.805400050245
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=False failure=None latency_ms=2488.226100045722
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=timeout latency_ms=35068.26440000441
+RUN case=classify_aa_alkaline model=gemma_configured mode=plain run=1
+DONE complete=True failure=None latency_ms=5225.523000000976
+RUN case=classify_aa_alkaline model=gemma_configured mode=schema run=1
+DONE complete=True failure=None latency_ms=10884.68550000107
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=plain run=1
+DONE complete=True failure=None latency_ms=816.7320999782532
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=schema run=1
+DONE complete=True failure=None latency_ms=1070.0349999824539
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=831.4358000061475
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=True failure=None latency_ms=3216.0139000043273
+RUN case=classify_computer_mouse model=gemma_configured mode=plain run=1
+DONE complete=False failure=model_response_error latency_ms=10832.114899996668
+RUN case=classify_computer_mouse model=gemma_configured mode=schema run=1
+DONE complete=False failure=model_response_error latency_ms=11678.72719996376
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=plain run=1
+DONE complete=False failure=None latency_ms=5168.3247000328265
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=schema run=1
+DONE complete=True failure=None latency_ms=7606.805599993095
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=plain run=1
+DONE complete=True failure=None latency_ms=704.6117000281811
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=schema run=1
+DONE complete=False failure=None latency_ms=1896.199400012847
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=10704.413400031626
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=10847.252300009131
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=plain run=2
+DONE complete=True failure=None latency_ms=3108.746500045527
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=5209.049800003413
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=4383.799500006717
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=11370.31799997203
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12635.143799998332
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=10964.801100024488
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=5469.993700040504
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=None latency_ms=4802.970500022639
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=None latency_ms=1512.3087999527343
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=7632.357200025581
+RUN case=analyzer_aa_battery_no_lead_acid model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=13442.957199993543
+RUN case=analyzer_aa_battery_no_lead_acid model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=11860.779999988154
+RUN case=analyzer_aa_battery_no_lead_acid model=gpt_oss_20b mode=plain run=2
+DONE complete=True failure=None latency_ms=6592.2853000229225
+RUN case=analyzer_aa_battery_no_lead_acid model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=6944.325799995568
+RUN case=analyzer_aa_battery_no_lead_acid model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=3301.7318000202067
+RUN case=analyzer_aa_battery_no_lead_acid model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=7475.933599984273
+RUN case=analyzer_lead_acid_special_handling model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12811.750199995004
+RUN case=analyzer_lead_acid_special_handling model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=16661.39129997464
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=8437.842800049111
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=4916.101699986029
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=2488.972199964337
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=17325.577399984468
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12232.242900005076
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=12320.024899963755
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=plain run=2
+DONE complete=True failure=None latency_ms=10025.763900019228
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=8212.876999983564
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=timeout latency_ms=35090.243299957365
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=6963.443399989046
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=8639.64790001046
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=12539.49629998533
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=7448.123499983922
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=7363.629900035448
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=4041.353899985552
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=11919.375799945556
+RUN case=analyzer_paint_hhw model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12264.783599996008
+RUN case=analyzer_paint_hhw model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=13010.702300001867
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=10377.394300012384
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=6600.5326000158675
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=timeout latency_ms=35057.542699971236
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=7599.828100006562
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12670.209799951408
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=12621.825699985493
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=7280.244699970353
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=5454.615700000431
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=2610.687999986112
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=7382.669800019357
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=11888.976000016555
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=13426.817599975038
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=None latency_ms=8181.588999985252
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=6035.078200045973
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=None latency_ms=2570.6430000136606
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=None latency_ms=10352.754499996081
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=13394.17849999154
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=11922.188900003675
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=None latency_ms=3795.7290000049397
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=5503.405099967495
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=2233.0814999877475
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=21135.14770002803
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=plain run=2
+DONE complete=False failure=timeout latency_ms=35062.33899999643
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=12061.968600028194
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=None latency_ms=3315.864700009115
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=None latency_ms=3722.0537000102922
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=None latency_ms=1500.4328999784775
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=21969.096199958585
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12131.13410002552
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=11592.217300029006
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=plain run=2
+DONE complete=True failure=None latency_ms=1536.6014000028372
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=None latency_ms=1800.9107999969274
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=None latency_ms=2011.2048999872059
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=24286.24879999552
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=12629.591799981426
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=12148.961299972143
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=None latency_ms=1860.051800031215
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=None latency_ms=4386.020299978554
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=False failure=None latency_ms=2387.551700056065
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=timeout latency_ms=35075.01420000335
+RUN case=classify_aa_alkaline model=gemma_configured mode=plain run=2
+DONE complete=True failure=None latency_ms=5411.035700002685
+RUN case=classify_aa_alkaline model=gemma_configured mode=schema run=2
+DONE complete=True failure=None latency_ms=9093.39659998659
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=plain run=2
+DONE complete=True failure=None latency_ms=897.7457000291906
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=schema run=2
+DONE complete=True failure=None latency_ms=875.8446999709122
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=849.118800018914
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=True failure=None latency_ms=1424.535800004378
+RUN case=classify_computer_mouse model=gemma_configured mode=plain run=2
+DONE complete=False failure=model_response_error latency_ms=11895.46699996572
+RUN case=classify_computer_mouse model=gemma_configured mode=schema run=2
+DONE complete=False failure=model_response_error latency_ms=11381.219899980351
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=plain run=2
+DONE complete=False failure=None latency_ms=2505.9384000487626
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=schema run=2
+DONE complete=False failure=None latency_ms=1397.0336000202224
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=plain run=2
+DONE complete=True failure=None latency_ms=746.8043999979272
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=schema run=2
+DONE complete=False failure=None latency_ms=1207.1896999841556
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=12621.808999974746
+RUN case=analyzer_seattle_mouse_split model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=14462.420500000007
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=plain run=3
+DONE complete=True failure=None latency_ms=10024.012800015043
+RUN case=analyzer_seattle_mouse_split model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=6934.127999993507
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=True failure=None latency_ms=8013.16010003211
+RUN case=analyzer_seattle_mouse_split model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=True failure=None latency_ms=13748.613099975046
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=12057.363900006749
+RUN case=analyzer_austin_mouse_municipal model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=11565.075199992862
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=11769.939399964642
+RUN case=analyzer_austin_mouse_municipal model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=7113.682499970309
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=None latency_ms=2129.864400019869
+RUN case=analyzer_austin_mouse_municipal model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=True failure=None latency_ms=13418.690800026525
+RUN case=analyzer_aa_battery_no_lead_acid model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=12389.465400017798
+RUN case=analyzer_aa_battery_no_lead_acid model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=11535.653099999763
+RUN case=analyzer_aa_battery_no_lead_acid model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=8355.898900015745
+RUN case=analyzer_aa_battery_no_lead_acid model=gpt_oss_20b mode=schema run=3
+DONE complete=True failure=None latency_ms=5888.367699983064
+RUN case=analyzer_aa_battery_no_lead_acid model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=True failure=None latency_ms=2700.507900037337
+RUN case=analyzer_aa_battery_no_lead_acid model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=True failure=None latency_ms=7973.2603000011295
+RUN case=analyzer_lead_acid_special_handling model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=11825.569299980998
+RUN case=analyzer_lead_acid_special_handling model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=12702.13170000352
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=176.71000002883375
+RUN case=analyzer_lead_acid_special_handling model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=146.81869995547459
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=157.1805999847129
+RUN case=analyzer_lead_acid_special_handling model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=382.3026000172831
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=115.05889997351915
+RUN case=analyzer_compost_banana_peel model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=120.30700000468642
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=128.5687999916263
+RUN case=analyzer_compost_banana_peel model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=135.2523000095971
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=112.9067000001669
+RUN case=analyzer_compost_banana_peel model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=312.84800003049895
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=121.53259996557608
+RUN case=analyzer_plastic_bag_store_takeback model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=136.0825999872759
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=125.9010000503622
+RUN case=analyzer_plastic_bag_store_takeback model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=207.2405000217259
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=118.66809998173267
+RUN case=analyzer_plastic_bag_store_takeback model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=320.68209996214136
+RUN case=analyzer_paint_hhw model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=308.0863999784924
+RUN case=analyzer_paint_hhw model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=138.0673000239767
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=139.04209999600425
+RUN case=analyzer_paint_hhw model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=126.82520004455
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=110.75159994652495
+RUN case=analyzer_paint_hhw model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=304.70819998299703
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=136.5860999794677
+RUN case=analyzer_reuse_winter_coat model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=139.3530999775976
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=150.2184999990277
+RUN case=analyzer_reuse_winter_coat model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=712.7727999468334
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=139.04029998229817
+RUN case=analyzer_reuse_winter_coat model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=312.54810001701117
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=148.7417999887839
+RUN case=analyzer_conflicting_curbside model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=131.62300002295524
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=118.30680002458394
+RUN case=analyzer_conflicting_curbside model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=146.49969997117296
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=138.81460000993684
+RUN case=analyzer_conflicting_curbside model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=348.73339999467134
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=118.76699997810647
+RUN case=analyzer_insufficient_similar_item model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=332.9521999694407
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=116.44150002393872
+RUN case=analyzer_insufficient_similar_item model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=169.23810000298545
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=129.77269996190444
+RUN case=analyzer_insufficient_similar_item model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=337.4221999547444
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=153.7800999940373
+RUN case=guidance_mouse_no_fee_claim model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=141.1410999717191
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=108.94329997245222
+RUN case=guidance_mouse_no_fee_claim model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=134.86160000320524
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=106.74080002354458
+RUN case=guidance_mouse_no_fee_claim model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=400.345699978061
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=123.61439998494461
+RUN case=guidance_aa_battery_no_ev_restrictions model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=160.4825999820605
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=124.88700001267716
+RUN case=guidance_aa_battery_no_ev_restrictions model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=119.25650003831834
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=117.17099999077618
+RUN case=guidance_aa_battery_no_ev_restrictions model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=360.1819999748841
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=150.82300000358373
+RUN case=guidance_exclusion_not_positive model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=324.2739000124857
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=140.58450004085898
+RUN case=guidance_exclusion_not_positive model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=120.37550000241026
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=101.95109999040142
+RUN case=guidance_exclusion_not_positive model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=351.65490000508726
+RUN case=classify_aa_alkaline model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=159.92100001312792
+RUN case=classify_aa_alkaline model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=138.46879999618977
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=135.72180003393441
+RUN case=classify_aa_alkaline model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=113.47839998779818
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=117.72199999541044
+RUN case=classify_aa_alkaline model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=368.8837999943644
+RUN case=classify_computer_mouse model=gemma_configured mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=130.22930000443012
+RUN case=classify_computer_mouse model=gemma_configured mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=103.58369996538386
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=134.42509999731556
+RUN case=classify_computer_mouse model=gpt_oss_20b mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=145.30660002492368
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=plain run=3
+DONE complete=False failure=model_response_error latency_ms=161.68809996452183
+RUN case=classify_computer_mouse model=llama_3_3_70b_fast mode=schema run=3
+DONE complete=False failure=model_response_error latency_ms=331.2698999652639
+REPORT C:\Users\mraja\CursorApps\green-bin-app\backend\benchmark-results\cloudflare-text-models\cf-text-models-full-20260802-max900\report.md
