@@ -253,10 +253,11 @@ class GuidanceClarificationTests(unittest.TestCase):
             response = build_prediction_response(classification)
 
         mock_retrieve.assert_called_once()
-        mock_general_llm.assert_not_called()
+        mock_general_llm.assert_called_once()
         self.assertEqual(response["status"], "confident")
         self.assertNotIn("clarification", response)
-        self.assertEqual(response["disposal_action"], "check local guidance")
+        self.assertEqual(response["guidance_source"], "llm_general_fallback")
+        self.assertEqual(response["disposal_action"], "donate/reuse")
 
     def test_user_confirmed_selection_continues_to_guidance(self):
         classification = {

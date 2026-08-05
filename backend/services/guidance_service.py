@@ -359,6 +359,7 @@ def _attach_tavily_outcome(
             else outcome_evidence_status
         ),
         "tavily_called": outcome.get("called") is True,
+        "tavily_call_count": _tavily_call_count(outcome),
         "tavily_result_count": int(outcome.get("result_count") or 0),
         "tavily_trusted_source_count": int(
             outcome.get("trusted_source_count") or 0
@@ -395,6 +396,37 @@ def _attach_tavily_outcome(
     elif guidance.get("impact_level") == "Verified Local Guidance":
         guidance["impact_level"] = "Source-Grounded Guidance"
     return guidance
+
+
+def _tavily_call_count(outcome: dict[str, Any] | None) -> int:
+    if not isinstance(outcome, dict):
+        return 0
+    value = outcome.get("call_count")
+    if isinstance(value, int) and value >= 0:
+        return value
+    return 1 if outcome.get("called") is True else 0
+
+
+def _log_guidance_flow_path(
+    *,
+    path: str,
+    classification: dict[str, Any],
+    tavily_outcome: dict[str, Any] | None,
+    source_result_count: int,
+    text_llm_call_count: int,
+    failure_reason: str | None = None,
+) -> None:
+    logger.info(
+        "guidance_flow_selected request_id=%s path=%s item=%s category=%s source_result_count=%s tavily_call_count=%s text_llm_call_count=%s failure_reason=%s",
+        request_context.get_predict_request_id(),
+        path,
+        _first_non_empty_string(classification.get("item")),
+        _first_non_empty_string(classification.get("category")),
+        source_result_count,
+        _tavily_call_count(tavily_outcome),
+        text_llm_call_count,
+        failure_reason,
+    )
 
 
 def _guidance_uses_verified_local_source(guidance: dict[str, Any]) -> bool:
@@ -702,48 +734,237 @@ def _general_fallback_guidance(
     reason: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    item = _first_non_empty_string(
-        classification.get("item") if isinstance(classification, dict) else None
-    )
-    recognized_material = _first_non_empty_string(
-        _normalized_open_value(classification, "material") if isinstance(classification, dict) else None,
-        _normalized_open_value(classification, "material_category") if isinstance(classification, dict) else None,
-        classification.get("recognized_material_category") if isinstance(classification, dict) else None,
-        classification.get("category") if isinstance(classification, dict) else None,
-    )
+    """Last-resort rule-based guidance used only when Gemini fails."""
+    classification = classification if isinstance(classification, dict) else {}
 
-    subject = f"the {item.lower()}" if item else "this item"
-    steps = [
-        f"Keep {subject} out of curbside recycling unless your local program explicitly accepts it.",
-        "Check your city, county, or waste-provider disposal guidance before choosing recycling, compost, hazardous-waste, or drop-off options.",
-        "If no verified local option is available, follow local trash guidance or ask your waste provider.",
-    ]
-    if recognized_material and recognized_material != UNKNOWN_CATEGORY:
-        steps.append(
-            f"Use the detected material/category only as context: {recognized_material}."
+    def normalize(*values: Any) -> set[str]:
+        terms: set[str] = set()
+
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                terms.add(" ".join(value.lower().strip().replace("_", " ").split()))
+            elif isinstance(value, (list, tuple, set)):
+                terms.update(normalize(*value))
+
+        return terms
+
+    def contains(values: set[str], known_terms: set[str]) -> bool:
+        return any(
+            value == term or term in value.split(" | ")
+            or f" {term} " in f" {value} "
+            for value in values
+            for term in known_terms
         )
 
+    def choose_action(*preferred: str) -> str:
+        raw_actions = classification.get("allowed_disposal_actions")
+        allowed = [
+            action.strip()
+            for action in raw_actions
+            if isinstance(action, str) and action.strip()
+        ] if isinstance(raw_actions, list) else []
+
+        if not allowed:
+            return preferred[0]
+
+        normalized_allowed = {
+            action.lower().strip(): action for action in allowed
+        }
+        aliases = {
+            "trash": ("trash", "household trash"),
+            "donate/reuse": ("donate/reuse", "donate", "reuse"),
+            "compost": ("compost",),
+            "check local guidance": ("check local guidance",),
+        }
+
+        for preferred_action in preferred:
+            for alias in aliases.get(preferred_action, (preferred_action,)):
+                if alias in normalized_allowed:
+                    return normalized_allowed[alias]
+
+        return allowed[0]
+
+    item = _first_non_empty_string(
+        classification.get("item"),
+        classification.get("normalized_item"),
+    )
+    subject = f"the {item.lower()}" if item else "this item"
+
+    item_terms = normalize(
+        classification.get("item"),
+        classification.get("normalized_item"),
+        classification.get("broad_category"),
+        classification.get("category"),
+        classification.get("material_category"),
+    )
+    condition_flags = normalize(
+        classification.get("condition_flags"),
+        classification.get("observed_condition_flags"),
+    )
+    special_flags = normalize(classification.get("special_flags"))
+
+    special_terms = {
+        "battery", "batteries", "electronic", "electronics",
+        "chemical", "chemicals", "paint", "medicine", "medication",
+        "medical waste", "needle", "syringe", "sharps",
+        "propane tank", "pressurized container",
+    }
+    sharp_materials = {"glass", "ceramic", "mirror"}
+    organic_terms = {
+        "food scrap", "food scraps", "food waste", "fruit peel",
+        "vegetable scraps", "coffee grounds", "tea leaves",
+        "yard waste", "leaves", "plant material",
+    }
+    disposable_terms = {
+        "wrapper", "plastic film", "chip bag", "food packaging",
+        "used tissue", "paper towel", "cotton ball", "diaper",
+        "personal care waste", "disposable utensil",
+        "single use product",
+    }
+    reusable_terms = {
+        "toy", "ball", "book", "clothing", "shirt", "pants",
+        "coat", "shoe", "furniture", "chair", "table", "lamp",
+        "backpack", "sports equipment", "household goods",
+    }
+    unusable_flags = {
+        "broken", "damaged", "contaminated", "food soiled",
+        "disposable", "single use",
+    }
+
+    is_special = (
+        contains(item_terms | special_flags, special_terms)
+        or bool(
+            special_flags.intersection(
+                {
+                    "battery", "electronics", "chemical", "paint",
+                    "medical waste", "sharps", "pressurized",
+                }
+            )
+        )
+    )
+    is_sharp = (
+        contains(item_terms, {"broken glass", "glass shard", "broken mirror"})
+        or (
+            bool(condition_flags.intersection({"broken", "sharp"}))
+            and contains(item_terms, sharp_materials)
+        )
+    )
+    is_organic = contains(item_terms, organic_terms)
+    is_disposable = (
+        contains(item_terms, disposable_terms)
+        or bool(condition_flags.intersection(unusable_flags))
+    )
+    is_reusable = (
+        contains(item_terms, reusable_terms)
+        and not bool(condition_flags.intersection(unusable_flags))
+    )
+
+    if is_special:
+        route = "special"
+        action = choose_action("check local guidance", "trash")
+        summary = f"{subject.capitalize()} may require a special disposal route."
+        steps = [
+            f"Keep {subject} separate from curbside recycling and ordinary household waste.",
+            "Check your local waste authority’s instructions for an approved disposal option.",
+        ]
+        notes = ["Do not open, puncture, burn, or dismantle the item."]
+        requires_location_check = True
+
+    elif is_sharp:
+        route = "sharp"
+        action = choose_action("trash", "check local guidance")
+        summary = (
+            f"Contain {subject} safely and follow local household-trash instructions."
+        )
+        steps = [
+            "Place the broken or sharp pieces in a rigid, closed container.",
+            "Follow your waste provider’s instructions for placing the container in household trash.",
+        ]
+        notes = ["Do not place sharp pieces loose in a disposal bin."]
+        requires_location_check = True
+
+    elif is_organic:
+        route = "organic"
+        action = choose_action("compost", "trash", "check local guidance")
+        summary = (
+            f"Compost {subject} if your compost program accepts this type of material."
+        )
+        steps = [
+            "Remove any packaging or non-organic material.",
+            "Place it in an accepted home or collection compost stream.",
+            "If composting is unavailable, follow local household-trash guidance.",
+        ]
+        notes = ["Compost acceptance rules vary by program."]
+        requires_location_check = False
+
+    elif is_disposable:
+        route = "ordinary_waste"
+        action = choose_action("trash", "check local guidance")
+        summary = (
+            f"Place {subject} in household trash unless your local program "
+            "specifically provides another route."
+        )
+        steps = [
+            f"Empty or contain {subject} if needed to prevent spills or loose waste.",
+            "Place it in household trash if local rules allow.",
+        ]
+        notes = [
+            "Do not assume an item is curbside recyclable based only on its material."
+        ]
+        requires_location_check = False
+
+    elif is_reusable:
+        route = "reusable"
+        action = choose_action("donate/reuse", "trash", "check local guidance")
+        summary = (
+            f"If {subject} is clean and usable, offer it for reuse or donation. "
+            "If it is damaged beyond use, follow local household-trash guidance."
+        )
+        steps = [
+            f"Check whether {subject} is clean, intact, and still usable.",
+            "If usable, offer it to someone else or contact an appropriate donation organization.",
+            "If it cannot be reused, place it in household trash if local rules allow.",
+        ]
+        notes = [
+            "Confirm that the organization accepts this type of item before visiting."
+        ]
+        requires_location_check = False
+
+    else:
+        route = "unknown"
+        action = choose_action("check local guidance", "trash")
+        summary = (
+            f"There is not enough information to recommend a specific disposal "
+            f"route for {subject}."
+        )
+        steps = [
+            f"Keep {subject} out of curbside recycling unless your local program explicitly accepts it.",
+            "Check your city, county, or waste provider’s instructions before disposal.",
+        ]
+        notes = []
+        requires_location_check = True
+
     guidance = {
-        "disposal_action": "check local guidance",
+        "disposal_action": action,
         "material_code": None,
-        "impact_level": "Low Confidence Guidance",
-        "summary": (
-            f"Verified local guidance is unavailable for {subject}, so use conservative general disposal guidance."
-        ),
+        "impact_level": "General Guidance",
+        "summary": summary,
         "steps": steps,
-        "guidance_source": "safe_fallback",
-        "warnings": [_COMMON_LOW_RISK_WARNING],
+        "guidance_source": "general_fallback",
+        "warnings": notes,
         "guidance_metadata": {
             "final_generation_path": "general_fallback",
             "guidance_fallback_status": "general_fallback",
-            "fallback_reason": reason or "no_usable_source_grounded_guidance",
+            "fallback_reason": reason or "general_gemini_fallback_failed",
+            "fallback_route": route,
             "confidence": "low",
             "source_names": [],
             "source_urls": [],
             "retrieved_chunk_ids": [],
-            "requires_location_check": True,
+            "requires_location_check": requires_location_check,
         },
     }
+
     return _with_metadata(guidance, extra_metadata)
 
 
@@ -2385,6 +2606,13 @@ def _resolve_guidance(
             "clarification_required",
         )
         guidance = _clarification_guidance(decision)
+        _log_guidance_flow_path(
+            path="clarification_required",
+            classification=classification,
+            tavily_outcome=None,
+            source_result_count=0,
+            text_llm_call_count=0,
+        )
         _log_guidance_selected(
             guidance,
             reason="recognition_clarification_required",
@@ -2448,13 +2676,73 @@ def _resolve_guidance(
         for result in source_results
     )
     if not source_results:
+        low_risk_evaluation = _evaluate_low_risk_open_item(classification)
+        llm_started = perf_counter()
+        llm_result = guidance_llm_service.try_generate_general_safe_guidance(
+            recognized_item=llm_context.get("recognized_item"),
+            normalized_item_label=llm_context.get("normalized_item_label"),
+            material=llm_context.get("material"),
+            broad_category=llm_context.get("broad_category"),
+            condition_flags=llm_context.get("condition_flags"),
+            special_flags=llm_context.get("special_flags"),
+            visual_evidence=llm_context.get("visual_evidence"),
+            visual_observations=llm_context.get("visual_observations"),
+            candidates=llm_context.get("candidates"),
+            low_risk_reason=_first_non_empty_string(
+                low_risk_evaluation.get("reason")
+            ),
+            matched_terms=list(low_risk_evaluation.get("matched_terms") or []),
+        )
+        _log_guidance_timing(
+            "gemini_general_guidance",
+            llm_started,
+            guidance_returned=isinstance(llm_result.get("guidance"), dict),
+            failure_reason=llm_result.get("failure_reason"),
+        )
+        llm_guidance = llm_result.get("guidance")
+        if isinstance(llm_guidance, dict):
+            llm_metadata = llm_guidance.get("guidance_metadata")
+            llm_metadata = llm_metadata if isinstance(llm_metadata, dict) else {}
+            llm_guidance["guidance_metadata"] = _merge_guidance_metadata(
+                llm_metadata,
+                _build_retrieval_applicability_metadata(retrieval_results),
+                {
+                    "guidance_generation_status": "general_llm_succeeded",
+                    "text_llm_call_count": 1,
+                },
+            )
+            _log_guidance_flow_path(
+                path="general_llm_no_usable_sources",
+                classification=classification,
+                tavily_outcome=tavily_outcome,
+                source_result_count=0,
+                text_llm_call_count=1,
+            )
+            llm_guidance = _attach_manual_evidence(llm_guidance, local_result)
+            return _attach_tavily_outcome(llm_guidance, tavily_outcome)
+
+        failure_reason = (
+            _first_non_empty_string(llm_result.get("failure_reason"))
+            or "general_llm_unavailable"
+        )
         guidance = _general_fallback_guidance(
             classification,
-            reason="insufficient_evidence",
+            reason=failure_reason,
             extra_metadata=_merge_guidance_metadata(
                 _build_retrieval_applicability_metadata(retrieval_results),
-                {"guidance_generation_status": "not_attempted", "text_llm_call_count": 0},
+                {
+                    "guidance_generation_status": "general_llm_failed",
+                    "text_llm_call_count": 1,
+                },
             ),
+        )
+        _log_guidance_flow_path(
+            path="deterministic_fallback_after_general_llm_failure",
+            classification=classification,
+            tavily_outcome=tavily_outcome,
+            source_result_count=0,
+            text_llm_call_count=1,
+            failure_reason=failure_reason,
         )
         guidance = _attach_manual_evidence(guidance, local_result)
         return _attach_tavily_outcome(guidance, tavily_outcome)
@@ -2480,6 +2768,13 @@ def _resolve_guidance(
             _build_json_guidance_metadata(source_results),
             _build_retrieval_applicability_metadata(source_results),
             {"guidance_generation_status": "cache_hit", "text_llm_call_count": 0},
+        )
+        _log_guidance_flow_path(
+            path="source_grounded_cache_hit",
+            classification=classification,
+            tavily_outcome=tavily_outcome,
+            source_result_count=len(source_results),
+            text_llm_call_count=0,
         )
         cached_guidance = _attach_manual_evidence(cached_guidance, local_result)
         return _attach_tavily_outcome(cached_guidance, tavily_outcome)
@@ -2520,6 +2815,13 @@ def _resolve_guidance(
             retrieval_results=source_results,
             llm_context=llm_context,
         )
+        _log_guidance_flow_path(
+            path="source_grounded_llm",
+            classification=classification,
+            tavily_outcome=tavily_outcome,
+            source_result_count=len(source_results),
+            text_llm_call_count=1,
+        )
         llm_guidance = _attach_manual_evidence(llm_guidance, local_result)
         return _attach_tavily_outcome(llm_guidance, tavily_outcome)
 
@@ -2532,6 +2834,14 @@ def _resolve_guidance(
             _build_retrieval_applicability_metadata(source_results),
             {"guidance_generation_status": "failed", "text_llm_call_count": 1},
         ),
+    )
+    _log_guidance_flow_path(
+        path="deterministic_fallback_after_source_llm_failure",
+        classification=classification,
+        tavily_outcome=tavily_outcome,
+        source_result_count=len(source_results),
+        text_llm_call_count=1,
+        failure_reason=failure_reason,
     )
     guidance = _attach_manual_evidence(guidance, local_result)
     return _attach_tavily_outcome(guidance, tavily_outcome)

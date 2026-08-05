@@ -129,22 +129,6 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
 
-    def test_fallback_query_uses_broad_category_and_city_state(self):
-        query = tavily.build_fallback_search_query(
-            _classification(
-                "Television",
-                material_category="Electronics",
-                category="Electronics",
-            ),
-            {"city": "Austin", "county": "Travis County", "state": "Texas"},
-        )
-
-        self.assertEqual(
-            query,
-            "electronics recycling and take-back options for residents in Austin, Texas: "
-            "accepted items, drop-off, pickup, fees, eligibility",
-        )
-
     def test_short_meaningful_labels_are_searchable_after_normalization(self):
         location = {"city": "Raleigh", "state": "North Carolina"}
         expected_terms = {
@@ -1079,9 +1063,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 retrieval_results=retrieval_results,
             )
 
-        context_text = captured["prompt"].split(
-            "INPUT CONTEXT — DO NOT COPY THIS INTO THE RESPONSE:\n\n", 1
-        )[1].split("\n\nOUTPUT REQUIREMENTS:", 1)[0]
+        context_start = captured["prompt"].index("{", captured["prompt"].index("INPUT CONTEXT"))
+        context_text = captured["prompt"][context_start:].split("\n\nOUTPUT REQUIREMENTS:", 1)[0]
         prompt_context = json.loads(context_text)
         prompt_chunks = prompt_context["retrieved_chunks"]
         self.assertLessEqual(
@@ -1251,6 +1234,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
 
         self.assertEqual(outcome["status"], "tavily_verified_local")
         client.search.assert_called_once()
+        self.assertEqual(outcome["call_count"], 1)
         evidence_llm.assert_not_called()
         kwargs = client.search.call_args.kwargs
         query = kwargs.pop("query")
@@ -1281,21 +1265,18 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertIs(kwargs["include_raw_content"], False)
         self.assertEqual(outcome["credits"], 1)
 
-    def test_fallback_search_runs_only_when_primary_has_no_usable_result(self):
+    def test_weak_primary_result_does_not_trigger_fallback_search(self):
         client, env = self._search({})
-        client.search.side_effect = [
-            {
-                "results": [
-                    _result(
-                        title="Local recycling discussion",
-                        url="https://reddit.com/r/raleigh/comments/recycling",
-                        content="People discuss Raleigh battery recycling.",
-                    )
-                ],
-                "usage": {"credits": 1},
-            },
-            {"results": [_result()], "usage": {"credits": 1}},
-        ]
+        client.search.return_value = {
+            "results": [
+                _result(
+                    title="Local recycling discussion",
+                    url="https://reddit.com/r/raleigh/comments/recycling",
+                    content="People discuss Raleigh battery recycling.",
+                )
+            ],
+            "usage": {"credits": 1},
+        }
         with (
             patch.dict(os.environ, env, clear=True),
             patch(
@@ -1308,18 +1289,13 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
             )
 
-        self.assertEqual(outcome["status"], "tavily_verified_local")
-        self.assertEqual(client.search.call_count, 2)
-        self.assertEqual(
-            client.search.call_args_list[1].kwargs["query"],
-            "battery recycling and take-back options for residents in Raleigh, North Carolina: "
-            "accepted items, drop-off, pickup, fees, eligibility",
-        )
-        for search_call in client.search.call_args_list:
-            self.assertIs(search_call.kwargs["include_raw_content"], False)
-        self.assertEqual(outcome["credits"], 2)
+        self.assertEqual(outcome["status"], "tavily_insufficient_evidence")
+        client.search.assert_called_once()
+        self.assertEqual(outcome["call_count"], 1)
+        self.assertIs(client.search.call_args.kwargs["include_raw_content"], False)
+        self.assertEqual(outcome["credits"], 1)
 
-    def test_scan_never_runs_more_than_two_tavily_searches(self):
+    def test_scan_never_runs_more_than_one_tavily_search(self):
         client, env = self._search({"results": [], "usage": {"credits": 1}})
         with (
             patch.dict(os.environ, env, clear=True),
@@ -1334,7 +1310,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             )
 
         self.assertEqual(outcome["status"], "tavily_insufficient_evidence")
-        self.assertEqual(client.search.call_count, 2)
+        client.search.assert_called_once()
+        self.assertEqual(outcome["call_count"], 1)
 
     def test_only_official_supporting_sources_are_not_verified_local(self):
         client, env = self._search(
@@ -1419,7 +1396,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(response["guidance_metadata"]["local_evidence_status"], "supporting")
         self.assertEqual(response["guidance_metadata"]["tavily_trusted_source_count"], 0)
 
-    def test_timeout_is_not_retried_and_weak_results_use_one_fallback(self):
+    def test_timeout_is_not_retried_and_weak_results_are_not_searched_again(self):
         timeout_client, env = self._search({})
         timeout_client.search.side_effect = TimeoutError("slow")
         with (
@@ -1435,6 +1412,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             )
         self.assertEqual(timeout["status"], "tavily_timeout")
         timeout_client.search.assert_called_once()
+        self.assertEqual(timeout["call_count"], 1)
 
         tavily.reset_tavily_budget_guard_for_tests()
         weak_client, env = self._search(
@@ -1460,7 +1438,8 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
                 _classification(location={"city": "Raleigh", "state": "North Carolina"})
             )
         self.assertEqual(weak["status"], "tavily_insufficient_evidence")
-        self.assertEqual(weak_client.search.call_count, 2)
+        weak_client.search.assert_called_once()
+        self.assertEqual(weak["call_count"], 1)
 
     def test_failure_returns_general_guidance_message(self):
         outcome = {

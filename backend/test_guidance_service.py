@@ -712,7 +712,7 @@ class GuidanceServiceTests(unittest.TestCase):
         }
 
         llm_guidance = {
-            "disposal_action": None,
+            "disposal_action": "check local guidance",
             "material_code": None,
             "impact_level": "Low Confidence Guidance",
             "summary": "If the bottle is still usable, prefer reuse or donation.",
@@ -768,7 +768,7 @@ class GuidanceServiceTests(unittest.TestCase):
         }
 
         llm_guidance = {
-            "disposal_action": None,
+            "disposal_action": "check local guidance",
             "material_code": None,
             "impact_level": "Low Confidence Guidance",
             "summary": "If the pencil is still usable, keep using it or pass it along.",
@@ -839,7 +839,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
         self.assertEqual(
             response["guidance_metadata"]["fallback_reason"],
-            "insufficient_evidence",
+            "missing_summary",
         )
         self.assertEqual(response["guidance_metadata"]["source_names"], [])
         self.assertEqual(response["guidance_metadata"]["source_urls"], [])
@@ -855,7 +855,7 @@ class GuidanceServiceTests(unittest.TestCase):
             likely_material="paper",
         )
         llm_guidance = {
-            "disposal_action": None,
+            "disposal_action": "check local guidance",
             "material_code": None,
             "impact_level": "Low Confidence Guidance",
             "summary": "If the paper is clean and dry, check local recycling rules for this paper type.",
@@ -939,7 +939,7 @@ class GuidanceServiceTests(unittest.TestCase):
             likely_material="fabric",
         )
         llm_guidance = {
-            "disposal_action": None,
+            "disposal_action": "check local guidance",
             "material_code": None,
             "impact_level": "Low Confidence Guidance",
             "summary": "If the curtain is usable, reuse, repair, or donate it first.",
@@ -1056,10 +1056,12 @@ class GuidanceServiceTests(unittest.TestCase):
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
         ):
+            mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        mock_general.assert_not_called()
+        mock_general.assert_called_once()
+        self.assertEqual(response["guidance_metadata"]["text_llm_call_count"], 1)
 
     def test_electronics_item_does_not_call_general_safe_llm(self):
         classification = _open_classification(
@@ -1077,10 +1079,11 @@ class GuidanceServiceTests(unittest.TestCase):
             patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
             patch("services.guidance_service.get_rules") as mock_rules,
         ):
+            mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        mock_general.assert_not_called()
+        mock_general.assert_called_once()
         mock_rules.assert_not_called()
 
     def test_food_soiled_cardboard_is_not_low_risk_eligible(self):
@@ -1097,10 +1100,11 @@ class GuidanceServiceTests(unittest.TestCase):
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
         ):
+            mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        mock_general.assert_not_called()
+        mock_general.assert_called_once()
 
     def test_thermal_receipt_is_not_low_risk_eligible(self):
         classification = _open_classification(
@@ -1116,10 +1120,11 @@ class GuidanceServiceTests(unittest.TestCase):
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
         ):
+            mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        mock_general.assert_not_called()
+        mock_general.assert_called_once()
 
     def test_broken_glass_is_not_low_risk_eligible(self):
         classification = _open_classification(
@@ -1135,10 +1140,11 @@ class GuidanceServiceTests(unittest.TestCase):
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
         ):
+            mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        mock_general.assert_not_called()
+        mock_general.assert_called_once()
 
     def test_multiple_normal_low_risk_items_are_eligible_for_general_safe_fallback(self):
         cases = [
@@ -1149,7 +1155,7 @@ class GuidanceServiceTests(unittest.TestCase):
             ("Wooden Spoon", "Wood", "Wood", "Kitchenware"),
         ]
         llm_guidance = {
-            "disposal_action": None,
+            "disposal_action": "check local guidance",
             "material_code": None,
             "impact_level": "Low Confidence Guidance",
             "summary": "Reuse or donate the item if it is still usable.",
@@ -1212,10 +1218,11 @@ class GuidanceServiceTests(unittest.TestCase):
                     patch("services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance") as mock_general,
                     patch("services.guidance_service.get_rules") as mock_rules,
                 ):
+                    mock_general.return_value = {"guidance": None, "failure_reason": "llm_disabled"}
                     response = build_prediction_response(classification)
 
                 self.assertEqual(response["guidance_source"], "safe_fallback")
-                mock_general.assert_not_called()
+                mock_general.assert_called_once()
                 mock_rules.assert_not_called()
 
     def test_high_risk_open_item_without_chunks_uses_safe_fallback(self):
@@ -1243,12 +1250,17 @@ class GuidanceServiceTests(unittest.TestCase):
                 "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
                 return_value=[],
             ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
+            ) as mock_general,
             patch("services.guidance_service.get_rules") as mock_rules,
         ):
             response = build_prediction_response(classification)
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
+        mock_general.assert_called_once()
         mock_rules.assert_not_called()
 
     def test_unsupported_open_recognition_items_do_not_use_legacy_rules(self):
@@ -1311,6 +1323,9 @@ class GuidanceServiceTests(unittest.TestCase):
         with patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = build_prediction_response(classification)
 
@@ -1328,6 +1343,9 @@ class GuidanceServiceTests(unittest.TestCase):
         with patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = build_prediction_response(classification)
 

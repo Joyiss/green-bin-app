@@ -959,22 +959,6 @@ def build_search_query(
     return re.sub(r"\s+", " ", query).strip()[:MAX_QUERY_LENGTH].rstrip()
 
 
-def build_fallback_search_query(
-    classification: dict[str, Any],
-    location: dict[str, str],
-) -> str:
-    item = _item_phrase_for_query(classification)
-    category = normalize_guidance_phrase(
-        _category(classification) or _material(classification) or item
-    ) or item
-    location_phrase = _location_phrase_for_query(location)
-    query = (
-        f"{category} recycling and take-back options for residents in {location_phrase}: "
-        "accepted items, drop-off, pickup, fees, eligibility"
-    )
-    return re.sub(r"\s+", " ", query).strip()[:MAX_QUERY_LENGTH].rstrip()
-
-
 def _host(url: str) -> str:
     try:
         return (urlparse(url).hostname or "").casefold().removeprefix("www.")
@@ -2033,6 +2017,7 @@ def _outcome(
     status: str,
     *,
     called: bool = False,
+    call_count: int = 0,
     skip_reason: str | None = None,
     duration_ms: float = 0.0,
     result_count: int = 0,
@@ -2043,6 +2028,7 @@ def _outcome(
     return {
         "status": status,
         "called": called,
+        "call_count": call_count,
         "skip_reason": skip_reason,
         "duration_ms": round(duration_ms, 1),
         "result_count": result_count,
@@ -2061,7 +2047,7 @@ def _outcome(
 def _log_outcome(outcome: dict[str, Any]) -> None:
     logger.info(
         "tavily_local_guidance request_id=%s status=%s called=%s skip_reason=%s "
-        "duration_ms=%s result_count=%s trusted_source_count=%s reported_credit_usage=%s",
+        "duration_ms=%s result_count=%s trusted_source_count=%s reported_credit_usage=%s call_count=%s",
         request_context.get_predict_request_id(),
         outcome.get("status"),
         outcome.get("called"),
@@ -2070,6 +2056,7 @@ def _log_outcome(outcome: dict[str, Any]) -> None:
         outcome.get("result_count"),
         outcome.get("trusted_source_count"),
         outcome.get("credits"),
+        outcome.get("call_count"),
     )
 
 
@@ -2285,63 +2272,36 @@ def search_local_guidance(
     result_count = 0
     reported_credits = 0
     has_reported_credits = False
-    fallback_skip_reason: str | None = None
+    search_call_count = 0
     try:
-        queries = [
-            build_search_query(classification, location),
-            build_fallback_search_query(classification, location),
-        ]
-        for search_index, query in enumerate(queries):
-            if search_index == 1:
-                if accepted:
-                    break
-                if not _LOCAL_BUDGET_GUARD.reserve(
-                    now_utc=current_time,
-                    daily_limit=daily_limit,
-                    monthly_limit=monthly_limit,
-                ):
-                    fallback_skip_reason = "fallback_local_budget_limit_reached"
-                    break
-                try:
-                    fallback_reservation = (
-                        tavily_budget_repository.reserve_tavily_search_budget(
-                            daily_limit=daily_limit,
-                            monthly_limit=monthly_limit,
-                            now_utc=current_time,
-                        )
-                    )
-                except tavily_budget_repository.TavilyBudgetRepositoryError:
-                    fallback_skip_reason = "fallback_budget_tracking_unavailable"
-                    break
-                if not fallback_reservation.allowed:
-                    fallback_skip_reason = "fallback_database_budget_limit_reached"
-                    break
-
-            _log_query(query)
-            payload = _search_request(
-                client,
-                query=query,
-                timeout_seconds=timeout_seconds,
+        query = build_search_query(classification, location)
+        _log_query(query)
+        payload = _search_request(
+            client,
+            query=query,
+            timeout_seconds=timeout_seconds,
+        )
+        search_call_count = 1
+        payload_result_count, payload_accepted, payload_local_count = (
+            _validated_search_results(
+                payload,
+                classification=classification,
+                location=location,
             )
-            payload_result_count, payload_accepted, payload_local_count = (
-                _validated_search_results(
-                    payload,
-                    classification=classification,
-                    location=location,
-                )
-            )
-            result_count += payload_result_count
-            accepted.extend(payload_accepted)
-            local_primary_count += payload_local_count
-            payload_credits = _credit_usage(payload)
-            if payload_credits is not None:
-                reported_credits += payload_credits
-                has_reported_credits = True
+        )
+        result_count += payload_result_count
+        accepted.extend(payload_accepted)
+        local_primary_count += payload_local_count
+        payload_credits = _credit_usage(payload)
+        if payload_credits is not None:
+            reported_credits += payload_credits
+            has_reported_credits = True
     except Exception as exc:
         status = "tavily_timeout" if _is_timeout(exc) else "tavily_error"
         outcome = _outcome(
             status,
             called=True,
+            call_count=max(1, search_call_count),
             duration_ms=(perf_counter() - request_started) * 1000,
         )
         _log_outcome(outcome)
@@ -2366,7 +2326,7 @@ def search_local_guidance(
             else "tavily_insufficient_evidence"
         ),
         called=True,
-        skip_reason=fallback_skip_reason,
+        call_count=search_call_count,
         duration_ms=(perf_counter() - request_started) * 1000,
         result_count=result_count,
         trusted_source_count=local_primary_count,

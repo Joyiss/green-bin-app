@@ -316,6 +316,9 @@ class PredictRouteTests(unittest.TestCase):
         ), patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=None,
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = client.post(
                 "/predict",
@@ -373,6 +376,10 @@ class PredictRouteTests(unittest.TestCase):
             patch(
                 "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
                 return_value=[],
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
             ),
         ):
             response = client.post(
@@ -575,6 +582,9 @@ class PredictRouteTests(unittest.TestCase):
         ), patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = client.post(
                 "/predict",
@@ -590,7 +600,11 @@ class PredictRouteTests(unittest.TestCase):
     def test_selected_item_synonym_maps_to_supported_guidance(self):
         client = TestClient(app)
 
-        response = client.post("/predict", data={"selected_item": "drinking bottle"})
+        with patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
+        ):
+            response = client.post("/predict", data={"selected_item": "drinking bottle"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"], "Plastic Water Bottle")
@@ -615,7 +629,11 @@ class PredictRouteTests(unittest.TestCase):
     def test_selected_item_supported_label_still_works(self):
         client = TestClient(app)
 
-        response = client.post("/predict", data={"selected_item": "Plastic water bottle"})
+        with patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
+        ):
+            response = client.post("/predict", data={"selected_item": "Plastic water bottle"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["item"], "Plastic Water Bottle")
@@ -688,7 +706,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertIn("pencil", response.json()["summary"].lower())
         self.assertEqual(
             response.json()["guidance_metadata"]["fallback_reason"],
-            "insufficient_evidence",
+            "missing_summary",
         )
 
     def test_predict_open_supported_match_can_use_existing_trusted_guidance(self):
@@ -712,6 +730,9 @@ class PredictRouteTests(unittest.TestCase):
         ), patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = client.post(
                 "/predict",
@@ -775,6 +796,9 @@ class PredictRouteTests(unittest.TestCase):
         ), patch(
             "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
             return_value=[],
+        ), patch(
+            "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+            return_value={"guidance": None, "failure_reason": "llm_disabled"},
         ):
             response = client.post(
                 "/predict",
@@ -882,6 +906,10 @@ class PredictRouteTests(unittest.TestCase):
             patch(
                 "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
                 return_value=[],
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
             ),
         ):
             response = client.post(
