@@ -500,8 +500,8 @@ class GenerationFlowTests(unittest.TestCase):
             self.assertIn(sentence.rstrip("."), prompt)
         self.assertIn('"jurisdiction": "Seattle, Washington"', prompt)
         self.assertNotIn('"evidence_priority"', prompt)
-        self.assertIn("supported programs, pickup services, fees, limits", prompt)
-        self.assertIn("Never mention Green Bin, the app, buttons, screens", prompt)
+        self.assertIn("pickup method, fees, limits, accepted categories", prompt)
+        self.assertIn("Do not mention Green Bin, the app, retrieval", prompt)
 
     @patch("services.guidance_llm_service._text_llm_request")
     def test_local_detail_handling_spans_categories_and_jurisdictions(self, request):
@@ -982,12 +982,13 @@ class GenerationFlowTests(unittest.TestCase):
             prompt.index('"summary": {"action_type": ""'),
         )
         self.assertTrue(prompt.rstrip().endswith('  "references": [{"source_title": "", "url": "", "supports_claim": ""}]\n}'))
+        self.assertIn('"disposal_steps": []', prompt)
         self.assertIn('"preparation": {"required": false, "steps": []', prompt)
         self.assertIn('"important_notes": []', prompt)
         self.assertIn('"reasoning": ""', prompt)
         self.assertNotIn('"sources_used"', prompt)
         self.assertIn("You are a source-grounded disposal guidance writer.", prompt)
-        self.assertIn("Do not tell the user to search for a facility.", prompt)
+        self.assertIn("Do not tell the user to search for a facility when a supported destination is already provided.", prompt)
         self.assertNotIn('"intent"', prompt)
 
     def test_source_prompt_requires_realistic_object_specific_action(self):
@@ -1010,11 +1011,11 @@ class GenerationFlowTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "Use only chunks marked applicable, or conditional chunks whose stated condition is confirmed",
+            "Use applicable chunks and conditional chunks whose conditions are confirmed.",
             prompt,
         )
         self.assertIn(
-            "Never infer battery chemistry, resin, coating, contamination, embedded batteries",
+            "Do not infer battery chemistry, contamination, coatings, embedded batteries",
             prompt,
         )
         self.assertIn('"recognized_item": "Opened single-use chip bag"', prompt)
@@ -1036,7 +1037,7 @@ class GenerationFlowTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "- summary.destination: Only where it goes, using a supported program, service, collection route, or destination.",
+            "- summary.destination: The supported program, service, route, or facility.",
             prompt,
         )
         self.assertNotIn("computer peripherals", prompt)
@@ -1074,8 +1075,8 @@ class GenerationFlowTests(unittest.TestCase):
 
         self.assertIn('"source_role": "direct_service_provider"', prompt)
         self.assertIn('"claim_scope": ["own_accepted_items", "own_services", "own_locations"]', prompt)
-        self.assertIn("State provider claims as provider-specific, never as citywide rules.", prompt)
-        self.assertIn("cannot by itself support a strong local rule", prompt)
+        self.assertIn("direct_service_provider evidence may support only that provider's services", prompt)
+        self.assertIn("cannot independently support a strong local rule", prompt)
 
     @patch("services.guidance_llm_service._text_llm_request")
     def test_discovery_only_result_is_not_sent_to_guidance_llm(self, request):

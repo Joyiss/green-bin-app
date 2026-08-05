@@ -472,9 +472,10 @@ export function buildResultSheetPresentation(
     ? prepSteps
     : prepSteps.filter(isPreparationInstruction);
   const nextStep = text(response.next_step);
-  const rawSteps = prepSteps.length || nextStep
-    ? uniqueStrings([...prepSteps, nextStep])
-    : uniqueStrings(response.steps ?? []);
+  const disposalSteps = uniqueStrings(structured?.disposal_steps ?? response.steps ?? []);
+  const rawSteps = disposalSteps.length
+    ? disposalSteps
+    : uniqueStrings([...prepSteps, nextStep]);
   const steps = rawSteps.map(splitGuidanceStep);
   const references = buildReferences(response, metadata);
   const category =

@@ -2644,6 +2644,7 @@ def _build_structured_response_guidance(
                 "destination": _structured_destination(guidance, metadata) or next_step,
                 "qualifier": qualifier,
             },
+            "disposal_steps": _guidance_text_list(guidance.get("steps")),
             "preparation": {
                 "required": bool(prep_steps),
                 "steps": prep_steps,
@@ -2666,6 +2667,7 @@ def _build_structured_response_guidance(
                 "destination": next_step,
                 "qualifier": None,
             },
+            "disposal_steps": _guidance_text_list(guidance.get("steps")),
             "preparation": {"required": False, "steps": []},
             "important_notes": [],
             "reasoning": "The item needs locally verified disposal guidance.",

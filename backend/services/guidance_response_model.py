@@ -25,6 +25,7 @@ class GuidanceReference(TypedDict):
 
 class StructuredGuidance(TypedDict):
     summary: GuidanceSummary
+    disposal_steps: list[str]
     preparation: GuidancePreparation
     important_notes: list[str]
     reasoning: str
@@ -204,6 +205,10 @@ def post_process_structured_guidance(
     summary_values = [action_type, destination, qualifier]
     preparation_steps = raw_preparation_steps
     preparation_steps = _unique_against(preparation_steps, summary_values)
+    disposal_steps = _unique_against(
+        _strings(value.get("disposal_steps"))[:4],
+        preparation_steps,
+    )
 
     notes = [
         note
@@ -218,6 +223,7 @@ def post_process_structured_guidance(
             "destination": destination,
             "qualifier": qualifier,
         },
+        "disposal_steps": disposal_steps,
         "preparation": {
             "required": bool(preparation_steps),
             "steps": preparation_steps,

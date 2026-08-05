@@ -70,6 +70,7 @@ export type GuidanceReference = {
 
 export type StructuredGuidance = {
   summary: GuidanceSummary;
+  disposal_steps: string[];
   preparation: GuidancePreparation;
   important_notes: string[];
   reasoning: string;
@@ -266,6 +267,9 @@ function normalizeStructuredGuidance(value: unknown): StructuredGuidance | undef
     qualifier = null;
   }
   const summaryValues = [actionType, destination, qualifier];
+  const disposalSteps = stringArray(value.disposal_steps).filter(
+    (step, index, all) => all.findIndex((existing) => obviousDuplicate(step, existing)) === index,
+  );
   const steps = rawSteps.filter(
     (step, index, all) => !summaryValues.some((existing) => obviousDuplicate(step, existing))
       && all.findIndex((existing) => obviousDuplicate(step, existing)) === index,
@@ -291,6 +295,7 @@ function normalizeStructuredGuidance(value: unknown): StructuredGuidance | undef
     : [];
   return {
     summary: { action_type: actionType, destination, qualifier },
+    disposal_steps: disposalSteps,
     preparation: {
       required: steps.length > 0,
       steps,
