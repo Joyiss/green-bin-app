@@ -433,7 +433,7 @@ export default function RecentScanDetailScreen() {
                       pressed && styles.buttonPressed,
                     ]}>
                     <Text selectable style={styles.sourceLinkText}>{source.name}</Text>
-                    <Ionicons color="#2F6B52" name="open-outline" size={16} />
+                    <Ionicons color="#11100F" name="open-outline" size={16} />
                   </Pressable>
                 ) : (
                   <View key={source.id} style={styles.sourceRow}>

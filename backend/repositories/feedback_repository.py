@@ -13,6 +13,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 _SUPABASE_CLIENT: Client | None = None
 _TABLE_NAME = "closed_test_feedback"
 _CORRECTION_TABLE_NAME = "closed_test_correction_context"
+_SCAN_FEEDBACK_TABLE_NAME = "scan_feedback"
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +32,7 @@ def _get_supabase_client() -> Client | None:
         return _SUPABASE_CLIENT
 
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
     if not supabase_url or not supabase_key:
         logger.info(
             "Closed-test feedback storage unavailable because service-role credentials are missing."
@@ -180,4 +181,26 @@ def update_user_feedback(
     row = _first_row(response)
     if row is None:
         raise FeedbackContextNotFound(request_id)
+    return row
+
+
+def upsert_scan_feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    """Store result-sheet feedback with the server-side Supabase client."""
+    try:
+        response = (
+            _require_client()
+            .table(_SCAN_FEEDBACK_TABLE_NAME)
+            .upsert(payload, on_conflict="request_id")
+            .execute()
+        )
+    except FeedbackRepositoryUnavailable:
+        raise
+    except Exception as exc:
+        raise FeedbackRepositoryUnavailable(
+            f"Could not store scan feedback: {exc}"
+        ) from exc
+
+    row = _first_row(response)
+    if row is None:
+        raise FeedbackRepositoryUnavailable("Scan feedback upsert returned no row.")
     return row

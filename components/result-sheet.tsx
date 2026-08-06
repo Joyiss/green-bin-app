@@ -552,7 +552,7 @@ export function ResultSheet({
                 <View
                   key={`${reference.url}-${index}`}
                   style={[styles.sourceIcon, index > 0 && styles.sourceIconOverlap]}>
-                  <Ionicons color="#2F6B52" name="document-text-outline" size={15} />
+                  <Ionicons color="#11100F" name="document-text-outline" size={15} />
                 </View>
               ))}
             </View>
@@ -584,7 +584,7 @@ export function ResultSheet({
                     onPress={() => openReference(reference.url)}
                     style={({ pressed }) => [styles.openSource, pressed && styles.buttonPressed]}>
                     <Text style={styles.openSourceText}>Open source</Text>
-                    <Ionicons color="#2F6B52" name="open-outline" size={15} />
+                    <Ionicons color="#11100F" name="open-outline" size={15} />
                   </Pressable>
                 </View>
               ))}
@@ -595,8 +595,7 @@ export function ResultSheet({
 
       {children ? (
         <View>
-          <Text style={styles.sectionHeading}>Feedback</Text>
-          <View style={styles.feedbackCard}>{children}</View>
+          {children}
         </View>
       ) : null}
     </>
@@ -1183,7 +1182,7 @@ const styles = StyleSheet.create({
   },
   sourceIcon: {
     alignItems: 'center',
-    backgroundColor: '#F3EFEA',
+    backgroundColor: '#FFFEFC',
     borderColor: '#FFFFFF',
     borderRadius: 999,
     borderWidth: 2,
@@ -1256,13 +1255,6 @@ const styles = StyleSheet.create({
     color: '#2F6B52',
     fontSize: 14,
     ...GUIDANCE_FONT.semiBold,
-  },
-  feedbackCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E7E1D9',
-    borderRadius: 22,
-    borderWidth: 1,
-    padding: 15,
   },
   summary: {
     color: '#66605B',

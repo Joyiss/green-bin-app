@@ -1,12 +1,28 @@
 jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
 
+jest.mock('expo-clipboard', () => ({
+  setStringAsync: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('@expo/vector-icons', () => {
   const React = require('react');
   const { View } = require('react-native');
   const Ionicons = ({ name, ...props }: { name: string }) =>
     React.createElement(View, { ...props, accessibilityLabel: `icon-${name}` });
+  const MaterialCommunityIcons = ({ name, ...props }: { name: string }) =>
+    React.createElement(View, { ...props, accessibilityLabel: `icon-${name}` });
   Ionicons.glyphMap = {};
-  return { Ionicons };
+  MaterialCommunityIcons.glyphMap = {};
+  return { Ionicons, MaterialCommunityIcons };
+});
+
+jest.mock('@expo/vector-icons/FontAwesome', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const FontAwesome = ({ name, ...props }: { name: string }) =>
+    React.createElement(View, { ...props, accessibilityLabel: `icon-${name}` });
+  FontAwesome.glyphMap = {};
+  return FontAwesome;
 });
 
 jest.mock('@/constants/typography', () => ({

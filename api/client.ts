@@ -8,7 +8,7 @@ import {
 } from '@/api/contracts';
 import { ApiError, requestJson } from '@/api/request';
 import { API_BASE_URL } from '@/constants/api';
-import type { FeedbackUpdate } from '@/app/feedback-flow';
+import type { FeedbackUpdate, ScanFeedbackSubmission } from '@/app/feedback-flow';
 
 const HEALTH_TIMEOUT_MS = 30_000;
 const PREDICT_TIMEOUT_MS = 90_000;
@@ -109,5 +109,24 @@ export function sendFeedback(
     timeoutMs: FEEDBACK_TIMEOUT_MS,
     validate: (value) => normalizeFeedbackResponse(value, requestId),
   });
+}
+
+export function sendScanFeedback(
+  submission: ScanFeedbackSubmission,
+  signal?: AbortSignal,
+) {
+  return requestJson(
+    apiUrl(`/scan-feedback/${encodeURIComponent(submission.request_id)}`),
+    {
+      init: {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(submission),
+      },
+      signal,
+      timeoutMs: FEEDBACK_TIMEOUT_MS,
+      validate: (value) => normalizeFeedbackResponse(value, submission.request_id),
+    },
+  );
 }
 

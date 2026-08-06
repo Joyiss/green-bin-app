@@ -84,7 +84,6 @@ import {
 import {
   createFeedbackSubmissionCoordinator,
   isRetryableFeedbackError,
-  shouldShowGuidanceFeedback,
   type FeedbackUpdate,
 } from '@/app/feedback-flow';
 import {
@@ -226,6 +225,7 @@ type RequestState = 'idle' | 'loading';
 type PredictionRequestSource = 'image' | 'selection';
 
 type ScannerResultData = {
+  requestId: string | null;
   item: string;
   label: string;
   title: string;
@@ -532,6 +532,7 @@ function toSheetData(
   const showNearbyButton = shouldShowNearbyButton(response);
 
   return {
+    requestId: response.request_id ?? null,
     item: response.item,
     label: `IDENTIFIED - ${response.item.toUpperCase()}`,
     title: `${action}.`,
@@ -1215,6 +1216,7 @@ export default function ScannerScreen() {
     ((input: { imageUri?: string; selectedItem?: string }) => Promise<void>) | null
   >(null);
   const activeScanSessionRef = useRef<ActiveScanSession | null>(null);
+  const feedbackToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [permission, requestPermission, refreshCameraPermission] = useCameraPermissions();
   const [requestState, setRequestState] = useState<RequestState>('idle');
   const [sheetState, setSheetState] = useState<SheetViewState>('idle');
@@ -1236,8 +1238,7 @@ export default function ScannerScreen() {
   const [sheetHeight, setSheetHeight] = useState(0);
   const [isRateLimitWarningVisible, setIsRateLimitWarningVisible] = useState(false);
   const [scanLimitWarning, setScanLimitWarning] = useState<ScanLimitResponse | null>(null);
-  const [itemFeedback, setItemFeedback] = useState<boolean | null>(null);
-  const [guidanceFeedback, setGuidanceFeedback] = useState<boolean | null>(null);
+  const [feedbackToastVisible, setFeedbackToastVisible] = useState(false);
   const [developmentLocationSettings, setDevelopmentLocationSettings] =
     useState<DevelopmentLocationSettings>(
       DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
@@ -1293,6 +1294,9 @@ export default function ScannerScreen() {
       appStateSubscription.remove();
       predictAbortControllerRef.current?.abort();
       materialLabelsAbortControllerRef.current?.abort();
+      if (feedbackToastTimerRef.current) {
+        clearTimeout(feedbackToastTimerRef.current);
+      }
     };
   }, [refreshCameraPermission]);
 
@@ -1479,19 +1483,6 @@ export default function ScannerScreen() {
     }
   };
 
-  const handleChangeItem = () => {
-    setManualEntryText('');
-    setSelectedManualLabel(null);
-    setMaterialLabelsError(null);
-    setReviewSummary(DEFAULT_REVIEW_SUMMARY);
-    setVisibleSheetState('uncertain');
-    setSheetState('uncertain');
-
-    if (!materialLabels && !isLoadingMaterialLabels) {
-      void loadMaterialLabels();
-    }
-  };
-
   const submitFeedbackUpdate = async (update: FeedbackUpdate) => {
     const requestId = activeScanSessionRef.current?.originalRequestId;
     if (!requestId) {
@@ -1506,17 +1497,15 @@ export default function ScannerScreen() {
     }
   };
 
-  const handleItemFeedback = (answer: boolean) => {
-    setItemFeedback(answer);
-    void submitFeedbackUpdate({ item_correct: answer });
-    if (!answer) {
-      handleChangeItem();
+  const showFeedbackToast = () => {
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
     }
-  };
-
-  const handleGuidanceFeedback = (answer: boolean) => {
-    setGuidanceFeedback(answer);
-    void submitFeedbackUpdate({ guidance_helpful: answer });
+    setFeedbackToastVisible(true);
+    feedbackToastTimerRef.current = setTimeout(() => {
+      setFeedbackToastVisible(false);
+      feedbackToastTimerRef.current = null;
+    }, 3500);
   };
 
   const handleRetryMaterialLabels = () => {
@@ -1540,8 +1529,11 @@ export default function ScannerScreen() {
     setScanLimitWarning(null);
     setReviewSummary(DEFAULT_REVIEW_SUMMARY);
     resetManualEntry();
-    setItemFeedback(null);
-    setGuidanceFeedback(null);
+    setFeedbackToastVisible(false);
+    if (feedbackToastTimerRef.current) {
+      clearTimeout(feedbackToastTimerRef.current);
+      feedbackToastTimerRef.current = null;
+    }
 
     if (wasConfident) {
       setVisibleSheetState('idle');
@@ -1754,8 +1746,7 @@ export default function ScannerScreen() {
       setResult(null);
       setCandidates([]);
       setSheetState('idle');
-      setItemFeedback(null);
-      setGuidanceFeedback(null);
+      setFeedbackToastVisible(false);
     }
 
     setRequestState('loading');
@@ -1863,7 +1854,6 @@ export default function ScannerScreen() {
         return;
       }
       if (selectedItem && originalRequestId && prediction.request_id) {
-        setItemFeedback(false);
         void submitFeedbackUpdate({
           item_correct: false,
           prediction_changed: true,
@@ -2246,7 +2236,7 @@ export default function ScannerScreen() {
         {visibleSheetState === 'confident' && result ? (
           <ConfidentResultScreen
             bottomInset={insets.bottom}
-            onChangeItem={handleChangeItem}
+            feedbackToastVisible={feedbackToastVisible}
             onClose={resetScanner}
             onPrimaryAction={
               result.presentation.primaryAction?.behavior === 'nearby'
@@ -2274,15 +2264,9 @@ export default function ScannerScreen() {
             topInset={insets.top}>
             <ResultFeedback
               disabled={requestState === 'loading'}
-              guidanceAnswer={guidanceFeedback}
-              itemAnswer={itemFeedback}
-              onGuidanceAnswer={handleGuidanceFeedback}
-              onItemAnswer={handleItemFeedback}
-              showGuidanceQuestion={shouldShowGuidanceFeedback({
-                disposalAction: result.disposalAction,
-                guidanceSource: result.guidanceSource,
-                clarificationRequired: false,
-              })}
+              onFeedbackSuccess={showFeedbackToast}
+              presentation={result.presentation}
+              requestId={result.requestId}
             />
           </ConfidentResultScreen>
         ) : null}

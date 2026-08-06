@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
@@ -16,7 +16,7 @@ import { FREDOKA_TEXT_STYLES, INTER_TEXT_STYLES } from '@/constants/typography';
 type ConfidentResultScreenProps = {
   bottomInset: number;
   children?: ReactNode;
-  onChangeItem: () => void;
+  feedbackToastVisible?: boolean;
   onClose: () => void;
   onPrimaryAction?: () => void;
   presentation: ResultSheetPresentation;
@@ -113,7 +113,7 @@ function warningApplies(warning: string, item: string, category?: string | null)
 export function ConfidentResultScreen({
   bottomInset,
   children,
-  onChangeItem,
+  feedbackToastVisible = false,
   onClose,
   onPrimaryAction,
   presentation,
@@ -136,6 +136,8 @@ export function ConfidentResultScreen({
   const destination = cleanDisplayText(presentation.destinationLabel);
   const qualifier = firstSentence(presentation.keyQualifier);
   const methodIcon = disposalIcon(presentation.action, presentation.bestOption);
+  const isRecycleAction = presentation.action.trim().toLocaleLowerCase() === 'recycle';
+  const isDropOffAction = /drop\s*-?\s*off/i.test(presentation.action);
   const confidenceVisual = confidenceTone(confidence?.value);
   const category = presentation.status.find(
     (status) => status.label.toLocaleLowerCase() === 'category',
@@ -189,14 +191,6 @@ export function ConfidentResultScreen({
             <Text style={styles.pageTitle}>Disposal Details</Text>
             <View style={styles.headerActions}>
               <Pressable
-                accessibilityLabel="Change Item"
-                accessibilityRole="button"
-                hitSlop={6}
-                onPress={onChangeItem}
-                style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
-                <Ionicons color="#6F6A64" name="ellipsis-horizontal" size={20} />
-              </Pressable>
-              <Pressable
                 accessibilityLabel="Close scan result"
                 accessibilityRole="button"
                 hitSlop={6}
@@ -221,7 +215,13 @@ export function ConfidentResultScreen({
           <View style={styles.summaryCard} testID="primary-summary-card">
             <View style={styles.summaryMain}>
               <View style={styles.methodIcon}>
-                <Ionicons color="#2F8E6B" name={methodIcon} size={21} />
+                {isRecycleAction ? (
+                  <MaterialCommunityIcons color="#11100F" name="recycle" size={28} />
+                ) : isDropOffAction ? (
+                  <MaterialCommunityIcons color="#11100F" name="package-variant-closed" size={27} />
+                ) : (
+                  <Ionicons color="#11100F" name={methodIcon} size={23} />
+                )}
               </View>
               <Text maxFontSizeMultiplier={1.2} selectable style={styles.primaryAction} testID="summary-action">
                 {presentation.action}
@@ -371,14 +371,14 @@ export function ConfidentResultScreen({
                 onPress={() => setReferencesExpanded((current) => !current)}
                 style={({ pressed }) => [styles.referenceToggle, pressed && styles.pressed]}>
                 <View style={styles.referencesAccent}>
-                  <Ionicons color="#7857B8" name="book-outline" size={18} />
+                  <Ionicons color="#11100F" name="book-outline" size={18} />
                 </View>
                 <View style={styles.sourceIcons}>
                   {presentation.references.slice(0, 4).map((source, index) => (
                     <View
                       key={`${source.url}-${index}`}
                       style={[styles.sourceIcon, index > 0 && styles.sourceIconOverlap]}>
-                      <Ionicons color="#7857B8" name={roleIcon(source.role)} size={14} />
+                      <Ionicons color="#11100F" name={roleIcon(source.role)} size={14} />
                     </View>
                   ))}
                 </View>
@@ -409,7 +409,7 @@ export function ConfidentResultScreen({
                         onPress={() => openReference(source.url)}
                         style={({ pressed }) => [styles.openSource, pressed && styles.pressed]}>
                         <Text style={styles.openSourceText}>Open Source</Text>
-                        <Ionicons color="#7857B8" name="open-outline" size={14} />
+                        <Ionicons color="#11100F" name="open-outline" size={14} />
                       </Pressable>
                     </View>
                   ))}
@@ -420,8 +420,7 @@ export function ConfidentResultScreen({
 
           {children ? (
             <View style={styles.section}>
-              <Text style={styles.sectionHeading}>Feedback</Text>
-              <View style={styles.feedbackCard}>{children}</View>
+              {children}
             </View>
           ) : null}
 
@@ -436,6 +435,18 @@ export function ConfidentResultScreen({
             </Pressable>
           ) : null}
         </ScrollView>
+        {feedbackToastVisible ? (
+          <View
+            accessibilityLiveRegion="polite"
+            accessibilityRole="alert"
+            pointerEvents="none"
+            style={styles.feedbackToast}>
+            <View style={styles.feedbackToastIcon}>
+              <Ionicons color="#FFFFFF" name="checkmark" size={15} />
+            </View>
+            <Text style={styles.feedbackToastText}>Thank you for your feedback</Text>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -531,15 +542,12 @@ const styles = StyleSheet.create({
   },
   summaryMain: {
     alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
+    gap: 5,
     justifyContent: 'center',
   },
   methodIcon: {
     alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderRadius: 18,
-    height: 38,
+    height: 31,
     justifyContent: 'center',
     width: 38,
   },
@@ -716,7 +724,7 @@ const styles = StyleSheet.create({
   },
   referencesAccent: {
     alignItems: 'center',
-    backgroundColor: '#F4EEFF',
+    backgroundColor: '#FFFEFC',
     borderRadius: 999,
     height: 34,
     justifyContent: 'center',
@@ -728,7 +736,7 @@ const styles = StyleSheet.create({
   },
   sourceIcon: {
     alignItems: 'center',
-    backgroundColor: '#F4EEFF',
+    backgroundColor: '#FFFEFC',
     borderColor: '#FFFFFF',
     borderRadius: 999,
     borderWidth: 2,
@@ -806,12 +814,41 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     ...FONT.bodySemiBold,
   },
-  feedbackCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E7E1D9',
-    borderRadius: 20,
+  feedbackToast: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: '#FFFEFC',
+    borderColor: '#DDE9E1',
+    borderRadius: 999,
     borderWidth: 1,
-    padding: 14,
+    flexDirection: 'row',
+    gap: 9,
+    left: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    position: 'absolute',
+    right: 20,
+    shadowColor: '#1D3529',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    top: 12,
+    elevation: 8,
+  },
+  feedbackToastIcon: {
+    alignItems: 'center',
+    backgroundColor: '#2F8E6B',
+    borderRadius: 999,
+    height: 24,
+    justifyContent: 'center',
+    width: 24,
+  },
+  feedbackToastText: {
+    color: '#2D4338',
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    ...FONT.bodySemiBold,
   },
   primaryButton: {
     alignItems: 'center',

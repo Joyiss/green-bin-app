@@ -1,10 +1,16 @@
-import { fireEvent, render, within } from '@testing-library/react-native';
-import { Linking, StyleSheet } from 'react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import * as Clipboard from 'expo-clipboard';
+import { Linking, Share, StyleSheet } from 'react-native';
 import type { TextStyle } from 'react-native';
 
 import type { ResultSheetPresentation } from '../app/result-sheet-model';
+import { sendScanFeedback } from '../api/client';
 import { ConfidentResultScreen } from '../components/confident-result-screen';
 import { ResultFeedback } from '../components/result-feedback';
+
+jest.mock('../api/client', () => ({
+  sendScanFeedback: jest.fn().mockResolvedValue({ recorded: true, request_id: 'request-1' }),
+}));
 
 const presentation: ResultSheetPresentation = {
   action: 'Drop off',
@@ -52,29 +58,24 @@ const presentation: ResultSheetPresentation = {
 };
 
 async function renderScreen(overrides: Partial<ResultSheetPresentation> = {}) {
-  const onChangeItem = jest.fn();
   const onClose = jest.fn();
-  const onGuidanceAnswer = jest.fn();
-  const onItemAnswer = jest.fn();
+  const onFeedbackSuccess = jest.fn();
   const onPrimaryAction = jest.fn();
   const view = await render(
     <ConfidentResultScreen
       bottomInset={34}
-      onChangeItem={onChangeItem}
       onClose={onClose}
       onPrimaryAction={onPrimaryAction}
       presentation={{ ...presentation, ...overrides }}
       topInset={44}>
       <ResultFeedback
-        guidanceAnswer={null}
-        itemAnswer={null}
-        onGuidanceAnswer={onGuidanceAnswer}
-        onItemAnswer={onItemAnswer}
-        showGuidanceQuestion
+        onFeedbackSuccess={onFeedbackSuccess}
+        presentation={{ ...presentation, ...overrides }}
+        requestId="request-1"
       />
     </ConfidentResultScreen>,
   );
-  return { onChangeItem, onClose, onGuidanceAnswer, onItemAnswer, onPrimaryAction, view };
+  return { onClose, onFeedbackSuccess, onPrimaryAction, view };
 }
 
 function renderedTextNodes(value: unknown): { props: { style?: unknown }; type?: unknown }[] {
@@ -139,7 +140,11 @@ test('summary card uses action, destination, and one compact qualifier', async (
   const { view } = await renderScreen();
   const card = within(view.getByTestId('primary-summary-card'));
 
-  expect(card.getByLabelText('icon-refresh-outline')).toBeTruthy();
+  const dropOffIcon = card.getByLabelText('icon-package-variant-closed');
+  expect(dropOffIcon.props.color).toBe('#11100F');
+  const summaryMainStyle = StyleSheet.flatten(dropOffIcon.parent?.parent?.props.style);
+  expect(summaryMainStyle.alignItems).toBe('center');
+  expect(summaryMainStyle.flexDirection).toBeUndefined();
   expect(card.getByText('Drop off')).toBeTruthy();
   expect(card.getByText('River County Device Recovery')).toBeTruthy();
   expect(card.getByText('Appointment required')).toBeTruthy();
@@ -175,10 +180,11 @@ test('references expand, collapse, and open the original source URL', async () =
   const collapsed = view.getByRole('button', { name: 'References' });
 
   expect(collapsed.props.accessibilityState).toEqual({ expanded: false });
-  expect(view.getByLabelText('icon-book-outline')).toBeTruthy();
+  expect(view.getByLabelText('icon-book-outline').props.color).toBe('#11100F');
   expect(view.queryByText('provider.example')).toBeNull();
   await fireEvent.press(collapsed);
   expect(view.getByText('provider.example')).toBeTruthy();
+  expect(view.getByLabelText('icon-location-outline').props.color).toBe('#11100F');
   await fireEvent.press(
     view.getByRole('link', { name: 'Open source: River County Device Recovery' }),
   );
@@ -187,21 +193,98 @@ test('references expand, collapse, and open the original source URL', async () =
   expect(view.queryByText('provider.example')).toBeNull();
 });
 
-test('feedback, close, Change Item, and Nearby action callbacks remain intact', async () => {
+test('feedback actions, close, and Nearby callbacks remain intact without the overflow menu', async () => {
   const result = await renderScreen();
   const { view } = result;
 
   await fireEvent.press(view.getByRole('button', { name: 'Close scan result' }));
-  await fireEvent.press(view.getByRole('button', { name: 'Change Item' }));
-  await fireEvent.press(view.getByRole('button', { name: 'Item identified correctly: yes' }));
-  await fireEvent.press(view.getByRole('button', { name: 'Disposal guidance helpful: no' }));
+  await fireEvent.press(view.getByRole('button', { name: 'Thumbs Up' }));
   await fireEvent.press(view.getByRole('button', { name: 'Find Drop-Off Options' }));
 
   expect(result.onClose).toHaveBeenCalledTimes(1);
-  expect(result.onChangeItem).toHaveBeenCalledTimes(1);
-  expect(result.onItemAnswer).toHaveBeenCalledWith(true);
-  expect(result.onGuidanceAnswer).toHaveBeenCalledWith(false);
+  expect(view.queryByRole('button', { name: 'Change Item' })).toBeNull();
+  expect(view.queryByLabelText('icon-ellipsis-horizontal')).toBeNull();
+  expect(result.onFeedbackSuccess).toHaveBeenCalledTimes(1);
   expect(result.onPrimaryAction).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(sendScanFeedback)).toHaveBeenLastCalledWith(expect.objectContaining({
+    details: null,
+    guidance: expect.objectContaining({ action: 'Drop off', item: 'Portable speaker' }),
+    rating: 'positive',
+    reasons: [],
+    request_id: 'request-1',
+  }));
+});
+
+test('action buttons are icon-only, unboxed, and left-aligned', async () => {
+  const { view } = await renderScreen();
+  const rowStyle = StyleSheet.flatten(view.getByTestId('result-action-row').props.style);
+
+  expect(rowStyle.alignSelf).toBe('flex-start');
+  expect(rowStyle.backgroundColor).toBeUndefined();
+  expect(rowStyle.borderWidth).toBeUndefined();
+  for (const label of ['Copy', 'Share', 'Thumbs Up', 'Thumbs Down']) {
+    const button = view.getByRole('button', { name: label });
+    const style = StyleSheet.flatten(button.props.style);
+    expect(style.height).toBeGreaterThanOrEqual(36);
+    expect(style.width).toBeGreaterThanOrEqual(36);
+    expect(view.queryByText(label)).toBeNull();
+  }
+});
+
+test('copy includes the complete result and Share opens the native menu', async () => {
+  const copy = jest.mocked(Clipboard.setStringAsync);
+  const share = jest.spyOn(Share, 'share').mockResolvedValueOnce({ action: 'sharedAction' });
+  const { view } = await renderScreen();
+
+  await fireEvent.press(view.getByRole('button', { name: 'Copy' }));
+  await fireEvent.press(view.getByRole('button', { name: 'Share' }));
+
+  expect(copy).toHaveBeenCalledWith(expect.stringContaining('Recommendation: Drop off'));
+  expect(copy).toHaveBeenCalledWith(expect.stringContaining('References'));
+  expect(share).toHaveBeenCalledWith(expect.objectContaining({
+    message: expect.stringContaining('River County Device Recovery'),
+  }));
+});
+
+test('thumbs down opens a centered multi-reason feedback dialog', async () => {
+  const { view, onFeedbackSuccess } = await renderScreen();
+  await fireEvent.press(view.getByRole('button', { name: 'Thumbs Down' }));
+
+  expect(view.getByText('Share feedback')).toBeTruthy();
+  const itemReason = view.getByRole('button', { name: 'Item identified incorrectly' });
+  const localReason = view.getByRole('button', { name: 'Local information was inaccurate' });
+  await fireEvent.press(itemReason);
+  await fireEvent.press(localReason);
+  expect(view.getByRole('button', { name: 'Item identified incorrectly' }).props.accessibilityState)
+    .toMatchObject({ selected: true });
+  expect(view.getByRole('button', { name: 'Local information was inaccurate' }).props.accessibilityState)
+    .toMatchObject({ selected: true });
+  await fireEvent.changeText(view.getByLabelText('Feedback details'), 'The local route changed.');
+  await fireEvent.press(view.getByRole('button', { name: 'Submit' }));
+  expect(onFeedbackSuccess).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(sendScanFeedback)).toHaveBeenLastCalledWith(expect.objectContaining({
+    details: 'The local route changed.',
+    item_name: 'Portable speaker',
+    location: 'River City, Ohio',
+    rating: 'negative',
+    reasons: ['item_identified_incorrectly', 'local_information_inaccurate'],
+    request_id: 'request-1',
+  }));
+});
+
+test('a failed negative submission keeps the dialog selections and details', async () => {
+  jest.mocked(sendScanFeedback).mockRejectedValueOnce(new Error('offline'));
+  const { view } = await renderScreen();
+  await fireEvent.press(view.getByRole('button', { name: 'Thumbs Down' }));
+  await fireEvent.press(view.getByRole('button', { name: 'Missing important information' }));
+  await fireEvent.changeText(view.getByLabelText('Feedback details'), 'Missing preparation advice.');
+  await fireEvent.press(view.getByRole('button', { name: 'Submit' }));
+
+  await waitFor(() => expect(view.getByText(/Your selections are still here/)).toBeTruthy());
+  expect(view.getByText('Share feedback')).toBeTruthy();
+  expect(view.getByLabelText('Feedback details').props.value).toBe('Missing preparation advice.');
+  expect(view.getByRole('button', { name: 'Missing important information' }).props.accessibilityState)
+    .toMatchObject({ selected: true });
 });
 
 test('instruction primary actions scroll without changing Nearby behavior', async () => {
@@ -301,4 +384,11 @@ test('route icons generalize across common disposal outcomes', async () => {
     const { view } = await renderScreen({ action });
     expect(within(view.getByTestId('primary-summary-card')).getByLabelText(icon)).toBeTruthy();
   }
+});
+
+test('Recycle uses a centered black three-arrow recycle icon', async () => {
+  const { view } = await renderScreen({ action: 'Recycle' });
+  const icon = within(view.getByTestId('primary-summary-card')).getByLabelText('icon-recycle');
+
+  expect(icon.props.color).toBe('#11100F');
 });
