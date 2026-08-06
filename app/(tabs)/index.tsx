@@ -995,6 +995,7 @@ type CameraAreaProps = {
   bottomInset: number;
   isCameraActive: boolean;
   isCameraReady: boolean;
+  interactionEnabled?: boolean;
   showCameraLoadingOverlay: boolean;
   isLoading: boolean;
   isTorchOn: boolean;
@@ -1013,6 +1014,7 @@ function CameraArea({
   capturedImageUri,
   isCameraActive,
   isCameraReady,
+  interactionEnabled = true,
   showCameraLoadingOverlay,
   isLoading,
   isTorchOn,
@@ -1067,7 +1069,11 @@ function CameraArea({
   }, [analyzingStatusIndex, isLoading]);
 
   return (
-    <View style={styles.cameraCard}>
+    <View
+      accessibilityElementsHidden={!interactionEnabled}
+      importantForAccessibility={interactionEnabled ? 'auto' : 'no-hide-descendants'}
+      pointerEvents={interactionEnabled ? 'auto' : 'none'}
+      style={styles.cameraCard}>
       {capturedImageUri ? (
         <Image source={{ uri: capturedImageUri }} style={StyleSheet.absoluteFillObject} />
       ) : (
@@ -1084,10 +1090,13 @@ function CameraArea({
       )}
 
       <View style={styles.cameraOverlay}>
-        {renderCameraWarmupOverlay ? (
+        {renderCameraWarmupOverlay || shouldHideCameraUi ? (
           <Animated.View
             pointerEvents="auto"
-            style={[styles.cameraWarmupOverlay, { opacity: cameraWarmupOpacity }]}>
+            style={[
+              styles.cameraWarmupOverlay,
+              { opacity: shouldHideCameraUi ? 1 : cameraWarmupOpacity },
+            ]}>
             {showCameraLoadingOverlay ? (
               <View style={styles.cameraWarmupFrame}>
                 <ActivityIndicator color="#F3F6F9" size="small" />
@@ -1203,6 +1212,7 @@ export default function ScannerScreen() {
   const cameraRef = useRef<CameraView | null>(null);
   const cameraReadyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cameraLoadingOverlayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showCameraLoadingImmediatelyRef = useRef(false);
   const predictRequestRef = useRef(0);
   const predictLockRef = useRef(false);
   const predictAbortControllerRef = useRef<AbortController | null>(null);
@@ -1352,6 +1362,8 @@ export default function ScannerScreen() {
 
   useEffect(() => {
     const shouldWarmCamera = isScreenFocused && permission?.granted && !capturedImageUri;
+    const showLoadingImmediately = showCameraLoadingImmediatelyRef.current;
+    showCameraLoadingImmediatelyRef.current = false;
 
     if (cameraReadyTimeoutRef.current) {
       clearTimeout(cameraReadyTimeoutRef.current);
@@ -1370,11 +1382,13 @@ export default function ScannerScreen() {
     }
 
     setIsCameraReady(false);
-    setShowCameraLoadingOverlay(false);
-    cameraLoadingOverlayTimeoutRef.current = setTimeout(() => {
-      setShowCameraLoadingOverlay(true);
-      cameraLoadingOverlayTimeoutRef.current = null;
-    }, CAMERA_LOADING_OVERLAY_DELAY_MS);
+    setShowCameraLoadingOverlay(showLoadingImmediately);
+    if (!showLoadingImmediately) {
+      cameraLoadingOverlayTimeoutRef.current = setTimeout(() => {
+        setShowCameraLoadingOverlay(true);
+        cameraLoadingOverlayTimeoutRef.current = null;
+      }, CAMERA_LOADING_OVERLAY_DELAY_MS);
+    }
     // Keep the overlay from sticking if Android skips or delays the ready callback.
     cameraReadyTimeoutRef.current = setTimeout(() => {
       setIsCameraReady(true);
@@ -1427,6 +1441,9 @@ export default function ScannerScreen() {
   };
 
   const restoreCameraPreview = () => {
+    showCameraLoadingImmediatelyRef.current = true;
+    setIsCameraReady(false);
+    setShowCameraLoadingOverlay(true);
     setCapturedImageUri(null);
     setCameraPreviewKey((current) => current + 1);
   };
@@ -2173,6 +2190,7 @@ export default function ScannerScreen() {
             cameraPreviewKey={cameraPreviewKey}
             bottomInset={insets.bottom}
             capturedImageUri={capturedImageUri}
+            interactionEnabled={visibleSheetState !== 'confident'}
             isCameraActive={isScreenFocused && !capturedImageUri}
             isCameraReady={isCameraReady}
             showCameraLoadingOverlay={showCameraLoadingOverlay}

@@ -57,6 +57,12 @@ import {
 } from '../app/development-location.ts';
 import { scannerChromeVisibility } from '../app/confident-result-state.ts';
 import {
+  RESULT_SHEET_COLLAPSED,
+  RESULT_SHEET_EXPANDED,
+  RESULT_SHEET_HIDDEN,
+  resolveResultSheetSnapTarget,
+} from '../app/result-sheet-snap.ts';
+import {
   buildResultSheetPresentation,
   resultSheetMaxHeight,
   sourceUrlKey,
@@ -203,10 +209,10 @@ test('result sheet height uses nearly all safe available space', () => {
   assert.equal(resultSheetMaxHeight(844, 44, 96), 692);
 });
 
-test('confident result hides scanner chrome and closing restores it', () => {
+test('confident result keeps the Scan screen backdrop while hiding other scanner chrome', () => {
   assert.deepEqual(scannerChromeVisibility('confident'), {
     showBottomTabs: false,
-    showCamera: false,
+    showCamera: true,
     showDevelopmentLocation: false,
   });
   assert.deepEqual(scannerChromeVisibility('idle'), {
@@ -221,10 +227,46 @@ test('confident result hides scanner chrome and closing restores it', () => {
   });
 });
 
+test('result sheet swipes snap through expanded, collapsed, and hidden in order', () => {
+  const offsets = { collapsedOffset: 600, hiddenOffset: 800 };
+
+  assert.equal(resolveResultSheetSnapTarget({
+    ...offsets,
+    state: RESULT_SHEET_EXPANDED,
+    translationY: 100,
+    velocityY: 0,
+  }), RESULT_SHEET_EXPANDED);
+  assert.equal(resolveResultSheetSnapTarget({
+    ...offsets,
+    state: RESULT_SHEET_EXPANDED,
+    translationY: 700,
+    velocityY: 1600,
+  }), RESULT_SHEET_COLLAPSED);
+  assert.equal(resolveResultSheetSnapTarget({
+    ...offsets,
+    state: RESULT_SHEET_COLLAPSED,
+    translationY: 30,
+    velocityY: 0,
+  }), RESULT_SHEET_COLLAPSED);
+  assert.equal(resolveResultSheetSnapTarget({
+    ...offsets,
+    state: RESULT_SHEET_COLLAPSED,
+    translationY: -120,
+    velocityY: -1200,
+  }), RESULT_SHEET_EXPANDED);
+  assert.equal(resolveResultSheetSnapTarget({
+    ...offsets,
+    state: RESULT_SHEET_COLLAPSED,
+    translationY: 120,
+    velocityY: 600,
+  }), RESULT_SHEET_HIDDEN);
+});
+
 test('full-screen result uses loaded Fredoka and Inter faces and hides the custom tab bar', async () => {
-  const [typographySource, resultSource, scannerSource, tabLayoutSource] = await Promise.all([
+  const [typographySource, resultSource, legacySheetSource, scannerSource, tabLayoutSource] = await Promise.all([
     readFile(new URL('../constants/typography.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/confident-result-screen.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/result-sheet.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/(tabs)/index.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../app/(tabs)/_layout.tsx', import.meta.url), 'utf8'),
   ]);
@@ -241,8 +283,11 @@ test('full-screen result uses loaded Fredoka and Inter faces and hides the custo
   assert.match(resultSource, /INTER_TEXT_STYLES/);
   assert.doesNotMatch(resultSource, /MANROPE_TEXT_STYLES/);
   assert.doesNotMatch(resultSource, /SourceSans|serif/);
+  assert.doesNotMatch(resultSource, /\bselectable\b/);
+  assert.doesNotMatch(legacySheetSource, /\bselectable\b/);
   assert.match(resultSource, /warning-outline/);
   assert.match(scannerSource, /scannerChrome\.showCamera/);
+  assert.match(scannerSource, /showCameraLoadingImmediatelyRef/);
   assert.match(scannerSource, /scannerChrome\.showDevelopmentLocation/);
   assert.match(tabLayoutSource, /hidden \? null : <BottomNavBar/);
 });

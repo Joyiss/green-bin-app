@@ -1,16 +1,41 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+  type ReactNode,
+} from 'react';
 import {
   Alert,
   Linking,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
+  type AccessibilityActionEvent,
+  type LayoutChangeEvent,
+  useWindowDimensions,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 
 import { isPreparationInstruction, type ResultSheetPresentation } from '@/app/result-sheet-model';
+import {
+  RESULT_SHEET_COLLAPSED,
+  RESULT_SHEET_EXPANDED,
+  RESULT_SHEET_HIDDEN,
+  resolveResultSheetSnapTarget,
+  type ResultSheetSnapState,
+} from '@/app/result-sheet-snap';
 import { FREDOKA_TEXT_STYLES, INTER_TEXT_STYLES } from '@/constants/typography';
 
 type ConfidentResultScreenProps = {
@@ -30,6 +55,20 @@ const FONT = {
   headingMedium: { ...FREDOKA_TEXT_STYLES.medium, fontWeight: '500' as const },
   headingSemiBold: { ...FREDOKA_TEXT_STYLES.semiBold, fontWeight: '600' as const },
 };
+
+const SHEET_ENTER_SPRING = {
+  dampingRatio: 0.9,
+  duration: 900,
+} as const;
+const SHEET_SNAP_SPRING = {
+  dampingRatio: 0.88,
+  duration: 320,
+} as const;
+const COLLAPSED_CONTENT_BOTTOM_PADDING = 8;
+const CONTENT_TOP_PADDING = 9;
+const PAN_ACTIVATION_DISTANCE = 8;
+const SCROLL_TOP_TOLERANCE = 2;
+const SHEET_HIDDEN_OVERSCAN = 64;
 
 function comparisonText(value: string) {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -120,12 +159,216 @@ export function ConfidentResultScreen({
   topInset,
 }: ConfidentResultScreenProps) {
   const [referencesExpanded, setReferencesExpanded] = useState(false);
-  const scrollRef = useRef<ScrollView>(null);
+  const [sheetViewState, setSheetViewState] = useState<'expanded' | 'collapsed'>('expanded');
+  const [collapsedContentHeight, setCollapsedContentHeight] = useState(0);
+  const scrollRef = useRef<ComponentRef<typeof Animated.ScrollView>>(null);
   const stepsY = useRef(0);
+  const { height: windowHeight } = useWindowDimensions();
+  const surfaceHeight = Math.max(windowHeight - topInset, 1);
+  const collapsedHeight = Math.min(
+    collapsedContentHeight + CONTENT_TOP_PADDING + COLLAPSED_CONTENT_BOTTOM_PADDING,
+    surfaceHeight,
+  );
+  const collapsedOffset = Math.max(surfaceHeight - collapsedHeight, 0);
+  const hiddenOffset = windowHeight + SHEET_HIDDEN_OVERSCAN;
+  const expandedBottomPadding = Math.max(bottomInset, 16) + 32;
+  const translateY = useSharedValue(hiddenOffset);
+  const collapsedOffsetValue = useSharedValue(collapsedOffset);
+  const hiddenOffsetValue = useSharedValue(hiddenOffset);
+  const sheetStateValue = useSharedValue<ResultSheetSnapState>(RESULT_SHEET_EXPANDED);
+  const scrollOffset = useSharedValue(0);
+  const gestureStartOffset = useSharedValue(0);
+  const touchStartX = useSharedValue(0);
+  const touchStartY = useSharedValue(0);
 
   useEffect(() => {
     setReferencesExpanded(false);
   }, [presentation.item]);
+
+  useEffect(() => {
+    collapsedOffsetValue.value = collapsedOffset;
+    hiddenOffsetValue.value = hiddenOffset;
+
+    if (sheetStateValue.value === RESULT_SHEET_COLLAPSED && collapsedHeight > 0) {
+      translateY.value = withSpring(collapsedOffset, SHEET_SNAP_SPRING);
+    }
+  }, [
+    collapsedHeight,
+    collapsedOffset,
+    collapsedOffsetValue,
+    hiddenOffset,
+    hiddenOffsetValue,
+    sheetStateValue,
+    translateY,
+  ]);
+
+  useEffect(() => {
+    setSheetViewState('expanded');
+    sheetStateValue.value = RESULT_SHEET_EXPANDED;
+    scrollOffset.value = 0;
+    translateY.value = hiddenOffsetValue.value;
+    translateY.value = withSpring(0, SHEET_ENTER_SPRING);
+    // This is an entrance transition, so geometry updates must not replay it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presentation.item]);
+
+  const handleCollapsedContentLayout = ({ nativeEvent }: LayoutChangeEvent) => {
+    const nextHeight = nativeEvent.layout.height;
+    if (Math.abs(nextHeight - collapsedContentHeight) > 1) {
+      setCollapsedContentHeight(nextHeight);
+    }
+  };
+
+  const handleRenderedCollapsedLayout = ({ nativeEvent }: LayoutChangeEvent) => {
+    const nextContentHeight = Math.max(
+      nativeEvent.layout.height - CONTENT_TOP_PADDING - COLLAPSED_CONTENT_BOTTOM_PADDING,
+      0,
+    );
+    if (Math.abs(nextContentHeight - collapsedContentHeight) > 1) {
+      setCollapsedContentHeight(nextContentHeight);
+    }
+  };
+
+  const handleSnapTarget = useCallback((target: ResultSheetSnapState) => {
+    if (target === RESULT_SHEET_COLLAPSED) {
+      scrollRef.current?.scrollTo({ animated: false, y: 0 });
+      setSheetViewState('collapsed');
+      return;
+    }
+    if (target === RESULT_SHEET_EXPANDED) {
+      setSheetViewState('expanded');
+    }
+  }, []);
+
+  const handleSnapComplete = useCallback((target: ResultSheetSnapState) => {
+    if (target === RESULT_SHEET_HIDDEN) {
+      onClose();
+    }
+  }, [onClose]);
+
+  const handleClose = useCallback(() => {
+    if (sheetStateValue.value === RESULT_SHEET_HIDDEN) return;
+    sheetStateValue.value = RESULT_SHEET_HIDDEN;
+    translateY.value = withSpring(
+      hiddenOffsetValue.value,
+      SHEET_ENTER_SPRING,
+      (finished) => {
+        if (finished) {
+          runOnJS(handleSnapComplete)(RESULT_SHEET_HIDDEN);
+        }
+      },
+    );
+  }, [handleSnapComplete, hiddenOffsetValue, sheetStateValue, translateY]);
+
+  const scrollHandler = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      scrollOffset.value = Math.max(event.contentOffset.y, 0);
+    },
+  });
+
+  const nativeScrollGesture = useMemo(() => Gesture.Native(), []);
+
+  const sheetGesture = useMemo(() => {
+    const panGesture = Gesture.Pan()
+      .manualActivation(true)
+      .onTouchesDown((event) => {
+        const touch = event.allTouches[0];
+        if (!touch) return;
+        touchStartX.value = touch.absoluteX;
+        touchStartY.value = touch.absoluteY;
+      })
+      .onTouchesMove((event, stateManager) => {
+        const touch = event.allTouches[0];
+        if (!touch || collapsedOffsetValue.value <= 0) {
+          stateManager.fail();
+          return;
+        }
+
+        const deltaX = touch.absoluteX - touchStartX.value;
+        const deltaY = touch.absoluteY - touchStartY.value;
+        if (Math.abs(deltaY) < PAN_ACTIVATION_DISTANCE) return;
+        if (Math.abs(deltaX) > Math.abs(deltaY)) {
+          stateManager.fail();
+          return;
+        }
+
+        const currentState = sheetStateValue.value;
+        const canDragCollapsed = currentState === RESULT_SHEET_COLLAPSED;
+        const canDragExpanded =
+          currentState === RESULT_SHEET_EXPANDED &&
+          scrollOffset.value <= SCROLL_TOP_TOLERANCE &&
+          deltaY > 0;
+        if (canDragCollapsed || canDragExpanded) {
+          stateManager.activate();
+          return;
+        }
+        stateManager.fail();
+      })
+      .onBegin(() => {
+        gestureStartOffset.value = translateY.value;
+      })
+      .onUpdate((event) => {
+        const currentState = sheetStateValue.value;
+        if (currentState === RESULT_SHEET_HIDDEN) return;
+        const maximumOffset =
+          currentState === RESULT_SHEET_EXPANDED
+            ? collapsedOffsetValue.value
+            : hiddenOffsetValue.value;
+        translateY.value = Math.min(
+          Math.max(gestureStartOffset.value + event.translationY, 0),
+          maximumOffset,
+        );
+      })
+      .onEnd((event) => {
+        const currentState = sheetStateValue.value;
+        if (currentState === RESULT_SHEET_HIDDEN) return;
+        const target = resolveResultSheetSnapTarget({
+          collapsedOffset: collapsedOffsetValue.value,
+          hiddenOffset: hiddenOffsetValue.value,
+          state: currentState,
+          translationY: event.translationY,
+          velocityY: event.velocityY,
+        });
+        const targetOffset =
+          target === RESULT_SHEET_EXPANDED
+            ? 0
+            : target === RESULT_SHEET_COLLAPSED
+              ? collapsedOffsetValue.value
+              : hiddenOffsetValue.value;
+
+        sheetStateValue.value = target;
+        if (target !== currentState && target !== RESULT_SHEET_HIDDEN) {
+          runOnJS(handleSnapTarget)(target);
+        }
+        translateY.value = withSpring(
+          targetOffset,
+          { ...SHEET_SNAP_SPRING, velocity: event.velocityY },
+          (finished) => {
+            if (finished && target === RESULT_SHEET_HIDDEN) {
+              runOnJS(handleSnapComplete)(target);
+            }
+          },
+        );
+      });
+
+    return panGesture.simultaneousWithExternalGesture(nativeScrollGesture);
+  }, [
+    collapsedOffsetValue,
+    gestureStartOffset,
+    handleSnapComplete,
+    handleSnapTarget,
+    hiddenOffsetValue,
+    nativeScrollGesture,
+    scrollOffset,
+    sheetStateValue,
+    touchStartX,
+    touchStartY,
+    translateY,
+  ]);
+
+  const sheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
 
   const confidence = presentation.evidence?.rows.find(
     (row) => row.label.toLocaleLowerCase() === 'confidence',
@@ -175,77 +418,123 @@ export function ConfidentResultScreen({
     onPrimaryAction?.();
   };
 
+  const handleExpandedAccessibilityAction = ({ nativeEvent }: AccessibilityActionEvent) => {
+    if (nativeEvent.actionName !== 'collapse') return;
+    sheetStateValue.value = RESULT_SHEET_COLLAPSED;
+    handleSnapTarget(RESULT_SHEET_COLLAPSED);
+    translateY.value = withSpring(collapsedOffsetValue.value, SHEET_SNAP_SPRING);
+  };
+
+  const handleExpandCollapsedSheet = () => {
+    sheetStateValue.value = RESULT_SHEET_EXPANDED;
+    setSheetViewState('expanded');
+    translateY.value = withSpring(0, SHEET_SNAP_SPRING);
+  };
+
+  const renderHeaderRow = (compact: boolean) => (
+    <View style={styles.headerRow} testID={compact ? 'collapsed-disposal-header' : undefined}>
+      <Text style={styles.pageTitle}>Disposal Details</Text>
+      <View style={styles.headerActions}>
+        <Pressable
+          accessibilityLabel="Close scan result"
+          accessibilityRole="button"
+          hitSlop={6}
+          onPress={handleClose}
+          style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
+          <Ionicons color="#6F6A64" name="close" size={22} />
+        </Pressable>
+      </View>
+    </View>
+  );
+
+  const renderSummarySection = (compact: boolean) => (
+    <View
+      style={styles.summarySection}
+      testID={compact ? 'collapsed-result-summary' : undefined}>
+      <View style={styles.itemBlock}>
+        <Text
+          maxFontSizeMultiplier={1.25}
+          style={styles.itemName}
+          testID={compact ? undefined : 'recognized-item'}>
+          {presentation.item}
+        </Text>
+        {metadata.length ? (
+          <Text
+            maxFontSizeMultiplier={1.3}
+            style={styles.itemMetadata}
+            testID={compact ? undefined : 'compact-item-metadata'}>
+            {metadata.join(' \u2022 ')}
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.summaryCard} testID={compact ? undefined : 'primary-summary-card'}>
+        <View style={styles.summaryMain}>
+          <View style={styles.methodIcon}>
+            {isRecycleAction ? (
+              <MaterialCommunityIcons color="#11100F" name="recycle" size={28} />
+            ) : isDropOffAction ? (
+              <MaterialCommunityIcons color="#11100F" name="package-variant-closed" size={27} />
+            ) : (
+              <Ionicons color="#11100F" name={methodIcon} size={23} />
+            )}
+          </View>
+          <Text
+            maxFontSizeMultiplier={1.2}
+            style={styles.primaryAction}
+            testID={compact ? undefined : 'summary-action'}>
+            {presentation.action}
+          </Text>
+        </View>
+        {destination ? (
+          <Text
+            maxFontSizeMultiplier={1.35}
+            style={styles.destinationLabel}
+            testID={compact ? undefined : 'summary-destination'}>
+            {destination}
+          </Text>
+        ) : null}
+        {qualifier ? (
+          <Text
+            maxFontSizeMultiplier={1.4}
+            style={styles.summaryDescription}
+            testID={compact ? undefined : 'summary-description'}>
+            {qualifier}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+
   return (
     <View style={styles.overlay} testID="confident-result-screen">
-      <View style={[styles.safeAreaSpacer, { height: topInset }]} />
-      <View style={styles.surface} testID="confident-result-surface">
-        <ScrollView
-          accessibilityLabel="Disposal guidance details"
-          bounces={false}
-          contentContainerStyle={[styles.content, { paddingBottom: bottomInset + 24 }]}
-          ref={scrollRef}
-          showsVerticalScrollIndicator={false}>
-          <View style={styles.handle} />
-
-          <View style={styles.headerRow}>
-            <Text style={styles.pageTitle}>Disposal Details</Text>
-            <View style={styles.headerActions}>
-              <Pressable
-                accessibilityLabel="Close scan result"
-                accessibilityRole="button"
-                hitSlop={6}
-                onPress={onClose}
-                style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
-                <Ionicons color="#6F6A64" name="close" size={22} />
-              </Pressable>
+      <GestureDetector gesture={sheetGesture}>
+        <Animated.View
+          style={[styles.surface, { top: topInset }, sheetAnimatedStyle]}
+          testID="confident-result-surface">
+        {sheetViewState === 'expanded' ? (
+          <GestureDetector gesture={nativeScrollGesture}>
+            <Animated.ScrollView
+              accessibilityActions={[{ label: 'Collapse result', name: 'collapse' }]}
+              accessibilityLabel="Disposal guidance details"
+              bounces={false}
+              contentContainerStyle={[
+                styles.content,
+                { paddingBottom: expandedBottomPadding },
+              ]}
+              directionalLockEnabled
+              nestedScrollEnabled
+              onAccessibilityAction={handleExpandedAccessibilityAction}
+              onScroll={scrollHandler}
+              ref={scrollRef}
+              scrollEventThrottle={16}
+              showsVerticalScrollIndicator={false}
+              style={styles.expandedScroll}>
+            <View onLayout={handleCollapsedContentLayout} testID="collapsed-content-measure">
+              <View style={styles.handle} />
+              {renderHeaderRow(false)}
+              {renderSummarySection(false)}
             </View>
-          </View>
-
-          <View style={styles.itemBlock}>
-            <Text maxFontSizeMultiplier={1.25} selectable style={styles.itemName} testID="recognized-item">
-              {presentation.item}
-            </Text>
-            {metadata.length ? (
-              <Text maxFontSizeMultiplier={1.3} style={styles.itemMetadata} testID="compact-item-metadata">
-                {metadata.join(' \u2022 ')}
-              </Text>
-            ) : null}
-          </View>
-
-          <View style={styles.summaryCard} testID="primary-summary-card">
-            <View style={styles.summaryMain}>
-              <View style={styles.methodIcon}>
-                {isRecycleAction ? (
-                  <MaterialCommunityIcons color="#11100F" name="recycle" size={28} />
-                ) : isDropOffAction ? (
-                  <MaterialCommunityIcons color="#11100F" name="package-variant-closed" size={27} />
-                ) : (
-                  <Ionicons color="#11100F" name={methodIcon} size={23} />
-                )}
-              </View>
-              <Text maxFontSizeMultiplier={1.2} selectable style={styles.primaryAction} testID="summary-action">
-                {presentation.action}
-              </Text>
-            </View>
-            {destination ? (
-              <Text
-                maxFontSizeMultiplier={1.35}
-                selectable
-                style={styles.destinationLabel}
-                testID="summary-destination">
-                {destination}
-              </Text>
-            ) : null}
-            {qualifier ? (
-              <Text
-                maxFontSizeMultiplier={1.4}
-                selectable
-                style={styles.summaryDescription}
-                testID="summary-description">
-                {qualifier}
-              </Text>
-            ) : null}
-          </View>
 
           {preparationSteps.length ? (
             <View
@@ -267,12 +556,11 @@ export function ConfidentResultScreen({
                     <View style={styles.stepCopy}>
                       <Text
                         maxFontSizeMultiplier={1.4}
-                        selectable
                         style={[styles.stepTitle, !step.body && step.title.length > 64 && styles.stepLongText]}>
                         {cleanDisplayText(step.title)}
                       </Text>
                       {step.body ? (
-                        <Text maxFontSizeMultiplier={1.45} selectable style={styles.stepBody}>
+                        <Text maxFontSizeMultiplier={1.45} style={styles.stepBody}>
                           {cleanDisplayText(step.body)}
                         </Text>
                       ) : null}
@@ -287,7 +575,7 @@ export function ConfidentResultScreen({
             <View style={styles.section} testID="no-preparation-section">
               <Text style={styles.sectionHeading}>Preparation</Text>
               <View style={styles.card}>
-                <Text maxFontSizeMultiplier={1.4} selectable style={styles.stepBody}>
+                <Text maxFontSizeMultiplier={1.4} style={styles.stepBody}>
                   {presentation.noPreparationMessage}
                 </Text>
               </View>
@@ -306,7 +594,6 @@ export function ConfidentResultScreen({
                     <Text
                       key={`${warning}-${index}`}
                       maxFontSizeMultiplier={1.4}
-                      selectable
                       style={styles.warningText}>
                       {warning}
                     </Text>
@@ -341,7 +628,7 @@ export function ConfidentResultScreen({
                   </View>
                 ) : null}
                 {evidenceSummary ? (
-                  <Text maxFontSizeMultiplier={1.4} selectable style={styles.evidenceSummary}>
+                  <Text maxFontSizeMultiplier={1.4} style={styles.evidenceSummary}>
                     {evidenceSummary}
                   </Text>
                 ) : null}
@@ -350,7 +637,7 @@ export function ConfidentResultScreen({
                     {evidenceRows.map((row) => (
                       <View key={`${row.label}-${row.value}`} style={styles.evidenceRow}>
                         <Text style={styles.evidenceLabel}>{row.label}</Text>
-                        <Text maxFontSizeMultiplier={1.35} selectable style={styles.evidenceValue}>
+                        <Text maxFontSizeMultiplier={1.35} style={styles.evidenceValue}>
                           {cleanDisplayText(row.value)}
                         </Text>
                       </View>
@@ -395,11 +682,11 @@ export function ConfidentResultScreen({
                 <View style={styles.referenceCards}>
                   {presentation.references.map((source) => (
                     <View key={source.url} style={styles.referenceCard}>
-                      <Text selectable style={styles.referenceTitle}>{cleanDisplayText(source.title)}</Text>
+                      <Text style={styles.referenceTitle}>{cleanDisplayText(source.title)}</Text>
                       <Text style={styles.referenceDomain}>{cleanDisplayText(source.domain)}</Text>
                       <Text style={styles.referenceRole}>{cleanDisplayText(source.role)}</Text>
                       {source.description ? (
-                        <Text selectable style={styles.referenceDescription}>
+                        <Text style={styles.referenceDescription}>
                           {cleanDisplayText(source.description)}
                         </Text>
                       ) : null}
@@ -434,7 +721,25 @@ export function ConfidentResultScreen({
               </Text>
             </Pressable>
           ) : null}
-        </ScrollView>
+            </Animated.ScrollView>
+          </GestureDetector>
+        ) : (
+          <View
+            onLayout={handleRenderedCollapsedLayout}
+            testID="collapsed-result-content"
+            style={[styles.content, styles.collapsedContent]}>
+            <Pressable
+              accessibilityLabel="Expand result"
+              accessibilityRole="button"
+              hitSlop={10}
+              onPress={handleExpandCollapsedSheet}
+              style={styles.collapsedHandleButton}>
+              <View style={styles.handle} />
+            </Pressable>
+            {renderHeaderRow(true)}
+            {renderSummarySection(true)}
+          </View>
+        )}
         {feedbackToastVisible ? (
           <View
             accessibilityLiveRegion="polite"
@@ -447,7 +752,8 @@ export function ConfidentResultScreen({
             <Text style={styles.feedbackToastText}>Thank you for your feedback</Text>
           </View>
         ) : null}
-      </View>
+        </Animated.View>
+      </GestureDetector>
     </View>
   );
 }
@@ -455,22 +761,34 @@ export function ConfidentResultScreen({
 const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#050505',
+    backgroundColor: 'transparent',
     zIndex: 50,
-  },
-  safeAreaSpacer: {
-    flexShrink: 0,
   },
   surface: {
     backgroundColor: '#FFFEFC',
+    bottom: 0,
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
     flex: 1,
+    left: 0,
+    minHeight: 0,
     overflow: 'hidden',
+    position: 'absolute',
+    right: 0,
   },
   content: {
     paddingHorizontal: 20,
-    paddingTop: 9,
+    paddingTop: CONTENT_TOP_PADDING,
+  },
+  collapsedContent: {
+    paddingBottom: COLLAPSED_CONTENT_BOTTOM_PADDING,
+  },
+  collapsedHandleButton: {
+    alignSelf: 'stretch',
+  },
+  expandedScroll: {
+    flex: 1,
+    minHeight: 0,
   },
   handle: {
     alignSelf: 'center',
@@ -513,6 +831,9 @@ const styles = StyleSheet.create({
   },
   itemBlock: {
     marginTop: 18,
+  },
+  summarySection: {
+    flexShrink: 0,
   },
   itemName: {
     color: '#11100F',

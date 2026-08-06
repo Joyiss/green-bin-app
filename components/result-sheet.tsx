@@ -341,7 +341,7 @@ export function ResultSheet({
           ) : null}
         </View>
       </View>
-      <Text maxFontSizeMultiplier={1.3} selectable style={styles.itemName} testID="recognized-item">
+      <Text maxFontSizeMultiplier={1.3} style={styles.itemName} testID="recognized-item">
         {guidancePresentation.item}
       </Text>
       {visibleStatus.length ? (
@@ -410,25 +410,23 @@ export function ResultSheet({
         <Text style={styles.cardEyebrow}>Best option</Text>
         <Text
           maxFontSizeMultiplier={1.2}
-          selectable
           style={styles.bestOptionAction}
           testID="best-option-action">
           {guidancePresentation.action}
         </Text>
         {routeTitle ? (
-          <Text maxFontSizeMultiplier={1.35} selectable style={styles.bestOptionTitle}>
+          <Text maxFontSizeMultiplier={1.35} style={styles.bestOptionTitle}>
             {routeTitle}
           </Text>
         ) : null}
         {routeDescription ? (
-          <Text maxFontSizeMultiplier={1.45} selectable style={styles.bestOptionDescription}>
+          <Text maxFontSizeMultiplier={1.45} style={styles.bestOptionDescription}>
             {routeDescription}
           </Text>
         ) : null}
         {optionDescription ? (
           <Text
             maxFontSizeMultiplier={1.45}
-            selectable
             style={styles.bestOptionDescription}
             testID="best-option-text">
             {optionDescription}
@@ -439,7 +437,7 @@ export function ResultSheet({
             {visibleFacts.map((fact) => (
               <View key={`${fact.label}-${fact.value}`} style={styles.quickFact}>
                 <Text maxFontSizeMultiplier={1.3} style={styles.quickFactLabel}>{fact.label}</Text>
-                <Text maxFontSizeMultiplier={1.3} selectable style={styles.quickFactValue}>
+                <Text maxFontSizeMultiplier={1.3} style={styles.quickFactValue}>
                   {fact.value}
                 </Text>
               </View>
@@ -467,7 +465,6 @@ export function ResultSheet({
                 <View style={styles.guidanceStepCopy}>
                   <Text
                     maxFontSizeMultiplier={1.4}
-                    selectable
                     style={[
                       styles.guidanceStepTitle,
                       !step.body && step.title.length > 64 && styles.guidanceStepLongText,
@@ -475,7 +472,7 @@ export function ResultSheet({
                     {step.title}
                   </Text>
                   {step.body ? (
-                    <Text maxFontSizeMultiplier={1.5} selectable style={styles.guidanceStepBody}>
+                    <Text maxFontSizeMultiplier={1.5} style={styles.guidanceStepBody}>
                       {step.body}
                     </Text>
                   ) : null}
@@ -493,7 +490,7 @@ export function ResultSheet({
             {guidancePresentation.warnings.map((warning, index) => (
               <View key={`${warning}-${index}`} style={styles.warningRow}>
                 <Ionicons color="#8A6434" name="warning-outline" size={18} />
-                <Text selectable style={[styles.warningText, styles.guidanceWarningText]}>
+                <Text style={[styles.warningText, styles.guidanceWarningText]}>
                   {warning}
                 </Text>
               </View>
@@ -518,7 +515,7 @@ export function ResultSheet({
               </View>
             ) : null}
             {guidancePresentation.evidence.summary ? (
-              <Text maxFontSizeMultiplier={1.5} selectable style={styles.evidenceSummary}>
+              <Text maxFontSizeMultiplier={1.5} style={styles.evidenceSummary}>
                 {guidancePresentation.evidence.summary}
               </Text>
             ) : null}
@@ -527,7 +524,7 @@ export function ResultSheet({
                 {evidenceRows.map((row) => (
                   <View key={`${row.label}-${row.value}`} style={styles.evidenceRow}>
                     <Text style={styles.evidenceLabel}>{row.label}</Text>
-                    <Text maxFontSizeMultiplier={1.4} selectable style={styles.evidenceValue}>
+                    <Text maxFontSizeMultiplier={1.4} style={styles.evidenceValue}>
                       {row.value}
                     </Text>
                   </View>
@@ -570,11 +567,11 @@ export function ResultSheet({
             <View style={styles.referenceCards}>
               {guidancePresentation.references.map((reference) => (
                 <View key={reference.url} style={styles.referenceCard}>
-                  <Text selectable style={styles.referenceTitle}>{reference.title}</Text>
+                  <Text style={styles.referenceTitle}>{reference.title}</Text>
                   <Text style={styles.referenceDomain}>{reference.domain}</Text>
                   <Text style={styles.referenceRole}>{reference.role}</Text>
                   {reference.description ? (
-                    <Text selectable style={styles.referenceDescription}>
+                    <Text style={styles.referenceDescription}>
                       {reference.description}
                     </Text>
                   ) : null}
@@ -619,7 +616,7 @@ export function ResultSheet({
         style={styles.body}>
         {guidanceDetails ?? (
           <>
-            <Text selectable style={styles.summary}>{summary}</Text>
+            <Text style={styles.summary}>{summary}</Text>
 
             {steps.length ? (
               <View style={styles.steps}>
@@ -628,7 +625,7 @@ export function ResultSheet({
                     <View style={styles.stepIndex}>
                       <Text style={styles.stepIndexText}>{index + 1}</Text>
                     </View>
-                    <Text selectable style={styles.stepText}>{step}</Text>
+                    <Text style={styles.stepText}>{step}</Text>
                   </View>
                 ))}
               </View>
@@ -639,7 +636,7 @@ export function ResultSheet({
                 {warnings.map((warning, index) => (
                   <View key={`${warning}-${index}`} style={styles.warningRow}>
                     <Ionicons color="#8A6434" name="warning-outline" size={17} />
-                    <Text selectable style={styles.warningText}>{warning}</Text>
+                    <Text style={styles.warningText}>{warning}</Text>
                   </View>
                 ))}
               </View>

@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Linking, Share, StyleSheet } from 'react-native';
 import type { TextStyle } from 'react-native';
@@ -78,12 +78,15 @@ async function renderScreen(overrides: Partial<ResultSheetPresentation> = {}) {
   return { onClose, onFeedbackSuccess, onPrimaryAction, view };
 }
 
-function renderedTextNodes(value: unknown): { props: { style?: unknown }; type?: unknown }[] {
+function renderedTextNodes(value: unknown): {
+  props: { selectable?: boolean; style?: unknown };
+  type?: unknown;
+}[] {
   if (Array.isArray(value)) return value.flatMap(renderedTextNodes);
   if (!value || typeof value !== 'object') return [];
   const node = value as {
     children?: unknown;
-    props: { style?: unknown };
+    props: { selectable?: boolean; style?: unknown };
     type?: unknown;
   };
   return [
@@ -101,7 +104,38 @@ test('result fills the usable screen below the safe area', async () => {
   expect(overlay.top).toBe(0);
   expect(overlay.bottom).toBe(0);
   expect(surface.flex).toBe(1);
-  expect(view.getByLabelText('Disposal guidance details')).toBeTruthy();
+  expect(surface.top).toBe(44);
+  expect(surface.bottom).toBe(0);
+  const scrollView = view.getByLabelText('Disposal guidance details');
+  expect(StyleSheet.flatten(scrollView.props.style).flex).toBe(1);
+  expect(StyleSheet.flatten(scrollView.props.contentContainerStyle).paddingBottom).toBe(66);
+  expect(scrollView.props.nestedScrollEnabled).toBe(true);
+});
+
+test('collapsed result tightly keeps the handle, header, close button, and summary', async () => {
+  const result = await renderScreen();
+  await fireEvent(result.view.getByTestId('collapsed-content-measure'), 'layout', {
+    nativeEvent: { layout: { height: 320, width: 390, x: 0, y: 0 } },
+  });
+  await act(async () => {
+    result.view.getByLabelText('Disposal guidance details').props.onAccessibilityAction({
+      nativeEvent: { actionName: 'collapse' },
+    });
+  });
+
+  const collapsed = result.view.getByTestId('collapsed-result-content');
+  const collapsedStyle = StyleSheet.flatten(collapsed.props.style);
+  expect(collapsedStyle.paddingBottom).toBe(8);
+  expect(collapsedStyle.height).toBeUndefined();
+  expect(collapsedStyle.minHeight).toBeUndefined();
+  expect(collapsedStyle.flex).toBeUndefined();
+  expect(result.view.getByTestId('collapsed-disposal-header')).toBeTruthy();
+  expect(result.view.getByText('Disposal Details')).toBeTruthy();
+  expect(result.view.getByTestId('collapsed-result-summary')).toBeTruthy();
+  expect(result.view.queryByRole('button', { name: 'Find Drop-Off Options' })).toBeNull();
+
+  await fireEvent.press(result.view.getByRole('button', { name: 'Close scan result' }));
+  expect(result.onClose).toHaveBeenCalledTimes(1);
 });
 
 test('uses only loaded Fredoka or Inter faces and keeps compact sizes', async () => {
@@ -117,6 +151,7 @@ test('uses only loaded Fredoka or Inter faces and keeps compact sizes', async ()
 
   for (const node of textNodes) {
     const style = StyleSheet.flatten(node.props.style) as TextStyle;
+    expect(node.props.selectable).not.toBe(true);
     expect(style.fontSize ?? 0).toBeLessThanOrEqual(30);
     expect(allowedFamilies.has(String(style.fontFamily))).toBe(true);
     expect(['400', '500', '600']).toContain(style.fontWeight);
