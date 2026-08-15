@@ -2,6 +2,7 @@ import { act, fireEvent, render, waitFor, within } from '@testing-library/react-
 import * as Clipboard from 'expo-clipboard';
 import { Linking, Share, StyleSheet } from 'react-native';
 import type { TextStyle } from 'react-native';
+import * as Reanimated from 'react-native-reanimated';
 
 import type { ResultSheetPresentation } from '../app/result-sheet-model';
 import { sendScanFeedback } from '../api/client';
@@ -113,7 +114,11 @@ test('result fills the usable screen below the safe area', async () => {
 });
 
 test('collapsed result tightly keeps the handle, header, close button, and summary', async () => {
+  const springSpy = jest.spyOn(Reanimated, 'withSpring');
   const result = await renderScreen();
+  await fireEvent(result.view.getByTestId('confident-result-surface'), 'layout', {
+    nativeEvent: { layout: { height: 700, width: 390, x: 0, y: 44 } },
+  });
   await fireEvent(result.view.getByTestId('collapsed-content-measure'), 'layout', {
     nativeEvent: { layout: { height: 320, width: 390, x: 0, y: 0 } },
   });
@@ -125,7 +130,7 @@ test('collapsed result tightly keeps the handle, header, close button, and summa
 
   const collapsed = result.view.getByTestId('collapsed-result-content');
   const collapsedStyle = StyleSheet.flatten(collapsed.props.style);
-  expect(collapsedStyle.paddingBottom).toBe(8);
+  expect(collapsedStyle.paddingBottom).toBe(6);
   expect(collapsedStyle.height).toBeUndefined();
   expect(collapsedStyle.minHeight).toBeUndefined();
   expect(collapsedStyle.flex).toBeUndefined();
@@ -133,6 +138,7 @@ test('collapsed result tightly keeps the handle, header, close button, and summa
   expect(result.view.getByText('Disposal Details')).toBeTruthy();
   expect(result.view.getByTestId('collapsed-result-summary')).toBeTruthy();
   expect(result.view.queryByRole('button', { name: 'Find Drop-Off Options' })).toBeNull();
+  expect(springSpy).toHaveBeenLastCalledWith(365, expect.any(Object));
 
   await fireEvent.press(result.view.getByRole('button', { name: 'Close scan result' }));
   expect(result.onClose).toHaveBeenCalledTimes(1);

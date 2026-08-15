@@ -21,11 +21,16 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
+  ReduceMotion,
   runOnJS,
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
+  withTiming,
+  type EntryAnimationsValues,
+  type ExitAnimationsValues,
 } from 'react-native-reanimated';
 
 import { isPreparationInstruction, type ResultSheetPresentation } from '@/app/result-sheet-model';
@@ -64,11 +69,123 @@ const SHEET_SNAP_SPRING = {
   dampingRatio: 0.88,
   duration: 320,
 } as const;
-const COLLAPSED_CONTENT_BOTTOM_PADDING = 8;
 const CONTENT_TOP_PADDING = 9;
 const PAN_ACTIVATION_DISTANCE = 8;
 const SCROLL_TOP_TOLERANCE = 2;
 const SHEET_HIDDEN_OVERSCAN = 64;
+const REFERENCE_ANIMATION_DURATION = 220;
+const REFERENCE_CARDS_MARGIN_TOP = 8;
+const COLLAPSED_CARD_BOTTOM_GAP = 50;
+const TOAST_ANIMATION_DURATION = 200;
+const MOTION_EASING = Easing.out(Easing.cubic);
+
+const referenceCardsEntering = (values: EntryAnimationsValues) => {
+  'worklet';
+  return {
+    initialValues: {
+      height: 0,
+      opacity: 0,
+      transform: [{ translateY: -4 }],
+    },
+    animations: {
+      height: withTiming(values.targetHeight, {
+        duration: REFERENCE_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      opacity: withTiming(1, {
+        duration: REFERENCE_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      transform: [{
+        translateY: withTiming(0, {
+          duration: REFERENCE_ANIMATION_DURATION,
+          easing: MOTION_EASING,
+          reduceMotion: ReduceMotion.System,
+        }),
+      }],
+    },
+  };
+};
+
+const referenceCardsExiting = (values: ExitAnimationsValues) => {
+  'worklet';
+  return {
+    initialValues: {
+      height: values.currentHeight,
+      opacity: 1,
+      transform: [{ translateY: 0 }],
+    },
+    animations: {
+      height: withTiming(0, {
+        duration: REFERENCE_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      opacity: withTiming(0, {
+        duration: REFERENCE_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      transform: [{
+        translateY: withTiming(-4, {
+          duration: REFERENCE_ANIMATION_DURATION,
+          easing: MOTION_EASING,
+          reduceMotion: ReduceMotion.System,
+        }),
+      }],
+    },
+  };
+};
+
+const feedbackToastEntering = () => {
+  'worklet';
+  return {
+    initialValues: {
+      opacity: 0,
+      transform: [{ translateY: -12 }],
+    },
+    animations: {
+      opacity: withTiming(1, {
+        duration: TOAST_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      transform: [{
+        translateY: withTiming(0, {
+          duration: TOAST_ANIMATION_DURATION,
+          easing: MOTION_EASING,
+          reduceMotion: ReduceMotion.System,
+        }),
+      }],
+    },
+  };
+};
+
+const feedbackToastExiting = () => {
+  'worklet';
+  return {
+    initialValues: {
+      opacity: 1,
+      transform: [{ translateY: 0 }],
+    },
+    animations: {
+      opacity: withTiming(0, {
+        duration: TOAST_ANIMATION_DURATION,
+        easing: MOTION_EASING,
+        reduceMotion: ReduceMotion.System,
+      }),
+      transform: [{
+        translateY: withTiming(-12, {
+          duration: TOAST_ANIMATION_DURATION,
+          easing: MOTION_EASING,
+          reduceMotion: ReduceMotion.System,
+        }),
+      }],
+    },
+  };
+};
 
 function comparisonText(value: string) {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -161,12 +278,13 @@ export function ConfidentResultScreen({
   const [referencesExpanded, setReferencesExpanded] = useState(false);
   const [sheetViewState, setSheetViewState] = useState<'expanded' | 'collapsed'>('expanded');
   const [collapsedContentHeight, setCollapsedContentHeight] = useState(0);
+  const [measuredSurfaceHeight, setMeasuredSurfaceHeight] = useState(0);
   const scrollRef = useRef<ComponentRef<typeof Animated.ScrollView>>(null);
   const stepsY = useRef(0);
   const { height: windowHeight } = useWindowDimensions();
-  const surfaceHeight = Math.max(windowHeight - topInset, 1);
+  const surfaceHeight = measuredSurfaceHeight || Math.max(windowHeight - topInset, 1);
   const collapsedHeight = Math.min(
-    collapsedContentHeight + CONTENT_TOP_PADDING + COLLAPSED_CONTENT_BOTTOM_PADDING,
+    collapsedContentHeight + CONTENT_TOP_PADDING + COLLAPSED_CARD_BOTTOM_GAP,
     surfaceHeight,
   );
   const collapsedOffset = Math.max(surfaceHeight - collapsedHeight, 0);
@@ -180,10 +298,19 @@ export function ConfidentResultScreen({
   const gestureStartOffset = useSharedValue(0);
   const touchStartX = useSharedValue(0);
   const touchStartY = useSharedValue(0);
+  const referencesChevronProgress = useSharedValue(0);
 
   useEffect(() => {
     setReferencesExpanded(false);
   }, [presentation.item]);
+
+  useEffect(() => {
+    referencesChevronProgress.value = withTiming(referencesExpanded ? 1 : 0, {
+      duration: REFERENCE_ANIMATION_DURATION,
+      easing: MOTION_EASING,
+      reduceMotion: ReduceMotion.System,
+    });
+  }, [referencesChevronProgress, referencesExpanded]);
 
   useEffect(() => {
     collapsedOffsetValue.value = collapsedOffset;
@@ -219,9 +346,16 @@ export function ConfidentResultScreen({
     }
   };
 
+  const handleSurfaceLayout = ({ nativeEvent }: LayoutChangeEvent) => {
+    const nextHeight = nativeEvent.layout.height;
+    if (Math.abs(nextHeight - measuredSurfaceHeight) > 1) {
+      setMeasuredSurfaceHeight(nextHeight);
+    }
+  };
+
   const handleRenderedCollapsedLayout = ({ nativeEvent }: LayoutChangeEvent) => {
     const nextContentHeight = Math.max(
-      nativeEvent.layout.height - CONTENT_TOP_PADDING - COLLAPSED_CONTENT_BOTTOM_PADDING,
+      nativeEvent.layout.height - CONTENT_TOP_PADDING - COLLAPSED_CARD_BOTTOM_GAP,
       0,
     );
     if (Math.abs(nextContentHeight - collapsedContentHeight) > 1) {
@@ -370,6 +504,10 @@ export function ConfidentResultScreen({
     transform: [{ translateY: translateY.value }],
   }));
 
+  const referencesChevronAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${referencesChevronProgress.value * 180}deg` }],
+  }));
+
   const confidence = presentation.evidence?.rows.find(
     (row) => row.label.toLocaleLowerCase() === 'confidence',
   );
@@ -510,6 +648,7 @@ export function ConfidentResultScreen({
     <View style={styles.overlay} testID="confident-result-screen">
       <GestureDetector gesture={sheetGesture}>
         <Animated.View
+          onLayout={handleSurfaceLayout}
           style={[styles.surface, { top: topInset }, sheetAnimatedStyle]}
           testID="confident-result-surface">
         {sheetViewState === 'expanded' ? (
@@ -672,35 +811,38 @@ export function ConfidentResultScreen({
                 <Text style={styles.sourceCount}>
                   {presentation.references.length} {presentation.references.length === 1 ? 'source' : 'sources'}
                 </Text>
-                <Ionicons
-                  color="#8C857D"
-                  name={referencesExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={17}
-                />
+                <Animated.View style={[styles.referenceChevron, referencesChevronAnimatedStyle]}>
+                  <Ionicons color="#8C857D" name="chevron-down" size={17} />
+                </Animated.View>
               </Pressable>
               {referencesExpanded ? (
-                <View style={styles.referenceCards}>
-                  {presentation.references.map((source) => (
-                    <View key={source.url} style={styles.referenceCard}>
-                      <Text style={styles.referenceTitle}>{cleanDisplayText(source.title)}</Text>
-                      <Text style={styles.referenceDomain}>{cleanDisplayText(source.domain)}</Text>
-                      <Text style={styles.referenceRole}>{cleanDisplayText(source.role)}</Text>
-                      {source.description ? (
-                        <Text style={styles.referenceDescription}>
-                          {cleanDisplayText(source.description)}
-                        </Text>
-                      ) : null}
-                      <Pressable
-                        accessibilityLabel={`Open source: ${source.title}`}
-                        accessibilityRole="link"
-                        onPress={() => openReference(source.url)}
-                        style={({ pressed }) => [styles.openSource, pressed && styles.pressed]}>
-                        <Text style={styles.openSourceText}>Open Source</Text>
-                        <Ionicons color="#11100F" name="open-outline" size={14} />
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
+                <Animated.View
+                  entering={referenceCardsEntering}
+                  exiting={referenceCardsExiting}
+                  style={styles.referenceCardsClip}>
+                  <View style={styles.referenceCards}>
+                    {presentation.references.map((source) => (
+                      <View key={source.url} style={styles.referenceCard}>
+                        <Text style={styles.referenceTitle}>{cleanDisplayText(source.title)}</Text>
+                        <Text style={styles.referenceDomain}>{cleanDisplayText(source.domain)}</Text>
+                        <Text style={styles.referenceRole}>{cleanDisplayText(source.role)}</Text>
+                        {source.description ? (
+                          <Text style={styles.referenceDescription}>
+                            {cleanDisplayText(source.description)}
+                          </Text>
+                        ) : null}
+                        <Pressable
+                          accessibilityLabel={`Open source: ${source.title}`}
+                          accessibilityRole="link"
+                          onPress={() => openReference(source.url)}
+                          style={({ pressed }) => [styles.openSource, pressed && styles.pressed]}>
+                          <Text style={styles.openSourceText}>Open Source</Text>
+                          <Ionicons color="#11100F" name="open-outline" size={14} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                </Animated.View>
               ) : null}
             </View>
           ) : null}
@@ -741,16 +883,18 @@ export function ConfidentResultScreen({
           </View>
         )}
         {feedbackToastVisible ? (
-          <View
+          <Animated.View
             accessibilityLiveRegion="polite"
             accessibilityRole="alert"
+            entering={feedbackToastEntering}
+            exiting={feedbackToastExiting}
             pointerEvents="none"
             style={styles.feedbackToast}>
             <View style={styles.feedbackToastIcon}>
               <Ionicons color="#FFFFFF" name="checkmark" size={15} />
             </View>
             <Text style={styles.feedbackToastText}>Thank you for your feedback</Text>
-          </View>
+          </Animated.View>
         ) : null}
         </Animated.View>
       </GestureDetector>
@@ -781,7 +925,7 @@ const styles = StyleSheet.create({
     paddingTop: CONTENT_TOP_PADDING,
   },
   collapsedContent: {
-    paddingBottom: COLLAPSED_CONTENT_BOTTOM_PADDING,
+    paddingBottom: COLLAPSED_CARD_BOTTOM_GAP,
   },
   collapsedHandleButton: {
     alignSelf: 'stretch',
@@ -895,7 +1039,7 @@ const styles = StyleSheet.create({
     ...FONT.bodyRegular,
   },
   section: {
-    marginTop: 16,
+    marginTop: 8,
   },
   sectionHeading: {
     color: '#817B74',
@@ -1077,9 +1221,15 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     ...FONT.bodyRegular,
   },
+  referenceChevron: {
+    marginLeft: 8,
+  },
+  referenceCardsClip: {
+    overflow: 'hidden',
+  },
   referenceCards: {
     gap: 8,
-    marginTop: 8,
+    paddingTop: REFERENCE_CARDS_MARGIN_TOP,
   },
   referenceCard: {
     backgroundColor: '#FFFFFF',
