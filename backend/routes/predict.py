@@ -42,6 +42,16 @@ def _has_predict_input(file: UploadFile | None, selected_item: str | None) -> bo
     return file is not None or (isinstance(selected_item, str) and bool(selected_item.strip()))
 
 
+def _scan_limit_response(
+    error: str,
+    metadata: scan_rate_limit_service.ScanRateLimitMetadata,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"error": error, **metadata.to_response_payload()},
+    )
+
+
 @router.post("/predict")
 async def predict(
     file: UploadFile | None = File(None),
@@ -88,21 +98,21 @@ async def predict(
     )
     try:
         try:
-            rate_limit_metadata = scan_rate_limit_service.consume_daily_scan(
-                x_greenbin_client_id
-            )
+            scan_rate_limit_service.check_scan_limits(x_greenbin_client_id)
         except scan_rate_limit_service.MissingScanClientIdError:
             return JSONResponse(
                 status_code=400,
                 content={"error": "scan_client_id_required"},
             )
         except scan_rate_limit_service.DailyScanLimitReachedError as exc:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": "daily_scan_limit_reached",
-                    **exc.metadata.to_response_payload(),
-                },
+            return _scan_limit_response(
+                "daily_scan_limit_reached",
+                exc.metadata,
+            )
+        except scan_rate_limit_service.MonthlyScanLimitReachedError as exc:
+            return _scan_limit_response(
+                "monthly_scan_limit_reached",
+                exc.metadata,
             )
         except scan_rate_limit_service.ScanRateLimitUnavailableError:
             return JSONResponse(
@@ -145,6 +155,32 @@ async def predict(
                     response["recognition_details"] = {
                         "normalized": normalized_details,
                     }
+            # Count only a successfully built response. The reservation rechecks
+            # both limits atomically to prevent concurrent oversubscription.
+            try:
+                rate_limit_metadata = scan_rate_limit_service.consume_scan(
+                    x_greenbin_client_id
+                )
+            except scan_rate_limit_service.MissingScanClientIdError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "scan_client_id_required"},
+                )
+            except scan_rate_limit_service.DailyScanLimitReachedError as exc:
+                return _scan_limit_response(
+                    "daily_scan_limit_reached",
+                    exc.metadata,
+                )
+            except scan_rate_limit_service.MonthlyScanLimitReachedError as exc:
+                return _scan_limit_response(
+                    "monthly_scan_limit_reached",
+                    exc.metadata,
+                )
+            except scan_rate_limit_service.ScanRateLimitUnavailableError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "scan_rate_limit_unavailable"},
+                )
             if rate_limit_metadata is not None:
                 response.update(rate_limit_metadata.to_response_payload())
             response["request_id"] = request_id

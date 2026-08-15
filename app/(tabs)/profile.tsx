@@ -31,6 +31,7 @@ import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typograp
 import { getRecentScans, type RecentScan } from '@/storage/recentScans';
 import {
   DEFAULT_DAILY_SCAN_LIMIT,
+  DEFAULT_MONTHLY_SCAN_LIMIT,
   getScanUsageDisplayState,
   type ScanUsageDisplayState,
 } from '@/storage/scanUsage';
@@ -65,9 +66,12 @@ type ProfileStatsSummary = {
 
 const DEFAULT_SCAN_USAGE_DISPLAY_STATE: ScanUsageDisplayState = {
   dailyLimit: DEFAULT_DAILY_SCAN_LIMIT,
+  dailyResetAt: null,
+  dailyScansRemaining: DEFAULT_DAILY_SCAN_LIMIT,
   hasStoredMetadata: false,
-  resetAt: null,
-  scansRemaining: DEFAULT_DAILY_SCAN_LIMIT,
+  monthlyLimit: DEFAULT_MONTHLY_SCAN_LIMIT,
+  monthlyResetAt: null,
+  monthlyScansRemaining: DEFAULT_MONTHLY_SCAN_LIMIT,
 };
 
 function formatAttributeLabel(value: string | null | undefined) {
@@ -391,11 +395,9 @@ export default function ProfileScreen() {
   const statsSummary = useMemo(() => getProfileStatsSummary(recentScans), [recentScans]);
   const appVersion = Constants.expoConfig?.version;
   const scanUsageTitle = scanUsage.hasStoredMetadata
-    ? `${scanUsage.scansRemaining} scans left today`
-    : `${scanUsage.dailyLimit} scans available today`;
-  const scanUsageCaption = scanUsage.hasStoredMetadata
-    ? `Daily limit: ${scanUsage.dailyLimit}. Updates after each scan.`
-    : `${scanUsage.dailyLimit} daily scans for this test build.`;
+    ? `${scanUsage.dailyScansRemaining} today • ${scanUsage.monthlyScansRemaining} this month`
+    : `${scanUsage.dailyLimit} daily • ${scanUsage.monthlyLimit} monthly`;
+  const scanUsageCaption = `Limits: ${scanUsage.dailyLimit} per day and ${scanUsage.monthlyLimit} per month. Updates after each accepted scan.`;
 
   useFocusEffect(
     useCallback(() => {
@@ -495,7 +497,7 @@ export default function ProfileScreen() {
             <Ionicons color="#15311A" name="scan-outline" size={21} />
           </View>
           <View style={styles.scanAllowanceTextBlock}>
-            <Text style={styles.sectionLabel}>Daily Scans</Text>
+            <Text style={styles.sectionLabel}>Scan Allowance</Text>
             <Text style={styles.scanAllowanceTitle}>{scanUsageTitle}</Text>
             <Text style={styles.scanAllowanceCaption}>{scanUsageCaption}</Text>
           </View>

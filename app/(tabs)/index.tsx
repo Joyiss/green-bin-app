@@ -730,23 +730,31 @@ function CameraPermissionNotice({
 }
 
 function getScanLimitMessage(limit: ScanLimitResponse | null) {
-  const dailyLimit = limit?.daily_limit;
-  const resetTimestamp = limit?.reset_at ? Date.parse(limit.reset_at) : Number.NaN;
+  const isMonthlyLimit = limit?.error === 'monthly_scan_limit_reached';
+  const configuredLimit = isMonthlyLimit
+    ? limit?.monthly_limit
+    : limit?.daily_limit;
+  const resetAt = isMonthlyLimit
+    ? limit?.monthly_reset_at
+    : limit?.daily_reset_at ?? limit?.reset_at;
+  const resetTimestamp = resetAt ? Date.parse(resetAt) : Number.NaN;
   const resetText = Number.isNaN(resetTimestamp)
     ? 'Your scans will reset later.'
-    : `Your scans reset ${new Date(resetTimestamp).toLocaleString([], {
+    : `Your ${isMonthlyLimit ? 'monthly' : 'daily'} scans reset ${new Date(
+        resetTimestamp,
+      ).toLocaleString([], {
         hour: 'numeric',
         minute: '2-digit',
         month: 'short',
         day: 'numeric',
       })}.`;
 
-  return dailyLimit
-    ? `You’ve used all ${dailyLimit} scans for this period. ${resetText}`
+  return configuredLimit
+    ? `You’ve used all ${configuredLimit} scans ${isMonthlyLimit ? 'this month' : 'today'}. ${resetText}`
     : `You’ve reached the current scan limit. ${resetText}`;
 }
 
-function DailyScanLimitWarning({
+function ScanLimitWarning({
   bottomInset,
   limit,
   maxHeight,
@@ -764,7 +772,7 @@ function DailyScanLimitWarning({
       style={styles.rateLimitOverlay}
     >
       <Pressable
-        accessibilityLabel="Dismiss daily scan limit warning"
+        accessibilityLabel="Dismiss scan limit warning"
         accessibilityRole="button"
         onPress={onDismiss}
         style={StyleSheet.absoluteFill}
@@ -785,8 +793,16 @@ function DailyScanLimitWarning({
         </View>
 
         <View style={styles.rateLimitTextBlock}>
-          <Text style={styles.rateLimitEyebrow}>Daily Limit</Text>
-          <Text style={styles.rateLimitTitle}>You’re out of scans for today</Text>
+          <Text style={styles.rateLimitEyebrow}>
+            {limit?.error === 'monthly_scan_limit_reached'
+              ? 'Monthly Limit'
+              : 'Daily Limit'}
+          </Text>
+          <Text style={styles.rateLimitTitle}>
+            {limit?.error === 'monthly_scan_limit_reached'
+              ? 'You’re out of scans for this month'
+              : 'You’re out of scans for today'}
+          </Text>
           <Text style={styles.rateLimitMessage}>{getScanLimitMessage(limit)}</Text>
         </View>
 
@@ -2433,7 +2449,7 @@ export default function ScannerScreen() {
         </View>
 
         {isRateLimitWarningVisible ? (
-          <DailyScanLimitWarning
+          <ScanLimitWarning
             bottomInset={bottomNavOffset}
             limit={scanLimitWarning}
             maxHeight={rateLimitWarningMaxHeight}

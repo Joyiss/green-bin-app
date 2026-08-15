@@ -124,6 +124,16 @@ export type PredictionResponse = {
   local_guidance?: LocalGuidance;
   daily_limit?: number;
   dailyLimit?: number;
+  daily_scans_remaining?: number;
+  dailyScansRemaining?: number;
+  daily_reset_at?: string;
+  dailyResetAt?: string;
+  monthly_limit?: number;
+  monthlyLimit?: number;
+  monthly_scans_remaining?: number;
+  monthlyScansRemaining?: number;
+  monthly_reset_at?: string;
+  monthlyResetAt?: string;
   scans_remaining?: number;
   scansRemaining?: number;
   reset_at?: string;
@@ -143,8 +153,13 @@ export type PredictionResponse = {
 };
 
 export type ScanLimitResponse = {
-  error: 'daily_scan_limit_reached';
+  error: 'daily_scan_limit_reached' | 'monthly_scan_limit_reached';
   daily_limit?: number;
+  daily_scans_remaining?: number;
+  daily_reset_at?: string;
+  monthly_limit?: number;
+  monthly_scans_remaining?: number;
+  monthly_reset_at?: string;
   scans_remaining?: number;
   reset_at?: string;
 };
@@ -484,6 +499,16 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
     local_guidance: normalizeLocalGuidance(value.local_guidance),
     daily_limit: finiteInteger(value.daily_limit, 1),
     dailyLimit: finiteInteger(value.dailyLimit, 1),
+    daily_scans_remaining: finiteInteger(value.daily_scans_remaining),
+    dailyScansRemaining: finiteInteger(value.dailyScansRemaining),
+    daily_reset_at: text(value.daily_reset_at) ?? undefined,
+    dailyResetAt: text(value.dailyResetAt) ?? undefined,
+    monthly_limit: finiteInteger(value.monthly_limit, 1),
+    monthlyLimit: finiteInteger(value.monthlyLimit, 1),
+    monthly_scans_remaining: finiteInteger(value.monthly_scans_remaining),
+    monthlyScansRemaining: finiteInteger(value.monthlyScansRemaining),
+    monthly_reset_at: text(value.monthly_reset_at) ?? undefined,
+    monthlyResetAt: text(value.monthlyResetAt) ?? undefined,
     scans_remaining: finiteInteger(value.scans_remaining),
     scansRemaining: finiteInteger(value.scansRemaining),
     reset_at: text(value.reset_at) ?? undefined,
@@ -508,12 +533,25 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
 }
 
 export function normalizeScanLimitResponse(value: unknown): ScanLimitResponse | null {
-  if (!isRecord(value) || value.error !== 'daily_scan_limit_reached') {
+  if (
+    !isRecord(value) ||
+    (value.error !== 'daily_scan_limit_reached' &&
+      value.error !== 'monthly_scan_limit_reached')
+  ) {
     return null;
   }
   return {
-    error: 'daily_scan_limit_reached',
+    error: value.error,
     daily_limit: finiteInteger(value.daily_limit ?? value.dailyLimit, 1),
+    daily_scans_remaining: finiteInteger(
+      value.daily_scans_remaining ?? value.dailyScansRemaining,
+    ),
+    daily_reset_at: text(value.daily_reset_at ?? value.dailyResetAt) ?? undefined,
+    monthly_limit: finiteInteger(value.monthly_limit ?? value.monthlyLimit, 1),
+    monthly_scans_remaining: finiteInteger(
+      value.monthly_scans_remaining ?? value.monthlyScansRemaining,
+    ),
+    monthly_reset_at: text(value.monthly_reset_at ?? value.monthlyResetAt) ?? undefined,
     scans_remaining: finiteInteger(value.scans_remaining ?? value.scansRemaining),
     reset_at: text(value.reset_at ?? value.resetAt) ?? undefined,
   };

@@ -10,6 +10,7 @@ from main import app
 from routes.predict import predict as predict_route
 from services.scan_rate_limit_service import (
     DailyScanLimitReachedError,
+    MonthlyScanLimitReachedError,
     ScanRateLimitMetadata,
 )
 
@@ -19,6 +20,17 @@ def _make_image_bytes() -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG")
     return buffer.getvalue()
+
+
+def _scan_metadata(*, daily_remaining=4, monthly_remaining=19):
+    return ScanRateLimitMetadata(
+        daily_limit=5,
+        daily_scans_remaining=daily_remaining,
+        daily_reset_at="2026-07-10T00:00:00Z",
+        monthly_limit=20,
+        monthly_scans_remaining=monthly_remaining,
+        monthly_reset_at="2026-08-01T00:00:00Z",
+    )
 
 
 class PredictRouteTests(unittest.TestCase):
@@ -71,11 +83,12 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "scan_client_id_required"})
         mock_recognize.assert_not_called()
 
-    def test_predict_invalid_request_does_not_consume_daily_scan(self):
+    def test_predict_invalid_request_does_not_check_or_consume_scan_usage(self):
         client = TestClient(app)
 
         with (
-            patch("routes.predict.scan_rate_limit_service.consume_daily_scan") as mock_consume,
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits") as mock_check,
+            patch("routes.predict.scan_rate_limit_service.consume_scan") as mock_consume,
             patch(
                 "services.guidance_service.tavily_local_guidance_service.search_local_guidance"
             ) as mock_tavily,
@@ -83,6 +96,7 @@ class PredictRouteTests(unittest.TestCase):
             response = client.post("/predict")
 
         self.assertEqual(response.status_code, 400)
+        mock_check.assert_not_called()
         mock_consume.assert_not_called()
         mock_tavily.assert_not_called()
 
@@ -133,14 +147,11 @@ class PredictRouteTests(unittest.TestCase):
 
     def test_predict_success_includes_scan_limit_metadata_when_available(self):
         client = TestClient(app)
-        metadata = ScanRateLimitMetadata(
-            daily_limit=40,
-            scans_remaining=39,
-            reset_at="2026-07-10T00:00:00Z",
-        )
+        metadata = _scan_metadata()
 
         with (
-            patch("routes.predict.scan_rate_limit_service.consume_daily_scan", return_value=metadata),
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan", return_value=metadata),
             patch(
                 "routes.predict.recognize_item",
                 AsyncMock(
@@ -167,23 +178,24 @@ class PredictRouteTests(unittest.TestCase):
             payload,
             {
                 "item": "Calculator",
-                "daily_limit": 40,
-                "scans_remaining": 39,
+                "daily_limit": 5,
+                "daily_scans_remaining": 4,
+                "daily_reset_at": "2026-07-10T00:00:00Z",
+                "monthly_limit": 20,
+                "monthly_scans_remaining": 19,
+                "monthly_reset_at": "2026-08-01T00:00:00Z",
+                "scans_remaining": 4,
                 "reset_at": "2026-07-10T00:00:00Z",
             },
         )
 
     def test_predict_rate_limit_reached_returns_429_before_recognition(self):
         client = TestClient(app)
-        metadata = ScanRateLimitMetadata(
-            daily_limit=40,
-            scans_remaining=0,
-            reset_at="2026-07-10T00:00:00Z",
-        )
+        metadata = _scan_metadata(daily_remaining=0, monthly_remaining=9)
 
         with (
             patch(
-                "routes.predict.scan_rate_limit_service.consume_daily_scan",
+                "routes.predict.scan_rate_limit_service.check_scan_limits",
                 side_effect=DailyScanLimitReachedError(metadata),
             ),
             patch("routes.predict.recognize_item", AsyncMock()) as mock_recognize,
@@ -199,12 +211,59 @@ class PredictRouteTests(unittest.TestCase):
             response.json(),
             {
                 "error": "daily_scan_limit_reached",
-                "daily_limit": 40,
+                "daily_limit": 5,
+                "daily_scans_remaining": 0,
+                "daily_reset_at": "2026-07-10T00:00:00Z",
+                "monthly_limit": 20,
+                "monthly_scans_remaining": 9,
+                "monthly_reset_at": "2026-08-01T00:00:00Z",
                 "scans_remaining": 0,
                 "reset_at": "2026-07-10T00:00:00Z",
             },
         )
         mock_recognize.assert_not_called()
+
+    def test_predict_monthly_limit_reached_returns_monthly_reset(self):
+        client = TestClient(app)
+        metadata = _scan_metadata(daily_remaining=3, monthly_remaining=0)
+        with (
+            patch(
+                "routes.predict.scan_rate_limit_service.check_scan_limits",
+                side_effect=MonthlyScanLimitReachedError(metadata),
+            ),
+            patch("routes.predict.scan_rate_limit_service.consume_scan") as mock_consume,
+            patch("routes.predict.recognize_item", AsyncMock()) as mock_recognize,
+        ):
+            response = client.post(
+                "/predict",
+                data={"selected_item": "Calculator"},
+                headers={"X-GreenBin-Client-Id": "install-123"},
+            )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["error"], "monthly_scan_limit_reached")
+        self.assertEqual(response.json()["monthly_scans_remaining"], 0)
+        self.assertEqual(response.json()["monthly_reset_at"], "2026-08-01T00:00:00Z")
+        mock_recognize.assert_not_called()
+        mock_consume.assert_not_called()
+
+    def test_predict_failure_after_preflight_does_not_consume_scan(self):
+        with (
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan") as mock_consume,
+            patch(
+                "routes.predict.recognize_item",
+                AsyncMock(side_effect=RuntimeError("recognition failed")),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "recognition failed"):
+                asyncio.run(
+                    predict_route(
+                        file=None,
+                        selected_item="Calculator",
+                        x_greenbin_client_id="install-123",
+                    )
+                )
+        mock_consume.assert_not_called()
 
     def test_predict_logs_guidance_and_total_timing(self):
         classification = {
