@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useCallback, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useState, type ComponentProps } from 'react';
 import {
   Alert,
   Linking,
@@ -16,6 +16,12 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DEVELOPMENT_LOCATION_TOOLS_ENABLED } from '@/app/development-location';
+import {
+  AnimatedDisclosure,
+  MOTION_DURATION_BASE,
+  MOTION_EASING,
+  useReducedMotionPreference,
+} from '@/components/animated-interactions';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import {
   cloneCurbsideDraft,
@@ -25,6 +31,11 @@ import {
 } from '@/components/curbside-service-sheet';
 import { LocationTestingSection } from '@/components/location-testing-section';
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import {
   DEFAULT_DAILY_SCAN_LIMIT,
   DEFAULT_MONTHLY_SCAN_LIMIT,
@@ -47,6 +58,7 @@ const FEEDBACK_BODY = [
 type DropoffDistanceMiles = 5 | 10 | 25 | 50;
 
 type SettingsRowProps = {
+  chevronExpanded?: boolean;
   icon: ComponentProps<typeof Ionicons>['name'];
   label: string;
   onPress?: () => void;
@@ -99,17 +111,54 @@ export function formatResetTiming(resetAt: string | null) {
   }).format(resetDate)}`;
 }
 
-function SettingsRow({ icon, label, onPress, showDivider = true, value }: SettingsRowProps) {
+function DistanceChevron({ expanded }: { expanded: boolean }) {
+  const reducedMotion = useReducedMotionPreference();
+  const progress = useSharedValue(expanded ? 1 : 0);
+
+  useEffect(() => {
+    progress.value = reducedMotion
+      ? expanded ? 1 : 0
+      : withTiming(expanded ? 1 : 0, {
+          duration: MOTION_DURATION_BASE,
+          easing: MOTION_EASING,
+        });
+  }, [expanded, progress, reducedMotion]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${progress.value * 90}deg` }],
+  }));
+
+  return (
+    <Animated.View style={!reducedMotion && animatedStyle}>
+      <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
+    </Animated.View>
+  );
+}
+
+function SettingsRow({
+  chevronExpanded,
+  icon,
+  label,
+  onPress,
+  showDivider = true,
+  value,
+}: SettingsRowProps) {
   const content = (
     <>
       <View style={styles.settingsIcon}>
-        <Ionicons color="#2E6B47" name={icon} size={21} />
+        <Ionicons color="#1B1B1B" name={icon} size={21} />
       </View>
       <View style={styles.settingsText}>
         <Text style={styles.settingsLabel}>{label}</Text>
         <Text numberOfLines={1} style={styles.settingsValue}>{value}</Text>
       </View>
-      {onPress ? <Ionicons color="#8D8A86" name="chevron-forward" size={18} /> : null}
+      {onPress ? (
+        chevronExpanded === undefined ? (
+          <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
+        ) : (
+          <DistanceChevron expanded={chevronExpanded} />
+        )
+      ) : null}
     </>
   );
 
@@ -261,7 +310,7 @@ export default function ProfileScreen() {
         <View style={styles.scanAllowanceCard}>
           <View style={styles.allowanceHeadingRow}>
             <View style={styles.scanAllowanceIcon}>
-              <Ionicons color="#15311A" name="scan-outline" size={24} />
+              <Ionicons color="#1B1B1B" name="scan-outline" size={24} />
             </View>
             <View style={styles.allowanceHeadingText}>
               <Text style={styles.scanAllowanceTitle}>Scan Allowance</Text>
@@ -293,12 +342,13 @@ export default function ProfileScreen() {
               value={savedCurbsideDraft ? 'Configured' : 'Not configured'}
             />
             <SettingsRow
+              chevronExpanded={distanceMenuOpen}
               icon="navigate-outline"
               label="Maximum Drop-off Distance"
               onPress={() => setDistanceMenuOpen((open) => !open)}
               value={`${dropoffDistance} miles`}
             />
-            {distanceMenuOpen ? (
+            <AnimatedDisclosure expanded={distanceMenuOpen}>
               <View accessibilityLabel="Maximum drop-off distance options" style={styles.distanceMenu}>
                 {DROPOFF_DISTANCES.map((distance, index) => {
                   const selected = dropoffDistance === distance;
@@ -329,7 +379,7 @@ export default function ProfileScreen() {
                   );
                 })}
               </View>
-            ) : null}
+            </AnimatedDisclosure>
             <SettingsRow
               icon="information-circle-outline"
               label="About Green Bin & Developer"
@@ -398,7 +448,7 @@ const styles = StyleSheet.create({
   },
   allowanceHeadingRow: { alignItems: 'center', flexDirection: 'row', gap: 13 },
   scanAllowanceIcon: {
-    alignItems: 'center', backgroundColor: '#E9F1E7', borderRadius: 17,
+    alignItems: 'center', backgroundColor: '#F4F1EC', borderRadius: 17,
     height: 48, justifyContent: 'center', width: 48,
   },
   allowanceHeadingText: { flex: 1, gap: 3 },
@@ -412,12 +462,12 @@ const styles = StyleSheet.create({
   },
   allowanceMeterLabel: { color: '#33312E', fontSize: 13, ...PRIMARY_TEXT_STYLES.label },
   allowanceCount: {
-    color: '#2E6B47', fontSize: 13, fontVariant: ['tabular-nums'], ...SECONDARY_TEXT_STYLES.extraBold,
+    color: '#1B1B1B', fontSize: 13, fontVariant: ['tabular-nums'], ...SECONDARY_TEXT_STYLES.extraBold,
   },
   allowanceTrack: {
-    backgroundColor: '#E8EEE5', borderRadius: 999, height: 10, overflow: 'hidden',
+    backgroundColor: '#E5E5E5', borderRadius: 999, height: 10, overflow: 'hidden',
   },
-  allowanceFill: { backgroundColor: '#6DB07A', borderRadius: 999, height: '100%' },
+  allowanceFill: { backgroundColor: '#1B1B1B', borderRadius: 999, height: '100%' },
   allowanceReset: { color: '#8A857F', fontSize: 11, lineHeight: 16, ...SECONDARY_TEXT_STYLES.regular },
   allowanceDivider: { backgroundColor: '#EEEAE4', height: StyleSheet.hairlineWidth },
   settingsSection: { gap: 12 },
@@ -433,7 +483,7 @@ const styles = StyleSheet.create({
   },
   settingsRowPressed: { backgroundColor: '#F5F2ED' },
   settingsIcon: {
-    alignItems: 'center', backgroundColor: '#EEF3EB', borderRadius: 14,
+    alignItems: 'center', backgroundColor: '#F4F1EC', borderRadius: 14,
     height: 42, justifyContent: 'center', width: 42,
   },
   settingsText: { flex: 1, gap: 3, minWidth: 0 },
