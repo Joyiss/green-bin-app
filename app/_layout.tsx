@@ -97,6 +97,8 @@ export default function RootLayout() {
               presentation: 'modal',
             }}
           />
+          <Stack.Screen name="about-green-bin" options={{ headerShown: false }} />
+          <Stack.Screen name="privacy-terms" options={{ headerShown: false }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

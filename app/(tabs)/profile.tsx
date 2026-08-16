@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
-import { useCallback, useMemo, useState } from 'react';
+import { useRouter } from 'expo-router';
+import { useCallback, useState, type ComponentProps } from 'react';
 import {
   Alert,
   Linking,
@@ -10,25 +11,20 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import {
-  createDevelopmentLocationOverride,
-  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
-  DEVELOPMENT_LOCATION_PRESETS,
-  DEVELOPMENT_LOCATION_TOOLS_ENABLED,
-  getDevelopmentLocationPresetId,
-  loadDevelopmentLocationSettings,
-  saveDevelopmentLocationSettings,
-  type DevelopmentLocationPreset,
-  type DevelopmentLocationSettings,
-} from '@/app/development-location';
+import { DEVELOPMENT_LOCATION_TOOLS_ENABLED } from '@/app/development-location';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
+import {
+  cloneCurbsideDraft,
+  CurbsideServiceSheet,
+  EMPTY_CURBSIDE_DRAFT,
+  type CurbsideDraft,
+} from '@/components/curbside-service-sheet';
+import { LocationTestingSection } from '@/components/location-testing-section';
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
-import { getRecentScans, type RecentScan } from '@/storage/recentScans';
 import {
   DEFAULT_DAILY_SCAN_LIMIT,
   DEFAULT_MONTHLY_SCAN_LIMIT,
@@ -48,21 +44,19 @@ const FEEDBACK_BODY = [
   'Device/app notes:',
 ].join('\n');
 
-type ProfileStat = {
-  id: string;
-  value: string;
+type DropoffDistanceMiles = 5 | 10 | 25 | 50;
+
+type SettingsRowProps = {
+  icon: ComponentProps<typeof Ionicons>['name'];
   label: string;
-  caption: string;
+  onPress?: () => void;
+  showDivider?: boolean;
+  value: string;
 };
 
-type ProfileStatsSummary = {
-  completionPercent: number;
-  disposedScans: number;
-  needsActionScans: number;
-  stats: ProfileStat[];
-  statusMessage: string;
-  totalScans: number;
-};
+const DROPOFF_DISTANCES: DropoffDistanceMiles[] = [5, 10, 25, 50];
+const RESET_TIMING_PLACEHOLDER =
+  'Reset timing available after your next accepted scan.';
 
 const DEFAULT_SCAN_USAGE_DISPLAY_STATE: ScanUsageDisplayState = {
   dailyLimit: DEFAULT_DAILY_SCAN_LIMIT,
@@ -74,151 +68,125 @@ const DEFAULT_SCAN_USAGE_DISPLAY_STATE: ScanUsageDisplayState = {
   monthlyScansRemaining: DEFAULT_MONTHLY_SCAN_LIMIT,
 };
 
-function formatAttributeLabel(value: string | null | undefined) {
-  const normalizedValue = value
-    ?.replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!normalizedValue) {
-    return null;
-  }
-
-  return normalizedValue.replace(/\b[a-z]/g, (character) => character.toUpperCase());
-}
-
-function getCategoryOrMaterial(scan: RecentScan) {
-  const categoryCandidates = [
-    scan.category,
-    scan.guidanceSnapshot.materialCategory,
-    scan.guidanceSnapshot.broadCategory,
-    scan.materialCode,
-  ];
-
-  for (const categoryCandidate of categoryCandidates) {
-    const categoryLabel = formatAttributeLabel(categoryCandidate);
-
-    if (categoryLabel) {
-      return categoryLabel;
-    }
-  }
-
-  return null;
-}
-
-function getMostCommonCategory(scans: RecentScan[]) {
-  const categoryCounts = new Map<string, number>();
-  let mostCommonCategory: string | null = null;
-  let highestCount = 0;
-
-  scans.forEach((scan) => {
-    const category = getCategoryOrMaterial(scan);
-
-    if (!category) {
-      return;
-    }
-
-    const count = (categoryCounts.get(category) ?? 0) + 1;
-    categoryCounts.set(category, count);
-
-    if (count > highestCount) {
-      highestCount = count;
-      mostCommonCategory = category;
-    }
-  });
-
-  return mostCommonCategory;
-}
-
 function getFeedbackMailtoUrl() {
   const subject = encodeURIComponent(FEEDBACK_SUBJECT);
   const body = encodeURIComponent(FEEDBACK_BODY);
-
   return `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
 }
 
-function getProfileStatsSummary(scans: RecentScan[]): ProfileStatsSummary {
-  const totalScans = scans.length;
-  const disposedScans = scans.filter((scan) => scan.disposalStatus === 'disposed').length;
-  const needsActionScans = scans.filter((scan) => scan.disposalStatus === 'needs_action').length;
-  const topCategory = getMostCommonCategory(scans);
-  const completionPercent =
-    totalScans > 0 ? Math.round((disposedScans / totalScans) * 100) : 0;
-  const needsActionLabel = needsActionScans === 1 ? 'item still needs' : 'items still need';
-  const statusMessage =
-    totalScans === 0
-      ? 'Scan your first item to start building your local disposal profile.'
-      : needsActionScans > 0
-        ? `${needsActionScans} ${needsActionLabel} action. Mark items disposed as you finish them.`
-        : "All scanned items are marked disposed. You're all caught up.";
-
-  return {
-    completionPercent,
-    disposedScans,
-    needsActionScans,
-    stats: [
-      {
-        id: 'total-scans',
-        value: String(totalScans),
-        label: 'Total',
-        caption: 'Saved on this device',
-      },
-      {
-        id: 'disposed-scans',
-        value: String(disposedScans),
-        label: 'Disposed',
-        caption: 'Marked complete',
-      },
-      {
-        id: 'needs-action-scans',
-        value: String(needsActionScans),
-        label: 'Needs Action',
-        caption: 'Still open',
-      },
-      {
-        id: 'top-category',
-        value: topCategory ?? 'None yet',
-        label: 'Top Type',
-        caption: 'Most common category/material',
-      },
-    ],
-    statusMessage,
-    totalScans,
-  };
+export function getAllowanceProgress(scansRemaining: number, limit: number) {
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, scansRemaining / limit));
 }
 
-function LocationTestingSection() {
-  const [settings, setSettings] = useState<DevelopmentLocationSettings>(
-    DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+export function formatResetTiming(resetAt: string | null) {
+  if (!resetAt) {
+    return RESET_TIMING_PLACEHOLDER;
+  }
+
+  const resetDate = new Date(resetAt);
+  if (Number.isNaN(resetDate.getTime())) {
+    return RESET_TIMING_PLACEHOLDER;
+  }
+
+  return `Resets ${new Intl.DateTimeFormat(undefined, {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+  }).format(resetDate)}`;
+}
+
+function SettingsRow({ icon, label, onPress, showDivider = true, value }: SettingsRowProps) {
+  const content = (
+    <>
+      <View style={styles.settingsIcon}>
+        <Ionicons color="#2E6B47" name={icon} size={21} />
+      </View>
+      <View style={styles.settingsText}>
+        <Text style={styles.settingsLabel}>{label}</Text>
+        <Text numberOfLines={1} style={styles.settingsValue}>{value}</Text>
+      </View>
+      {onPress ? <Ionicons color="#8D8A86" name="chevron-forward" size={18} /> : null}
+    </>
   );
-  const [selectedPreset, setSelectedPreset] =
-    useState<DevelopmentLocationPreset['id']>('real');
-  const [customCity, setCustomCity] = useState('');
-  const [customCounty, setCustomCounty] = useState('');
-  const [customState, setCustomState] = useState('');
-  const [customCountry, setCustomCountry] = useState('United States');
-  const customOverride = createDevelopmentLocationOverride(
-    customCity,
-    customCounty,
-    customState,
-    customCountry,
+
+  return (
+    <View>
+      {onPress ? (
+        <Pressable
+          accessibilityHint={`Open ${label}`}
+          accessibilityRole="button"
+          onPress={onPress}
+          style={({ pressed }) => [styles.settingsRow, pressed && styles.settingsRowPressed]}
+        >
+          {content}
+        </Pressable>
+      ) : (
+        <View accessibilityLabel={`${label}, ${value}`} style={styles.settingsRow}>
+          {content}
+        </View>
+      )}
+      {showDivider ? <View style={styles.settingsDivider} /> : null}
+    </View>
   );
+}
+
+function AllowanceMeter({
+  label,
+  limit,
+  remaining,
+  resetAt,
+}: {
+  label: string;
+  limit: number;
+  remaining: number;
+  resetAt: string | null;
+}) {
+  const progress = getAllowanceProgress(remaining, limit);
+  return (
+    <View style={styles.allowanceMeter}>
+      <View style={styles.allowanceMeterHeader}>
+        <Text style={styles.allowanceMeterLabel}>{label}</Text>
+        <Text style={styles.allowanceCount}>{remaining} of {limit} remaining</Text>
+      </View>
+      <View style={styles.allowanceTrack}>
+        <View
+          style={[
+            styles.allowanceFill,
+            { width: `${progress * 100}%` as `${number}%` },
+          ]}
+        />
+      </View>
+      <Text style={styles.allowanceReset}>{formatResetTiming(resetAt)}</Text>
+    </View>
+  );
+}
+
+export default function ProfileScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [scanUsage, setScanUsage] = useState<ScanUsageDisplayState>(
+    DEFAULT_SCAN_USAGE_DISPLAY_STATE,
+  );
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [dropoffDistance, setDropoffDistance] = useState<DropoffDistanceMiles>(10);
+  const [distanceMenuOpen, setDistanceMenuOpen] = useState(false);
+  const [curbsideSheetVisible, setCurbsideSheetVisible] = useState(false);
+  const [savedCurbsideDraft, setSavedCurbsideDraft] = useState<CurbsideDraft | null>(null);
+  const [workingCurbsideDraft, setWorkingCurbsideDraft] = useState<CurbsideDraft>(
+    cloneCurbsideDraft(EMPTY_CURBSIDE_DRAFT),
+  );
+  const appVersion = Constants.expoConfig?.version ?? 'Version unavailable (placeholder)';
 
   useFocusEffect(
     useCallback(() => {
       let isActive = true;
-      void loadDevelopmentLocationSettings().then((storedSettings) => {
-        if (!isActive) {
-          return;
-        }
-        setSettings(storedSettings);
-        const presetId = getDevelopmentLocationPresetId(storedSettings.location);
-        setSelectedPreset(presetId);
-        if (presetId === 'custom') {
-          setCustomCity(storedSettings.location.city);
-          setCustomCounty(storedSettings.location.county ?? '');
-          setCustomState(storedSettings.location.state);
-          setCustomCountry(storedSettings.location.country);
+      void getScanUsageDisplayState().then((storedScanUsage) => {
+        if (isActive) {
+          setScanUsage(storedScanUsage);
         }
       });
       return () => {
@@ -227,210 +195,10 @@ function LocationTestingSection() {
     }, []),
   );
 
-  const persistSettings = useCallback(
-    async (nextSettings: DevelopmentLocationSettings) => {
-      try {
-        const storedSettings =
-          await saveDevelopmentLocationSettings(nextSettings);
-        setSettings(storedSettings);
-      } catch {
-        Alert.alert(
-          'Could not save testing location',
-          'Try selecting the location again.',
-        );
-      }
-    },
-    [],
-  );
-
-  const handlePresetPress = useCallback(
-    (preset: DevelopmentLocationPreset) => {
-      setSelectedPreset(preset.id);
-      if (preset.id === 'custom' || !preset.location) {
-        return;
-      }
-      void persistSettings({ location: preset.location });
-    },
-    [persistSettings],
-  );
-
-  const handleApplyCustomLocation = useCallback(() => {
-    if (!customOverride) {
-      return;
-    }
-    void persistSettings({ location: customOverride });
-  }, [customOverride, persistSettings]);
-
-  const selectedLocationLabel = settings.location.enabled
-    ? [
-        settings.location.city,
-        settings.location.county,
-        settings.location.state,
-        settings.location.country,
-      ]
-        .filter(Boolean)
-        .join(', ')
-    : 'Automatic device location';
-
-  return (
-    <View style={styles.devSection}>
-      <View style={styles.devHeadingRow}>
-        <View style={styles.devIcon}>
-          <Ionicons color="#7A4E00" name="construct-outline" size={19} />
-        </View>
-        <View style={styles.devHeadingText}>
-          <Text style={styles.devTitle}>Location Testing</Text>
-          <Text style={styles.devDescription}>
-            Development-only override for testing local Tavily guidance.
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.devCurrentLocation}>
-        <Text style={styles.devCurrentLocationLabel}>Currently selected</Text>
-        <Text style={styles.devCurrentLocationValue}>{selectedLocationLabel}</Text>
-      </View>
-
-      <View style={styles.devPresetList}>
-        {DEVELOPMENT_LOCATION_PRESETS.map((preset) => {
-          const selected = selectedPreset === preset.id;
-          return (
-            <Pressable
-              accessibilityRole="radio"
-              accessibilityState={{ checked: selected }}
-              key={preset.id}
-              onPress={() => handlePresetPress(preset)}
-              style={({ pressed }) => [
-                styles.devPreset,
-                selected && styles.devPresetSelected,
-                pressed && styles.cardPressed,
-              ]}
-            >
-              <Ionicons
-                color={selected ? '#2E6B47' : '#9A948C'}
-                name={selected ? 'radio-button-on' : 'radio-button-off'}
-                size={18}
-              />
-              <Text
-                style={[
-                  styles.devPresetText,
-                  selected && styles.devPresetTextSelected,
-                ]}
-              >
-                {preset.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {selectedPreset === 'custom' ? (
-        <View style={styles.devCustomFields}>
-          <TextInput
-            accessibilityLabel="Custom test city"
-            autoCapitalize="words"
-            onChangeText={setCustomCity}
-            placeholder="City"
-            placeholderTextColor="#9A948C"
-            style={styles.devInput}
-            value={customCity}
-          />
-          <TextInput
-            accessibilityLabel="Custom test county"
-            autoCapitalize="words"
-            onChangeText={setCustomCounty}
-            placeholder="County (optional)"
-            placeholderTextColor="#9A948C"
-            style={styles.devInput}
-            value={customCounty}
-          />
-          <TextInput
-            accessibilityLabel="Custom test state"
-            autoCapitalize="words"
-            onChangeText={setCustomState}
-            placeholder="State"
-            placeholderTextColor="#9A948C"
-            style={styles.devInput}
-            value={customState}
-          />
-          <TextInput
-            accessibilityLabel="Custom test country"
-            autoCapitalize="words"
-            onChangeText={setCustomCountry}
-            placeholder="Country"
-            placeholderTextColor="#9A948C"
-            style={styles.devInput}
-            value={customCountry}
-          />
-          <Pressable
-            accessibilityRole="button"
-            disabled={!customOverride}
-            onPress={handleApplyCustomLocation}
-            style={({ pressed }) => [
-              styles.devApplyButton,
-              !customOverride && styles.devApplyButtonDisabled,
-              pressed && customOverride && styles.cardPressed,
-            ]}
-          >
-            <Text style={styles.devApplyButtonText}>Use Custom Location</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
-      <Text style={styles.devNote}>
-        This changes only the coarse location sent with prediction requests.
-        Precise device coordinates are never included.
-      </Text>
-    </View>
-  );
-}
-
-export default function ProfileScreen() {
-  const insets = useSafeAreaInsets();
-  const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
-  const [scanUsage, setScanUsage] = useState<ScanUsageDisplayState>(
-    DEFAULT_SCAN_USAGE_DISPLAY_STATE,
-  );
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const statsSummary = useMemo(() => getProfileStatsSummary(recentScans), [recentScans]);
-  const appVersion = Constants.expoConfig?.version;
-  const scanUsageTitle = scanUsage.hasStoredMetadata
-    ? `${scanUsage.dailyScansRemaining} today • ${scanUsage.monthlyScansRemaining} this month`
-    : `${scanUsage.dailyLimit} daily • ${scanUsage.monthlyLimit} monthly`;
-  const scanUsageCaption = `Limits: ${scanUsage.dailyLimit} per day and ${scanUsage.monthlyLimit} per month. Updates after each accepted scan.`;
-
-  useFocusEffect(
-    useCallback(() => {
-      let isActive = true;
-
-      void (async () => {
-        const [storedScans, storedScanUsage] = await Promise.all([
-          getRecentScans(),
-          getScanUsageDisplayState(),
-        ]);
-
-        if (isActive) {
-          setRecentScans(storedScans);
-          setScanUsage(storedScanUsage);
-        }
-      })();
-
-      return () => {
-        isActive = false;
-      };
-    }, [])
-  );
-
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-
     try {
-      const [storedScans, storedScanUsage] = await Promise.all([
-        getRecentScans(),
-        getScanUsageDisplayState(),
-      ]);
-      setRecentScans(storedScans);
-      setScanUsage(storedScanUsage);
+      setScanUsage(await getScanUsageDisplayState());
     } finally {
       setIsRefreshing(false);
     }
@@ -438,28 +206,46 @@ export default function ProfileScreen() {
 
   const handleSendFeedbackPress = useCallback(async () => {
     const feedbackUrl = getFeedbackMailtoUrl();
-
     try {
       const canOpenFeedbackUrl = await Linking.canOpenURL(feedbackUrl);
-
       if (!canOpenFeedbackUrl) {
         Alert.alert('Could not open email', `Please email feedback to ${FEEDBACK_EMAIL}.`);
         return;
       }
-
       await Linking.openURL(feedbackUrl);
     } catch {
       Alert.alert('Could not open email', `Please email feedback to ${FEEDBACK_EMAIL}.`);
     }
   }, []);
 
+  const openCurbsideSheet = useCallback(() => {
+    setDistanceMenuOpen(false);
+    setWorkingCurbsideDraft(
+      cloneCurbsideDraft(savedCurbsideDraft ?? EMPTY_CURBSIDE_DRAFT),
+    );
+    setCurbsideSheetVisible(true);
+  }, [savedCurbsideDraft]);
+
+  const dismissCurbsideSheet = useCallback(() => {
+    setWorkingCurbsideDraft(
+      cloneCurbsideDraft(savedCurbsideDraft ?? EMPTY_CURBSIDE_DRAFT),
+    );
+    setCurbsideSheetVisible(false);
+  }, [savedCurbsideDraft]);
+
+  const saveCurbsideSheet = useCallback((draft: CurbsideDraft) => {
+    const nextDraft = cloneCurbsideDraft(draft);
+    setSavedCurbsideDraft(nextDraft);
+    setWorkingCurbsideDraft(nextDraft);
+    setCurbsideSheetVisible(false);
+  }, []);
+
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
-
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: insets.bottom + BOTTOM_NAV_BAR_HEIGHT + 30 },
+          { paddingBottom: insets.bottom + BOTTOM_NAV_BAR_HEIGHT + 44 },
         ]}
         refreshControl={
           <RefreshControl
@@ -470,97 +256,103 @@ export default function ProfileScreen() {
         }
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Text style={styles.title}>profile.</Text>
-          <Text style={styles.subtitle}>
-            Local scan activity and test build details for this device.
-          </Text>
-        </View>
-
-        <View style={styles.heroCard}>
-          <View style={styles.heroTopRow}>
-            <View style={styles.heroIcon}>
-              <Ionicons color="#15311A" name="leaf-outline" size={26} />
-            </View>
-
-            <View style={styles.heroTextBlock}>
-              <Text style={styles.heroName}>Your activity</Text>
-              <Text style={styles.heroEmail}>Recent scans saved on this device</Text>
-            </View>
-          </View>
-
-          <Text style={styles.heroMessage}>{statsSummary.statusMessage}</Text>
-        </View>
+        <Text style={styles.title}>Profile.</Text>
 
         <View style={styles.scanAllowanceCard}>
-          <View style={styles.scanAllowanceIcon}>
-            <Ionicons color="#15311A" name="scan-outline" size={21} />
+          <View style={styles.allowanceHeadingRow}>
+            <View style={styles.scanAllowanceIcon}>
+              <Ionicons color="#15311A" name="scan-outline" size={24} />
+            </View>
+            <View style={styles.allowanceHeadingText}>
+              <Text style={styles.scanAllowanceTitle}>Scan Allowance</Text>
+              <Text style={styles.scanAllowanceCaption}>Your available Green Bin scans</Text>
+            </View>
           </View>
-          <View style={styles.scanAllowanceTextBlock}>
-            <Text style={styles.sectionLabel}>Scan Allowance</Text>
-            <Text style={styles.scanAllowanceTitle}>{scanUsageTitle}</Text>
-            <Text style={styles.scanAllowanceCaption}>{scanUsageCaption}</Text>
-          </View>
+          <AllowanceMeter
+            label="Today"
+            limit={scanUsage.dailyLimit}
+            remaining={scanUsage.dailyScansRemaining}
+            resetAt={scanUsage.dailyResetAt}
+          />
+          <View style={styles.allowanceDivider} />
+          <AllowanceMeter
+            label="This month"
+            limit={scanUsage.monthlyLimit}
+            remaining={scanUsage.monthlyScansRemaining}
+            resetAt={scanUsage.monthlyResetAt}
+          />
         </View>
 
-        <View style={styles.statsSection}>
-          <Text style={styles.sectionLabel}>Scan Stats</Text>
-
-          <View style={styles.statsGrid}>
-            {statsSummary.stats.map((stat) => (
-              <View key={stat.id} style={styles.statCard}>
-                <Text
-                  style={[
-                    styles.statValue,
-                    stat.id === 'top-category' && styles.statValueLong,
-                  ]}
-                >
-                  {stat.value}
-                </Text>
-                <Text style={styles.statLabel}>{stat.label}</Text>
-                <Text style={styles.statCaption}>{stat.caption}</Text>
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>Settings</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow
+              icon="home-outline"
+              label="Curbside Service"
+              onPress={openCurbsideSheet}
+              value={savedCurbsideDraft ? 'Configured' : 'Not configured'}
+            />
+            <SettingsRow
+              icon="navigate-outline"
+              label="Maximum Drop-off Distance"
+              onPress={() => setDistanceMenuOpen((open) => !open)}
+              value={`${dropoffDistance} miles`}
+            />
+            {distanceMenuOpen ? (
+              <View accessibilityLabel="Maximum drop-off distance options" style={styles.distanceMenu}>
+                {DROPOFF_DISTANCES.map((distance, index) => {
+                  const selected = dropoffDistance === distance;
+                  return (
+                    <Pressable
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected }}
+                      key={distance}
+                      onPress={() => {
+                        setDropoffDistance(distance);
+                        setDistanceMenuOpen(false);
+                      }}
+                      style={({ pressed }) => [
+                        styles.distanceOption,
+                        index < DROPOFF_DISTANCES.length - 1 && styles.distanceOptionDivider,
+                        pressed && styles.settingsRowPressed,
+                      ]}
+                    >
+                      <Text style={[styles.distanceOptionText, selected && styles.distanceOptionTextSelected]}>
+                        {distance} miles
+                      </Text>
+                      <Ionicons
+                        color={selected ? '#2E6B47' : '#B7B2AC'}
+                        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={20}
+                      />
+                    </Pressable>
+                  );
+                })}
               </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.progressCard}>
-          <View style={styles.progressTopRow}>
-            <View style={styles.progressTextBlock}>
-              <Text style={styles.sectionLabel}>Progress</Text>
-              <Text style={styles.progressTitle}>
-                {statsSummary.totalScans > 0
-                  ? `${statsSummary.disposedScans} of ${statsSummary.totalScans} items marked disposed`
-                  : 'No scans yet'}
-              </Text>
-            </View>
-
-            {statsSummary.totalScans > 0 ? (
-              <Text style={styles.progressPercent}>
-                {statsSummary.completionPercent}% complete
-              </Text>
             ) : null}
+            <SettingsRow
+              icon="information-circle-outline"
+              label="About Green Bin & Developer"
+              onPress={() => router.push('/about-green-bin')}
+              value="Learn more"
+            />
+            <SettingsRow
+              icon="shield-checkmark-outline"
+              label="Privacy & Terms"
+              onPress={() => router.push('/privacy-terms')}
+              value="View"
+            />
+            <SettingsRow
+              icon="phone-portrait-outline"
+              label="App Version"
+              showDivider={false}
+              value={appVersion}
+            />
           </View>
-
-          {statsSummary.totalScans > 0 ? (
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${statsSummary.completionPercent}%` },
-                ]}
-              />
-            </View>
-          ) : (
-            <Text style={styles.progressEmptyText}>
-              Scan your first item to start tracking progress.
-            </Text>
-          )}
         </View>
 
         <View style={styles.sectionGroup}>
           <Text style={styles.sectionLabel}>Feedback</Text>
-
           <Pressable
             accessibilityRole="button"
             onPress={handleSendFeedbackPress}
@@ -579,478 +371,103 @@ export default function ProfileScreen() {
           </Pressable>
         </View>
 
-        {DEVELOPMENT_LOCATION_TOOLS_ENABLED ? (
-          <LocationTestingSection />
-        ) : null}
-
-        <View style={styles.infoCard}>
-          <View style={styles.infoIcon}>
-            <Ionicons color="#2E6B47" name="phone-portrait-outline" size={20} />
-          </View>
-          <View style={styles.infoTextBlock}>
-            <Text style={styles.infoTitle}>Privacy and local data</Text>
-            <Text style={styles.infoText}>
-              Recent scans are stored locally on this device for the test build. No account is
-              required to use Green Bin.
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.appInfoCard}>
-          <Text style={styles.infoTitle}>App info</Text>
-          <Text style={styles.infoText}>
-            Green Bin beta closed testing build{appVersion ? ` - Version ${appVersion}` : ''}
-          </Text>
-        </View>
+        {DEVELOPMENT_LOCATION_TOOLS_ENABLED ? <LocationTestingSection /> : null}
       </ScrollView>
+
+      <CurbsideServiceSheet
+        draft={workingCurbsideDraft}
+        onChange={setWorkingCurbsideDraft}
+        onDismiss={dismissCurbsideSheet}
+        onSave={saveCurbsideSheet}
+        visible={curbsideSheetVisible}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  page: {
-    backgroundColor: '#F3F1EE',
-    flex: 1,
-  },
-  content: {
-    gap: 18,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-  },
-  header: {
-    gap: 8,
-  },
+  page: { backgroundColor: '#F3F1EE', flex: 1 },
+  content: { gap: 24, paddingHorizontal: 18, paddingTop: 14 },
   title: {
-    color: '#050505',
-    fontSize: 34,
-    fontWeight: '900',
-    letterSpacing: -1.3,
-    ...PRIMARY_TEXT_STYLES.header,
-  },
-  subtitle: {
-    color: '#8A8782',
-    fontSize: 14,
-    lineHeight: 20,
-    maxWidth: 300,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  heroCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 28,
-    borderWidth: 1,
-    gap: 14,
-    padding: 18,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-  },
-  heroTopRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 14,
-  },
-  heroIcon: {
-    alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderRadius: 24,
-    height: 60,
-    justifyContent: 'center',
-    width: 60,
-  },
-  heroTextBlock: {
-    flex: 1,
-    gap: 4,
-  },
-  heroName: {
-    color: '#111111',
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.4,
-    ...PRIMARY_TEXT_STYLES.title,
-  },
-  heroEmail: {
-    color: '#8A8782',
-    fontSize: 13,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  heroMessage: {
-    color: '#66605B',
-    fontSize: 14,
-    lineHeight: 20,
-    ...SECONDARY_TEXT_STYLES.regular,
+    color: '#050505', fontSize: 36, letterSpacing: -1.4, ...PRIMARY_TEXT_STYLES.header,
   },
   scanAllowanceCard: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 24,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 14,
-    padding: 16,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
+    backgroundColor: '#FFFFFF', borderColor: '#E7E2DB', borderRadius: 28,
+    borderWidth: 1, gap: 18, padding: 20, shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.06, shadowRadius: 18,
   },
+  allowanceHeadingRow: { alignItems: 'center', flexDirection: 'row', gap: 13 },
   scanAllowanceIcon: {
-    alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderRadius: 16,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
+    alignItems: 'center', backgroundColor: '#E9F1E7', borderRadius: 17,
+    height: 48, justifyContent: 'center', width: 48,
   },
-  scanAllowanceTextBlock: {
-    flex: 1,
-    gap: 5,
-  },
+  allowanceHeadingText: { flex: 1, gap: 3 },
   scanAllowanceTitle: {
-    color: '#161616',
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: -0.3,
-    ...PRIMARY_TEXT_STYLES.title,
+    color: '#161616', fontSize: 20, letterSpacing: -0.4, ...PRIMARY_TEXT_STYLES.title,
   },
-  scanAllowanceCaption: {
-    color: '#746F69',
-    fontSize: 12,
-    lineHeight: 17,
-    ...SECONDARY_TEXT_STYLES.regular,
+  scanAllowanceCaption: { color: '#7B7670', fontSize: 12, ...SECONDARY_TEXT_STYLES.regular },
+  allowanceMeter: { gap: 8 },
+  allowanceMeterHeader: {
+    alignItems: 'baseline', flexDirection: 'row', gap: 10, justifyContent: 'space-between',
   },
-  statsSection: {
-    gap: 10,
+  allowanceMeterLabel: { color: '#33312E', fontSize: 13, ...PRIMARY_TEXT_STYLES.label },
+  allowanceCount: {
+    color: '#2E6B47', fontSize: 13, fontVariant: ['tabular-nums'], ...SECONDARY_TEXT_STYLES.extraBold,
   },
+  allowanceTrack: {
+    backgroundColor: '#E8EEE5', borderRadius: 999, height: 10, overflow: 'hidden',
+  },
+  allowanceFill: { backgroundColor: '#6DB07A', borderRadius: 999, height: '100%' },
+  allowanceReset: { color: '#8A857F', fontSize: 11, lineHeight: 16, ...SECONDARY_TEXT_STYLES.regular },
+  allowanceDivider: { backgroundColor: '#EEEAE4', height: StyleSheet.hairlineWidth },
+  settingsSection: { gap: 12 },
+  sectionTitle: { color: '#111111', fontSize: 25, letterSpacing: -0.6, ...PRIMARY_TEXT_STYLES.title },
+  settingsCard: {
+    backgroundColor: '#FFFFFF', borderColor: '#E7E2DB', borderRadius: 24,
+    borderWidth: 1, overflow: 'hidden', shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.04, shadowRadius: 14,
+  },
+  settingsRow: {
+    alignItems: 'center', flexDirection: 'row', gap: 12, minHeight: 72,
+    paddingHorizontal: 16, paddingVertical: 12,
+  },
+  settingsRowPressed: { backgroundColor: '#F5F2ED' },
+  settingsIcon: {
+    alignItems: 'center', backgroundColor: '#EEF3EB', borderRadius: 14,
+    height: 42, justifyContent: 'center', width: 42,
+  },
+  settingsText: { flex: 1, gap: 3, minWidth: 0 },
+  settingsLabel: { color: '#1D1C1A', fontSize: 14, ...PRIMARY_TEXT_STYLES.label },
+  settingsValue: { color: '#827D77', fontSize: 12, ...SECONDARY_TEXT_STYLES.regular },
+  settingsDivider: { backgroundColor: '#ECE8E2', height: StyleSheet.hairlineWidth, marginLeft: 70 },
+  distanceMenu: {
+    backgroundColor: '#F7F5F1', borderBottomColor: '#ECE8E2', borderBottomWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ECE8E2', borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16, paddingLeft: 70,
+  },
+  distanceOption: {
+    alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', minHeight: 46,
+  },
+  distanceOptionDivider: { borderBottomColor: '#E7E2DB', borderBottomWidth: StyleSheet.hairlineWidth },
+  distanceOptionText: { color: '#5F5A54', fontSize: 13, ...SECONDARY_TEXT_STYLES.semiBold },
+  distanceOptionTextSelected: { color: '#24583A', ...SECONDARY_TEXT_STYLES.extraBold },
+  sectionGroup: { gap: 10 },
   sectionLabel: {
-    color: '#807B75',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 2.8,
-    paddingHorizontal: 4,
-    textTransform: 'uppercase',
-    ...PRIMARY_TEXT_STYLES.label,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  statCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 20,
-    borderWidth: 1,
-    flexBasis: '48%',
-    flexGrow: 1,
-    gap: 4,
-    minHeight: 102,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-  },
-  statValue: {
-    color: '#111111',
-    fontSize: 22,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '900',
-    letterSpacing: -0.6,
-    ...SECONDARY_TEXT_STYLES.black,
-  },
-  statValueLong: {
-    fontSize: 17,
-    lineHeight: 22,
-  },
-  statLabel: {
-    color: '#272727',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-    ...SECONDARY_TEXT_STYLES.extraBold,
-  },
-  statCaption: {
-    color: '#8A8782',
-    fontSize: 11,
-    lineHeight: 15,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  progressCard: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 24,
-    borderWidth: 1,
-    gap: 14,
-    padding: 18,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-  },
-  progressTopRow: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 12,
-    justifyContent: 'space-between',
-  },
-  progressTextBlock: {
-    flex: 1,
-    gap: 8,
-  },
-  progressTitle: {
-    color: '#161616',
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-    lineHeight: 22,
-    ...PRIMARY_TEXT_STYLES.title,
-  },
-  progressPercent: {
-    color: '#2E6B47',
-    fontSize: 13,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '900',
-    ...SECONDARY_TEXT_STYLES.black,
-  },
-  progressTrack: {
-    backgroundColor: '#EFF4EA',
-    borderRadius: 999,
-    height: 10,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    backgroundColor: '#6DB07A',
-    borderRadius: 999,
-    height: '100%',
-  },
-  progressEmptyText: {
-    color: '#746F69',
-    fontSize: 14,
-    lineHeight: 20,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  sectionGroup: {
-    gap: 10,
+    color: '#807B75', fontSize: 10, letterSpacing: 2.8, paddingHorizontal: 4,
+    textTransform: 'uppercase', ...PRIMARY_TEXT_STYLES.label,
   },
   actionCard: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 24,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    padding: 16,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
+    alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#E9E5DF',
+    borderRadius: 24, borderWidth: 1, flexDirection: 'row', gap: 12, padding: 16,
+    shadowColor: '#111827', shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05, shadowRadius: 16,
   },
-  cardPressed: {
-    opacity: 0.86,
-  },
+  cardPressed: { opacity: 0.86 },
   actionIcon: {
-    alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderRadius: 14,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
+    alignItems: 'center', backgroundColor: '#F4F1EC', borderRadius: 14,
+    height: 40, justifyContent: 'center', width: 40,
   },
-  actionTextBlock: {
-    flex: 1,
-    gap: 4,
-  },
-  actionTitle: {
-    color: '#161616',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-    ...PRIMARY_TEXT_STYLES.title,
-  },
-  actionDescription: {
-    color: '#7B7670',
-    fontSize: 12,
-    lineHeight: 17,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  infoCard: {
-    alignItems: 'flex-start',
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E9E5DF',
-    borderRadius: 24,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    padding: 16,
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-  },
-  infoIcon: {
-    alignItems: 'center',
-    backgroundColor: '#F4F1EC',
-    borderRadius: 14,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  infoTextBlock: {
-    flex: 1,
-    gap: 5,
-  },
-  infoTitle: {
-    color: '#161616',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-    ...PRIMARY_TEXT_STYLES.title,
-  },
-  infoText: {
-    color: '#746F69',
-    fontSize: 13,
-    lineHeight: 19,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  appInfoCard: {
-    backgroundColor: '#F7F4EF',
-    borderColor: '#E6E1DA',
-    borderRadius: 20,
-    borderWidth: 1,
-    gap: 5,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  devSection: {
-    backgroundColor: '#FFF9ED',
-    borderColor: '#EBCF96',
-    borderRadius: 24,
-    borderWidth: 1,
-    gap: 14,
-    padding: 16,
-  },
-  devHeadingRow: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 12,
-  },
-  devIcon: {
-    alignItems: 'center',
-    backgroundColor: '#FBE7BC',
-    borderRadius: 14,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  devHeadingText: {
-    flex: 1,
-    gap: 4,
-  },
-  devTitle: {
-    color: '#4F3200',
-    fontSize: 16,
-    fontWeight: '900',
-    ...PRIMARY_TEXT_STYLES.title,
-  },
-  devDescription: {
-    color: '#765A26',
-    fontSize: 12,
-    lineHeight: 17,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  devCurrentLocation: {
-    backgroundColor: '#FBEFD3',
-    borderRadius: 12,
-    gap: 3,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  devCurrentLocationLabel: {
-    color: '#80683B',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    ...SECONDARY_TEXT_STYLES.extraBold,
-  },
-  devCurrentLocationValue: {
-    color: '#4F3200',
-    fontSize: 13,
-    fontWeight: '800',
-    lineHeight: 18,
-    ...SECONDARY_TEXT_STYLES.extraBold,
-  },
-  devPresetList: {
-    gap: 7,
-  },
-  devPreset: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderColor: '#E8DFD0',
-    borderRadius: 14,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  devPresetSelected: {
-    backgroundColor: '#F1F8EF',
-    borderColor: '#76A882',
-  },
-  devPresetText: {
-    color: '#5F5A54',
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '700',
-    ...PRIMARY_TEXT_STYLES.button,
-  },
-  devPresetTextSelected: {
-    color: '#234C31',
-  },
-  devCustomFields: {
-    gap: 8,
-  },
-  devInput: {
-    backgroundColor: '#FFFFFF',
-    borderColor: '#DDD4C5',
-    borderRadius: 12,
-    borderWidth: 1,
-    color: '#171717',
-    fontSize: 14,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    ...SECONDARY_TEXT_STYLES.regular,
-  },
-  devApplyButton: {
-    alignItems: 'center',
-    backgroundColor: '#2E6B47',
-    borderRadius: 12,
-    justifyContent: 'center',
-    minHeight: 42,
-    paddingHorizontal: 14,
-  },
-  devApplyButtonDisabled: {
-    backgroundColor: '#AFA89E',
-    opacity: 0.65,
-  },
-  devApplyButtonText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '800',
-    ...PRIMARY_TEXT_STYLES.button,
-  },
-  devNote: {
-    color: '#765A26',
-    fontSize: 11,
-    fontWeight: '600',
-    lineHeight: 16,
-    ...SECONDARY_TEXT_STYLES.semiBold,
-  },
+  actionTextBlock: { flex: 1, gap: 4 },
+  actionTitle: { color: '#161616', fontSize: 15, letterSpacing: -0.2, ...PRIMARY_TEXT_STYLES.title },
+  actionDescription: { color: '#7B7670', fontSize: 12, lineHeight: 17, ...SECONDARY_TEXT_STYLES.regular },
 });
