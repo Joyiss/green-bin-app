@@ -45,6 +45,7 @@ import {
 
 const FEEDBACK_EMAIL = 'mallela.rakshan@gmail.com';
 const FEEDBACK_SUBJECT = 'Green Bin Feedback';
+const PRIVACY_TERMS_URL = 'https://joyiss.github.io/green-bin-legal/';
 const FEEDBACK_BODY = [
   'What worked well?',
   '',
@@ -267,6 +268,21 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  const handlePrivacyTermsPress = useCallback(async () => {
+    try {
+      const canOpenPrivacyTerms = await Linking.canOpenURL(PRIVACY_TERMS_URL);
+      if (!canOpenPrivacyTerms) {
+        throw new Error('Privacy and terms URL is unavailable');
+      }
+      await Linking.openURL(PRIVACY_TERMS_URL);
+    } catch {
+      Alert.alert(
+        'Could not open Privacy & Terms',
+        `Please visit ${PRIVACY_TERMS_URL}`,
+      );
+    }
+  }, []);
+
   const openCurbsideSheet = useCallback(() => {
     setDistanceMenuOpen(false);
     setWorkingCurbsideDraft(
@@ -389,7 +405,7 @@ export default function ProfileScreen() {
             <SettingsRow
               icon="shield-checkmark-outline"
               label="Privacy & Terms"
-              onPress={() => router.push('/privacy-terms')}
+              onPress={() => void handlePrivacyTermsPress()}
               value="View"
             />
             <SettingsRow

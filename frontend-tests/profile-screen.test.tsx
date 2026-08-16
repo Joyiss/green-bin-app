@@ -1,5 +1,5 @@
 import { fireEvent, render } from '@testing-library/react-native';
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, Alert, Linking } from 'react-native';
 
 const mockPush = jest.fn();
 const mockGetScanUsageDisplayState = jest.fn(async () => ({
@@ -65,6 +65,10 @@ describe('Profile screen redesign', () => {
     mockPush.mockClear();
     mockGetScanUsageDisplayState.mockClear();
     jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
+    jest.spyOn(Linking, 'canOpenURL').mockResolvedValue(true);
+    jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    jest.mocked(Linking.canOpenURL).mockClear();
+    jest.mocked(Linking.openURL).mockClear();
   });
 
   afterEach(() => {
@@ -123,14 +127,33 @@ describe('Profile screen redesign', () => {
     expect(screen.queryByDisplayValue('Unsaved Provider')).toBeNull();
   });
 
-  it('routes information rows to their separate screens', async () => {
+  it('opens About in-app and Privacy & Terms in the external browser', async () => {
     const screen = await render(<ProfileScreen />);
 
     await fireEvent.press(screen.getByText('About Green Bin & Developer'));
     await fireEvent.press(screen.getByText('Privacy & Terms'));
 
-    expect(mockPush).toHaveBeenNthCalledWith(1, '/about-green-bin');
-    expect(mockPush).toHaveBeenNthCalledWith(2, '/privacy-terms');
+    expect(mockPush).toHaveBeenCalledWith('/about-green-bin');
+    expect(Linking.canOpenURL).toHaveBeenCalledWith(
+      'https://joyiss.github.io/green-bin-legal/',
+    );
+    expect(Linking.openURL).toHaveBeenCalledWith(
+      'https://joyiss.github.io/green-bin-legal/',
+    );
+  });
+
+  it('shows a helpful alert when Privacy & Terms cannot be opened', async () => {
+    jest.mocked(Linking.canOpenURL).mockResolvedValue(false);
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const screen = await render(<ProfileScreen />);
+
+    await fireEvent.press(screen.getByText('Privacy & Terms'));
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Could not open Privacy & Terms',
+      'Please visit https://joyiss.github.io/green-bin-legal/',
+    );
+    expect(Linking.openURL).not.toHaveBeenCalled();
   });
 });
 
