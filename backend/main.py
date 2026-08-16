@@ -15,6 +15,7 @@ try:
     from .repositories import cache_repository
     from .routes.predict import router as predict_router
     from .routes.feedback import router as feedback_router
+    from .routes.service_providers import router as service_providers_router
     from .services import phash_service
     from .services.runtime_config import (
         env_flag as _env_flag,
@@ -28,6 +29,7 @@ except ImportError:
     from repositories import cache_repository
     from routes.predict import router as predict_router
     from routes.feedback import router as feedback_router
+    from routes.service_providers import router as service_providers_router
     from services import phash_service
     from services.runtime_config import (
         env_flag as _env_flag,
@@ -645,3 +647,4 @@ def nearby_locations(
 
 app.include_router(predict_router)
 app.include_router(feedback_router)
+app.include_router(service_providers_router)

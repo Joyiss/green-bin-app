@@ -188,6 +188,54 @@ export type NearbyLocationsResponse = {
   material_resolution: Record<string, unknown> | null;
 };
 
+export type ProviderVerificationStatus = 'verified' | 'not_verified' | 'uncertain';
+export type ProviderMatch = 'confirmed' | 'rejected' | 'uncertain';
+
+export type ProviderEvidence = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
+export type ProviderVerificationResult = {
+  status: ProviderVerificationStatus;
+  name: string;
+  services: string[];
+  match: ProviderMatch;
+  reason: string;
+  evidence: ProviderEvidence[];
+};
+
+export type ServiceProviderRecord = {
+  id: string;
+  canonical_name: string;
+  raw_input_name: string;
+  services: string[];
+  city: string;
+  state: string;
+  county: string | null;
+  status: ProviderVerificationStatus;
+  evidence_urls: string[];
+  verified_at: string;
+};
+
+export type ProviderRestriction = {
+  reason: 'failed_attempts' | 'successful_confirmation' | 'verification_in_progress';
+  retry_at: string;
+};
+
+export type VerifyProviderResponse = {
+  verification_id: string;
+  cached: boolean;
+  result: ProviderVerificationResult;
+  cooldown: ProviderRestriction | null;
+};
+
+export type CurrentProviderResponse = {
+  provider: ServiceProviderRecord | null;
+  restriction: ProviderRestriction | null;
+};
+
 export class ApiContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -641,4 +689,123 @@ export function normalizeNearbyLocationsResponse(value: unknown): NearbyLocation
       ? value.material_resolution
       : null,
   };
+}
+
+function safeEvidenceUrl(value: unknown) {
+  const candidate = text(value);
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProviderStatus(value: unknown): ProviderVerificationStatus | null {
+  return value === 'verified' || value === 'not_verified' || value === 'uncertain'
+    ? value
+    : null;
+}
+
+function normalizeProviderRestriction(value: unknown): ProviderRestriction | null {
+  if (!isRecord(value)) return null;
+  const reason = value.reason ?? value.cooldown_reason;
+  const retryAt = text(value.retry_at);
+  if (
+    (reason !== 'failed_attempts' &&
+      reason !== 'successful_confirmation' &&
+      reason !== 'verification_in_progress') ||
+    !retryAt ||
+    Number.isNaN(Date.parse(retryAt))
+  ) {
+    return null;
+  }
+  return { reason, retry_at: retryAt };
+}
+
+export function normalizeProviderVerificationResult(value: unknown): ProviderVerificationResult {
+  if (!isRecord(value)) {
+    throw new ApiContractError('Provider verification result is invalid.');
+  }
+  const status = normalizeProviderStatus(value.status);
+  const match =
+    value.match === 'confirmed' || value.match === 'rejected' || value.match === 'uncertain'
+      ? value.match
+      : null;
+  const expectedMatch = status
+    ? { verified: 'confirmed', not_verified: 'rejected', uncertain: 'uncertain' }[status]
+    : null;
+  const name = text(value.name);
+  const reason = text(value.reason);
+  if (!status || !match || match !== expectedMatch || !name || !reason || !Array.isArray(value.evidence)) {
+    throw new ApiContractError('Provider verification result is inconsistent.');
+  }
+  const evidence = value.evidence.map((item) => {
+    if (!isRecord(item)) throw new ApiContractError('Provider evidence is invalid.');
+    const title = text(item.title);
+    const url = safeEvidenceUrl(item.url);
+    const snippet = text(item.snippet);
+    if (!title || !url || !snippet) throw new ApiContractError('Provider evidence is invalid.');
+    return { title, url, snippet };
+  });
+  return { status, name, services: stringArray(value.services), match, reason, evidence };
+}
+
+function normalizeServiceProviderRecord(value: unknown): ServiceProviderRecord {
+  if (!isRecord(value)) throw new ApiContractError('Service provider record is invalid.');
+  const id = text(value.id);
+  const canonicalName = text(value.canonical_name);
+  const rawInputName = text(value.raw_input_name);
+  const city = text(value.city);
+  const state = text(value.state);
+  const status = normalizeProviderStatus(value.status);
+  const verifiedAt = text(value.verified_at);
+  if (!id || !canonicalName || !rawInputName || !city || !state || !status || !verifiedAt) {
+    throw new ApiContractError('Service provider record is invalid.');
+  }
+  const evidenceUrls = Array.isArray(value.evidence_urls)
+    ? value.evidence_urls.map(safeEvidenceUrl).filter((url): url is string => url !== null)
+    : [];
+  return {
+    id, canonical_name: canonicalName, raw_input_name: rawInputName,
+    services: stringArray(value.services), city, state, county: text(value.county), status,
+    evidence_urls: evidenceUrls, verified_at: verifiedAt,
+  };
+}
+
+export function normalizeVerifyProviderResponse(value: unknown): VerifyProviderResponse {
+  if (!isRecord(value)) throw new ApiContractError('Provider verification response is invalid.');
+  const verificationId = text(value.verification_id);
+  if (!verificationId || typeof value.cached !== 'boolean') {
+    throw new ApiContractError('Provider verification response is invalid.');
+  }
+  return {
+    verification_id: verificationId,
+    cached: value.cached,
+    result: normalizeProviderVerificationResult(value.result),
+    cooldown: normalizeProviderRestriction(value.cooldown),
+  };
+}
+
+export function normalizeCurrentProviderResponse(value: unknown): CurrentProviderResponse {
+  if (!isRecord(value)) throw new ApiContractError('Current provider response is invalid.');
+  return {
+    provider: value.provider === null ? null : normalizeServiceProviderRecord(value.provider),
+    restriction: normalizeProviderRestriction(value.restriction),
+  };
+}
+
+export function normalizeConfirmProviderResponse(value: unknown) {
+  if (!isRecord(value)) throw new ApiContractError('Provider confirmation response is invalid.');
+  return { provider: normalizeServiceProviderRecord(value.provider) };
+}
+
+export function normalizeProviderCooldownError(value: unknown): ProviderRestriction | null {
+  if (!isRecord(value)) return null;
+  const detail = isRecord(value.detail) ? value.detail : value;
+  return normalizeProviderRestriction(detail);
 }

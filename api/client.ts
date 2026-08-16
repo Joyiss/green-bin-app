@@ -4,6 +4,9 @@ import {
   normalizeNearbyLocationsResponse,
   normalizePredictionResponse,
   normalizeSupportedLabelsResponse,
+  normalizeConfirmProviderResponse,
+  normalizeCurrentProviderResponse,
+  normalizeVerifyProviderResponse,
   type PredictionResponse,
 } from '@/api/contracts';
 import { ApiError, requestJson } from '@/api/request';
@@ -14,6 +17,7 @@ const HEALTH_TIMEOUT_MS = 30_000;
 const PREDICT_TIMEOUT_MS = 90_000;
 const GET_TIMEOUT_MS = 20_000;
 const FEEDBACK_TIMEOUT_MS = 15_000;
+const PROVIDER_TIMEOUT_MS = 45_000;
 const HEALTH_CACHE_MS = 5 * 60 * 1000;
 
 let healthPromise: Promise<void> | null = null;
@@ -128,5 +132,58 @@ export function sendScanFeedback(
       validate: (value) => normalizeFeedbackResponse(value, submission.request_id),
     },
   );
+}
+
+export type ProviderLocationRequest = { city: string; state: string; county?: string };
+
+export function fetchCurrentProvider(
+  location: ProviderLocationRequest,
+  clientId: string,
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams({ city: location.city, state: location.state });
+  if (location.county) query.set('county', location.county);
+  return requestJson(apiUrl(`/service-providers/current?${query.toString()}`), {
+    init: { headers: { 'X-GreenBin-Client-Id': clientId } },
+    signal,
+    timeoutMs: GET_TIMEOUT_MS,
+    validate: normalizeCurrentProviderResponse,
+  });
+}
+
+export function verifyServiceProvider(
+  serviceName: string,
+  location: ProviderLocationRequest,
+  clientId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson(apiUrl('/service-providers/verify'), {
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GreenBin-Client-Id': clientId },
+      body: JSON.stringify({ service_name: serviceName, location }),
+    },
+    signal,
+    timeoutMs: PROVIDER_TIMEOUT_MS,
+    validate: normalizeVerifyProviderResponse,
+  });
+}
+
+export function confirmServiceProvider(
+  verificationId: string,
+  rawInputName: string,
+  clientId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson(apiUrl('/service-providers/confirm'), {
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GreenBin-Client-Id': clientId },
+      body: JSON.stringify({ verification_id: verificationId, raw_input_name: rawInputName }),
+    },
+    signal,
+    timeoutMs: PROVIDER_TIMEOUT_MS,
+    validate: normalizeConfirmProviderResponse,
+  });
 }
 

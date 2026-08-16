@@ -1,7 +1,29 @@
-import { act, fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, Linking } from 'react-native';
+import { ApiError } from '@/api/request';
 
 const mockPush = jest.fn();
+const mockGetAppLocationContext: jest.Mock = jest.fn(async () => ({
+  coordinates: { latitude: 33.7, longitude: -84.4 }, jurisdictionId: null,
+  coarseDisposalLocation: { city: 'Atlanta', county: 'Fulton', state: 'Georgia' },
+}));
+const mockFetchCurrentProvider: jest.Mock = jest.fn(async () => ({ provider: null, restriction: null }));
+const mockVerifyServiceProvider = jest.fn(async () => ({
+  verification_id: 'verification-id', cached: false, cooldown: null,
+  result: {
+    status: 'verified', name: 'City Waste', services: ['Residential recycling'],
+    match: 'confirmed', reason: 'Verified for this location.',
+    evidence: [{ title: 'Provider', url: 'https://provider.example', snippet: 'Curbside service.' }],
+  },
+}));
+const mockConfirmServiceProvider = jest.fn(async (_id: string, rawInputName: string) => ({
+  provider: {
+    id: 'provider-id', canonical_name: 'City Waste', raw_input_name: rawInputName,
+    services: ['Residential recycling'], city: 'Atlanta', county: 'Fulton', state: 'Georgia',
+    status: 'verified', evidence_urls: ['https://provider.example'],
+    verified_at: '2026-08-16T00:00:00Z',
+  },
+}));
 const mockGetScanUsageDisplayState = jest.fn(async () => ({
   dailyLimit: 5,
   dailyResetAt: '2026-08-16T00:00:00.000Z',
@@ -39,6 +61,23 @@ jest.mock('react-native-safe-area-context', () => {
 
 jest.mock('@/app/development-location', () => ({
   DEVELOPMENT_LOCATION_TOOLS_ENABLED: false,
+  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS: { location: { enabled: false } },
+  loadDevelopmentLocationSettings: jest.fn(async () => ({ location: { enabled: false } })),
+  resolveDevelopmentPredictionLocation: ({ deviceLocation, deviceJurisdictionId }: any) => ({
+    coarseDisposalLocation: deviceLocation,
+    jurisdictionId: deviceJurisdictionId,
+    developmentOverrideActive: false,
+  }),
+}));
+
+jest.mock('@/app/location-context', () => ({
+  getAppLocationContext: (...args: any[]) => mockGetAppLocationContext.apply(null, args as any),
+}));
+
+jest.mock('@/api/client', () => ({
+  fetchCurrentProvider: (...args: any[]) => mockFetchCurrentProvider.apply(null, args as any),
+  verifyServiceProvider: (...args: any[]) => mockVerifyServiceProvider.apply(null, args as any),
+  confirmServiceProvider: (...args: any[]) => mockConfirmServiceProvider.apply(null, args as any),
 }));
 
 jest.mock('@/components/bottom-nav-bar', () => ({
@@ -53,6 +92,7 @@ jest.mock('@/storage/scanUsage', () => ({
   DEFAULT_DAILY_SCAN_LIMIT: 5,
   DEFAULT_MONTHLY_SCAN_LIMIT: 20,
   getScanUsageDisplayState: () => mockGetScanUsageDisplayState(),
+  getInstallationId: jest.fn(async () => 'raw-installation-id'),
 }));
 
 import ProfileScreen, {
@@ -64,6 +104,15 @@ describe('Profile screen redesign', () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockGetScanUsageDisplayState.mockClear();
+    mockFetchCurrentProvider.mockClear();
+    mockVerifyServiceProvider.mockClear();
+    mockConfirmServiceProvider.mockClear();
+    mockGetAppLocationContext.mockClear();
+    mockGetAppLocationContext.mockResolvedValue({
+      coordinates: { latitude: 33.7, longitude: -84.4 }, jurisdictionId: null,
+      coarseDisposalLocation: { city: 'Atlanta', county: 'Fulton', state: 'Georgia' },
+    });
+    mockFetchCurrentProvider.mockResolvedValue({ provider: null, restriction: null });
     jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
     jest.spyOn(Linking, 'canOpenURL').mockResolvedValue(true);
     jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
@@ -98,11 +147,45 @@ describe('Profile screen redesign', () => {
     expect(screen.queryByLabelText('Maximum drop-off distance options')).toBeNull();
   });
 
+  it('reuses location without requesting permission and scopes current-provider loading', async () => {
+    await render(<ProfileScreen />);
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
+    expect(mockGetAppLocationContext).toHaveBeenCalledWith({ requestPermission: false });
+    expect(mockFetchCurrentProvider.mock.calls[0][0]).toEqual({
+      city: 'Atlanta', county: 'Fulton', state: 'Georgia',
+    });
+  });
+
+  it('does not load a previous location provider after location changes', async () => {
+    const oldProvider = {
+      id: 'old', canonical_name: 'Atlanta Waste', raw_input_name: 'Atlanta Waste',
+      services: ['Recycling'], city: 'Atlanta', county: 'Fulton', state: 'Georgia',
+      status: 'verified', evidence_urls: [], verified_at: '2026-08-16T00:00:00Z',
+    };
+    mockFetchCurrentProvider.mockResolvedValueOnce({ provider: oldProvider, restriction: null });
+    const first = await render(<ProfileScreen />);
+    await waitFor(() => expect(first.getByText('Configured')).toBeTruthy());
+    await first.unmount();
+
+    mockGetAppLocationContext.mockResolvedValueOnce({
+      coordinates: { latitude: 47.6, longitude: -122.3 }, jurisdictionId: null,
+      coarseDisposalLocation: { city: 'Seattle', county: 'King', state: 'Washington' },
+    });
+    mockFetchCurrentProvider.mockResolvedValueOnce({ provider: null, restriction: null });
+    const second = await render(<ProfileScreen />);
+    await waitFor(() => expect(second.getByText('Not configured')).toBeTruthy());
+    expect(mockFetchCurrentProvider.mock.calls.at(-1)?.[0]).toEqual({
+      city: 'Seattle', county: 'King', state: 'Washington',
+    });
+  });
+
   it('saves curbside values in memory and discards later unsaved edits', async () => {
     const screen = await render(<ProfileScreen />);
 
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
     await fireEvent.press(screen.getByText('Curbside Service'));
     await fireEvent.press(screen.getByText('Yes'));
+    jest.useFakeTimers();
     await fireEvent.changeText(
       screen.getByLabelText('Curbside recycling provider name'),
       'City Waste',
@@ -110,7 +193,12 @@ describe('Profile screen redesign', () => {
     await fireEvent.press(screen.getByLabelText('Trash pickup day, Monday'));
     await fireEvent.press(screen.getByLabelText('Recycling pickup day, Tuesday'));
     await fireEvent(screen.getByLabelText('Pickup reminders'), 'valueChange', true);
-    await fireEvent.press(screen.getByText('Save'));
+    await act(async () => { jest.advanceTimersByTime(600); });
+    await fireEvent.press(screen.getByLabelText('Verify provider name'));
+    await waitFor(() => expect(screen.getByText('Verified for this location.')).toBeTruthy());
+    await fireEvent.press(screen.getByText('Confirm & Save'));
+    await waitFor(() => expect(mockConfirmServiceProvider).toHaveBeenCalled());
+    jest.useRealTimers();
 
     expect(screen.getByText('Configured')).toBeTruthy();
 
@@ -168,16 +256,56 @@ describe('Profile screen redesign', () => {
       });
       expect(screen.queryByLabelText('Verify provider name')).toBeNull();
 
-      await fireEvent.changeText(providerInput, 'Saved Provider');
-      await fireEvent.press(screen.getByText('Save'));
+      await fireEvent.changeText(providerInput, 'Unsaved Provider');
+      await fireEvent.press(screen.getByLabelText('Close curbside service settings'));
       await fireEvent.press(screen.getByText('Curbside Service'));
-
-      expect(screen.getByDisplayValue('Saved Provider')).toBeTruthy();
-      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+      expect(screen.queryByDisplayValue('Unsaved Provider')).toBeNull();
     } finally {
       jest.runOnlyPendingTimers();
       jest.useRealTimers();
     }
+  });
+
+  it('shows an uncertain result and keeps confirmation disabled', async () => {
+    mockVerifyServiceProvider.mockResolvedValueOnce({
+      verification_id: 'uncertain-id', cached: true, cooldown: null,
+      result: {
+        status: 'uncertain', name: 'Possible Provider', services: [], match: 'uncertain',
+        reason: 'The available evidence does not confirm this service area.',
+        evidence: [{ title: 'Search result', url: 'https://provider.example', snippet: 'Service details are unclear.' }],
+      },
+    });
+    const screen = await render(<ProfileScreen />);
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
+    await fireEvent.press(screen.getByText('Curbside Service'));
+    jest.useFakeTimers();
+    await fireEvent.changeText(screen.getByLabelText('Curbside recycling provider name'), 'Possible Provider');
+    await act(async () => { jest.advanceTimersByTime(600); });
+    await fireEvent.press(screen.getByLabelText('Verify provider name'));
+    await waitFor(() => expect(screen.getByText('The available evidence does not confirm this service area.')).toBeTruthy());
+    expect(screen.getByText('Confirm & Save').parent?.props.accessibilityState.disabled).toBe(true);
+    jest.useRealTimers();
+  });
+
+  it('shows the backend cooldown retry time in a modal and sheet state', async () => {
+    const retryAt = '2026-08-17T00:00:00Z';
+    mockVerifyServiceProvider.mockRejectedValueOnce(new ApiError('rate_limit', {
+      status: 429,
+      body: { detail: { error: 'provider_cooldown', cooldown_reason: 'failed_attempts', retry_at: retryAt } },
+    }));
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const screen = await render(<ProfileScreen />);
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
+    await fireEvent.press(screen.getByText('Curbside Service'));
+    jest.useFakeTimers();
+    await fireEvent.changeText(screen.getByLabelText('Curbside recycling provider name'), 'Rejected Provider');
+    await act(async () => { jest.advanceTimersByTime(600); });
+    await fireEvent.press(screen.getByLabelText('Verify provider name'));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith(
+      'Provider verification unavailable', expect.stringContaining('Three unsuccessful attempts'),
+    ));
+    expect(screen.getByText(/Three unsuccessful attempts reached the limit/)).toBeTruthy();
+    jest.useRealTimers();
   });
 
   it('opens About in-app and Privacy & Terms in the external browser', async () => {

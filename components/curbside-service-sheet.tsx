@@ -2,8 +2,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
+  ActivityIndicator,
   Animated,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -18,6 +20,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
+import type { ProviderVerificationResult } from '@/api/contracts';
 
 export type PickupDay =
   | 'Monday'
@@ -107,12 +110,26 @@ export function CurbsideServiceSheet({
   onChange,
   onDismiss,
   onSave,
+  onVerify = () => undefined,
+  providerError = null,
+  providerResult = null,
+  providerStatus = 'idle',
+  locationLabel = null,
+  saveDisabled = false,
+  saving = false,
   visible,
 }: {
   draft: CurbsideDraft;
   onChange: (draft: CurbsideDraft) => void;
   onDismiss: () => void;
-  onSave: (draft: CurbsideDraft) => void;
+  onSave: (draft: CurbsideDraft) => void | boolean | Promise<void | boolean>;
+  onVerify?: () => void;
+  providerError?: string | null;
+  providerResult?: ProviderVerificationResult | null;
+  providerStatus?: 'idle' | 'loading' | 'verified' | 'not_verified' | 'uncertain' | 'cooldown' | 'failure';
+  locationLabel?: string | null;
+  saveDisabled?: boolean;
+  saving?: boolean;
   visible: boolean;
 }) {
   const insets = useSafeAreaInsets();
@@ -206,12 +223,18 @@ export function CurbsideServiceSheet({
       resetProviderVerification();
 
       const finish = () => {
-        if (save) {
-          onSave(cloneCurbsideDraft(draft));
-        } else {
-          onDismiss();
-        }
+        if (!save) onDismiss();
       };
+
+      if (save) {
+        void Promise.resolve(onSave(cloneCurbsideDraft(draft))).then((saved) => {
+          if (saved === false) {
+            closingRef.current = false;
+          }
+        });
+        closingRef.current = false;
+        return;
+      }
 
       if (reduceMotion) {
         progress.setValue(0);
@@ -336,7 +359,7 @@ export function CurbsideServiceSheet({
               <View style={styles.header}>
                 <View style={styles.headingText}>
                   <Text style={styles.title}>Curbside Service</Text>
-                  <Text style={styles.subtitle}>Temporary setup for this app session.</Text>
+                  <Text style={styles.subtitle}>Verify your service for the current location.</Text>
                 </View>
                 <Pressable
                   accessibilityLabel="Close curbside service settings"
@@ -390,7 +413,10 @@ export function CurbsideServiceSheet({
               </View>
 
               <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Provider name (optional)</Text>
+                <Text style={styles.fieldLabel}>Provider name (required)</Text>
+                <Text style={styles.locationCaption}>
+                  {locationLabel ? `Verifying for ${locationLabel}` : 'Current location is unavailable.'}
+                </Text>
                 <View style={styles.providerRow}>
                   <View style={styles.providerInputContainer}>
                     <TextInput
@@ -421,17 +447,54 @@ export function CurbsideServiceSheet({
                     <Pressable
                       accessibilityLabel="Verify provider name"
                       accessibilityRole="button"
-                      onPress={() => undefined}
+                      disabled={providerStatus === 'loading' || !locationLabel || !draft.providerName.trim()}
+                      onPress={onVerify}
                       style={({ pressed }) => [
                         styles.verifyButton,
+                        (providerStatus === 'loading' || !locationLabel) && styles.buttonDisabled,
                         pressed && styles.verifyButtonPressed,
                       ]}
                     >
-                      <Text style={styles.verifyButtonText}>Verify</Text>
+                      {providerStatus === 'loading' ? (
+                        <ActivityIndicator color="#FFFFFF" size="small" />
+                      ) : (
+                        <Text style={styles.verifyButtonText}>Verify</Text>
+                      )}
                     </Pressable>
                   </Animated.View>
                 </View>
               </View>
+
+              {providerResult ? (
+                <View accessibilityLabel={`Provider verification ${providerResult.status}`} style={[
+                  styles.resultCard,
+                  providerResult.status === 'verified' ? styles.resultVerified : styles.resultOther,
+                ]}>
+                  <Text style={styles.resultTitle}>{providerResult.name}</Text>
+                  <Text style={styles.resultBadge}>{providerResult.match.replace('_', ' ')}</Text>
+                  <Text style={styles.resultReason}>{providerResult.reason}</Text>
+                  {providerResult.services.length ? (
+                    <Text style={styles.resultServices}>Services: {providerResult.services.join(', ')}</Text>
+                  ) : null}
+                  {providerResult.evidence.map((item) => (
+                    <Pressable
+                      accessibilityRole="link"
+                      key={item.url}
+                      onPress={() => void Linking.openURL(item.url)}
+                      style={styles.evidenceLink}
+                    >
+                      <Text style={styles.evidenceTitle}>{item.title}</Text>
+                      <Text numberOfLines={2} style={styles.evidenceSnippet}>{item.snippet}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+
+              {providerError ? (
+                <View accessibilityLiveRegion="polite" style={styles.errorCard}>
+                  <Text style={styles.errorText}>{providerError}</Text>
+                </View>
+              ) : null}
 
               <PickupDayPicker
                 label="Trash pickup day"
@@ -461,11 +524,17 @@ export function CurbsideServiceSheet({
               </View>
 
               <Pressable
+                accessibilityState={{ disabled: saveDisabled || saving }}
                 accessibilityRole="button"
+                disabled={saveDisabled || saving}
                 onPress={() => close(true)}
-                style={({ pressed }) => [styles.saveButton, pressed && styles.savePressed]}
+                style={({ pressed }) => [
+                  styles.saveButton,
+                  (saveDisabled || saving) && styles.buttonDisabled,
+                  pressed && styles.savePressed,
+                ]}
               >
-                <Text style={styles.saveText}>Save</Text>
+                {saving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.saveText}>Confirm & Save</Text>}
               </Pressable>
             </ScrollView>
           </Animated.View>
@@ -506,6 +575,7 @@ const styles = StyleSheet.create({
   content: { gap: 18, paddingHorizontal: 18, paddingTop: 6 },
   fieldGroup: { gap: 9 },
   fieldLabel: { color: '#242220', fontSize: 13, ...PRIMARY_TEXT_STYLES.label },
+  locationCaption: { color: '#817C76', fontSize: 11, ...SECONDARY_TEXT_STYLES.regular },
   binaryOptions: { flexDirection: 'row', gap: 8 },
   binaryOption: {
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#DDD8D1',
@@ -528,6 +598,19 @@ const styles = StyleSheet.create({
   },
   verifyButtonPressed: { backgroundColor: '#2B2927' },
   verifyButtonText: { color: '#FFFFFF', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
+  buttonDisabled: { opacity: 0.45 },
+  resultCard: { borderRadius: 16, borderWidth: 1, gap: 7, padding: 14 },
+  resultVerified: { backgroundColor: '#EFF8F1', borderColor: '#B9D8C1' },
+  resultOther: { backgroundColor: '#FFF8E8', borderColor: '#E8D5A3' },
+  resultTitle: { color: '#171717', fontSize: 16, ...PRIMARY_TEXT_STYLES.title },
+  resultBadge: { color: '#2E6B47', fontSize: 11, textTransform: 'uppercase', ...PRIMARY_TEXT_STYLES.label },
+  resultReason: { color: '#4F4A45', fontSize: 13, lineHeight: 18, ...SECONDARY_TEXT_STYLES.regular },
+  resultServices: { color: '#4F4A45', fontSize: 12, ...SECONDARY_TEXT_STYLES.semiBold },
+  evidenceLink: { borderTopColor: '#D9D4CD', borderTopWidth: StyleSheet.hairlineWidth, gap: 2, paddingTop: 7 },
+  evidenceTitle: { color: '#24583A', fontSize: 12, ...SECONDARY_TEXT_STYLES.extraBold },
+  evidenceSnippet: { color: '#6C6761', fontSize: 11, lineHeight: 15, ...SECONDARY_TEXT_STYLES.regular },
+  errorCard: { backgroundColor: '#FFF0ED', borderColor: '#F0C8C0', borderRadius: 14, borderWidth: 1, padding: 12 },
+  errorText: { color: '#8A3528', fontSize: 12, lineHeight: 17, ...SECONDARY_TEXT_STYLES.regular },
   dayOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   dayOption: {
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#DDD8D1',

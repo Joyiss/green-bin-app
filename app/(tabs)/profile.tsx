@@ -15,7 +15,26 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { DEVELOPMENT_LOCATION_TOOLS_ENABLED } from '@/app/development-location';
+import {
+  DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
+  DEVELOPMENT_LOCATION_TOOLS_ENABLED,
+  loadDevelopmentLocationSettings,
+  resolveDevelopmentPredictionLocation,
+} from '@/app/development-location';
+import { getAppLocationContext } from '@/app/location-context';
+import type { CoarseDisposalLocation } from '@/app/jurisdiction';
+import {
+  confirmServiceProvider,
+  fetchCurrentProvider,
+  verifyServiceProvider,
+  type ProviderLocationRequest,
+} from '@/api/client';
+import {
+  normalizeProviderCooldownError,
+  type ProviderVerificationResult,
+  type ServiceProviderRecord,
+} from '@/api/contracts';
+import { ApiError, getApiErrorMessage } from '@/api/request';
 import {
   AnimatedDisclosure,
   MOTION_DURATION_BASE,
@@ -40,6 +59,7 @@ import {
   DEFAULT_DAILY_SCAN_LIMIT,
   DEFAULT_MONTHLY_SCAN_LIMIT,
   getScanUsageDisplayState,
+  getInstallationId,
   type ScanUsageDisplayState,
 } from '@/storage/scanUsage';
 
@@ -85,6 +105,57 @@ function getFeedbackMailtoUrl() {
   const subject = encodeURIComponent(FEEDBACK_SUBJECT);
   const body = encodeURIComponent(FEEDBACK_BODY);
   return `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
+}
+
+function normalizedProviderName(value: string) {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function providerLocationLabel(location: ProviderLocationRequest | null) {
+  return location ? [location.city, location.county, location.state].filter(Boolean).join(', ') : null;
+}
+
+function resultFromProvider(provider: ServiceProviderRecord): ProviderVerificationResult {
+  return {
+    status: 'verified',
+    name: provider.canonical_name,
+    services: provider.services,
+    match: 'confirmed',
+    reason: 'This provider was previously verified and confirmed for your current location.',
+    evidence: provider.evidence_urls.map((url) => ({
+      title: new URL(url).hostname,
+      url,
+      snippet: 'Previously verified provider evidence.',
+    })),
+  };
+}
+
+async function resolveProfileProviderLocation(): Promise<ProviderLocationRequest | null> {
+  const settings = DEVELOPMENT_LOCATION_TOOLS_ENABLED
+    ? await loadDevelopmentLocationSettings()
+    : DEFAULT_DEVELOPMENT_LOCATION_SETTINGS;
+  let deviceLocation: CoarseDisposalLocation | null = null;
+  let deviceJurisdictionId: string | null = null;
+  if (!DEVELOPMENT_LOCATION_TOOLS_ENABLED || !settings.location.enabled) {
+    try {
+      const context = await getAppLocationContext({ requestPermission: false });
+      deviceLocation = context.coarseDisposalLocation;
+      deviceJurisdictionId = context.jurisdictionId;
+    } catch {
+      return null;
+    }
+  }
+  const resolved = resolveDevelopmentPredictionLocation({
+    deviceLocation,
+    deviceJurisdictionId,
+    settings,
+  }).coarseDisposalLocation;
+  if (!resolved?.city?.trim() || !resolved.state?.trim()) return null;
+  return {
+    city: resolved.city.trim(),
+    state: resolved.state.trim(),
+    ...(resolved.county?.trim() ? { county: resolved.county.trim() } : {}),
+  };
 }
 
 export function getAllowanceProgress(scansRemaining: number, limit: number) {
@@ -229,6 +300,13 @@ export default function ProfileScreen() {
   const [workingCurbsideDraft, setWorkingCurbsideDraft] = useState<CurbsideDraft>(
     cloneCurbsideDraft(EMPTY_CURBSIDE_DRAFT),
   );
+  const [providerLocation, setProviderLocation] = useState<ProviderLocationRequest | null>(null);
+  const [savedProvider, setSavedProvider] = useState<ServiceProviderRecord | null>(null);
+  const [providerResult, setProviderResult] = useState<ProviderVerificationResult | null>(null);
+  const [providerStatus, setProviderStatus] = useState<'idle' | 'loading' | 'verified' | 'not_verified' | 'uncertain' | 'cooldown' | 'failure'>('idle');
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [providerSaving, setProviderSaving] = useState(false);
   const appVersion = Constants.expoConfig?.version ?? 'Version unavailable (placeholder)';
 
   useFocusEffect(
@@ -241,6 +319,55 @@ export default function ProfileScreen() {
       });
       return () => {
         isActive = false;
+      };
+    }, []),
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      const controller = new AbortController();
+      setProviderStatus('loading');
+      setProviderError(null);
+      setProviderResult(null);
+      setVerificationId(null);
+      void (async () => {
+        const location = await resolveProfileProviderLocation();
+        if (!isActive) return;
+        setProviderLocation(location);
+        if (!location) {
+          setSavedProvider(null);
+          setSavedCurbsideDraft(null);
+          setProviderStatus('failure');
+          setProviderError('Location is unavailable. Green Bin will not request it again from this screen.');
+          return;
+        }
+        try {
+          const clientId = await getInstallationId();
+          const response = await fetchCurrentProvider(location, clientId, controller.signal);
+          if (!isActive) return;
+          setSavedProvider(response.provider);
+          if (response.provider) {
+            const draft = { ...EMPTY_CURBSIDE_DRAFT, providerName: response.provider.raw_input_name };
+            setSavedCurbsideDraft(draft);
+            setWorkingCurbsideDraft(cloneCurbsideDraft(draft));
+            setProviderResult(resultFromProvider(response.provider));
+            setProviderStatus('verified');
+          } else {
+            setSavedCurbsideDraft(null);
+            setProviderResult(null);
+            setProviderStatus('idle');
+          }
+        } catch {
+          if (!isActive) return;
+          setSavedProvider(null);
+          setProviderStatus('failure');
+          setProviderError('Could not load the provider for this location. You can try again by reopening Profile.');
+        }
+      })();
+      return () => {
+        isActive = false;
+        controller.abort();
       };
     }, []),
   );
@@ -288,8 +415,17 @@ export default function ProfileScreen() {
     setWorkingCurbsideDraft(
       cloneCurbsideDraft(savedCurbsideDraft ?? EMPTY_CURBSIDE_DRAFT),
     );
+    if (savedProvider) {
+      setProviderResult(resultFromProvider(savedProvider));
+      setProviderStatus('verified');
+    } else if (providerLocation) {
+      setProviderResult(null);
+      setProviderStatus('idle');
+    }
+    setProviderError(providerLocation ? null : 'Current city and state are unavailable.');
+    setVerificationId(null);
     setCurbsideSheetVisible(true);
-  }, [savedCurbsideDraft]);
+  }, [providerLocation, savedCurbsideDraft, savedProvider]);
 
   const dismissCurbsideSheet = useCallback(() => {
     setWorkingCurbsideDraft(
@@ -298,12 +434,102 @@ export default function ProfileScreen() {
     setCurbsideSheetVisible(false);
   }, [savedCurbsideDraft]);
 
-  const saveCurbsideSheet = useCallback((draft: CurbsideDraft) => {
-    const nextDraft = cloneCurbsideDraft(draft);
-    setSavedCurbsideDraft(nextDraft);
-    setWorkingCurbsideDraft(nextDraft);
-    setCurbsideSheetVisible(false);
-  }, []);
+  const handleCurbsideDraftChange = useCallback((draft: CurbsideDraft) => {
+    if (normalizedProviderName(draft.providerName) !== normalizedProviderName(workingCurbsideDraft.providerName)) {
+      const stillConfirmed = savedProvider && (
+        normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
+        normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
+      );
+      setProviderResult(stillConfirmed ? resultFromProvider(savedProvider) : null);
+      setProviderStatus(stillConfirmed ? 'verified' : 'idle');
+      setVerificationId(null);
+      setProviderError(null);
+    }
+    setWorkingCurbsideDraft(draft);
+  }, [savedProvider, workingCurbsideDraft.providerName]);
+
+  const handleVerifyProvider = useCallback(async () => {
+    const name = workingCurbsideDraft.providerName.trim();
+    if (!name) {
+      setProviderStatus('failure');
+      setProviderError('Provider name is required.');
+      return;
+    }
+    if (!providerLocation) {
+      setProviderStatus('failure');
+      setProviderError('Current city and state are unavailable.');
+      Alert.alert('Location unavailable', 'Green Bin cannot verify a provider until an existing city and state are available.');
+      return;
+    }
+    setProviderStatus('loading');
+    setProviderError(null);
+    setProviderResult(null);
+    setVerificationId(null);
+    try {
+      const clientId = await getInstallationId();
+      const response = await verifyServiceProvider(name, providerLocation, clientId);
+      setProviderResult(response.result);
+      setVerificationId(response.verification_id);
+      setProviderStatus(response.result.status);
+      if (response.cooldown) {
+        const retry = new Date(response.cooldown.retry_at).toLocaleString();
+        setProviderError(`Three unsuccessful attempts reached the limit. Try again after ${retry}.`);
+        Alert.alert('Provider verification paused', `Try again after ${retry}.`);
+      }
+    } catch (error) {
+      const cooldown = error instanceof ApiError ? normalizeProviderCooldownError(error.body) : null;
+      if (cooldown) {
+        const retry = new Date(cooldown.retry_at).toLocaleString();
+        const message = cooldown.reason === 'successful_confirmation'
+          ? `A provider was recently confirmed. You can change it after ${retry}.`
+          : cooldown.reason === 'failed_attempts'
+            ? `Three unsuccessful attempts reached the limit. Try again after ${retry}.`
+            : 'A verification is already in progress. Please wait a moment.';
+        setProviderStatus('cooldown');
+        setProviderError(message);
+        Alert.alert('Provider verification unavailable', message);
+      } else {
+        setProviderStatus('failure');
+        setProviderError(getApiErrorMessage(error, 'nearby'));
+      }
+    }
+  }, [providerLocation, workingCurbsideDraft.providerName]);
+
+  const saveCurbsideSheet = useCallback(async (draft: CurbsideDraft) => {
+    if (!draft.providerName.trim() || providerStatus !== 'verified' || !providerLocation) return false;
+    const existingMatch = savedProvider && (
+      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
+      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
+    );
+    setProviderSaving(true);
+    try {
+      let confirmedProvider = savedProvider;
+      if (!existingMatch) {
+        if (!verificationId) return false;
+        const clientId = await getInstallationId();
+        confirmedProvider = (await confirmServiceProvider(
+          verificationId, draft.providerName.trim(), clientId,
+        )).provider;
+      }
+      const nextDraft = cloneCurbsideDraft(draft);
+      setSavedProvider(confirmedProvider);
+      setSavedCurbsideDraft(nextDraft);
+      setWorkingCurbsideDraft(nextDraft);
+      setCurbsideSheetVisible(false);
+      return true;
+    } catch (error) {
+      const cooldown = error instanceof ApiError ? normalizeProviderCooldownError(error.body) : null;
+      const message = cooldown
+        ? `This provider cannot be changed until ${new Date(cooldown.retry_at).toLocaleString()}.`
+        : 'Green Bin could not save this provider. Please try again.';
+      setProviderStatus(cooldown ? 'cooldown' : 'failure');
+      setProviderError(message);
+      Alert.alert('Could not save provider', message);
+      return false;
+    } finally {
+      setProviderSaving(false);
+    }
+  }, [providerLocation, providerStatus, savedProvider, verificationId]);
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
@@ -442,9 +668,20 @@ export default function ProfileScreen() {
 
       <CurbsideServiceSheet
         draft={workingCurbsideDraft}
-        onChange={setWorkingCurbsideDraft}
+        locationLabel={providerLocationLabel(providerLocation)}
+        onChange={handleCurbsideDraftChange}
         onDismiss={dismissCurbsideSheet}
         onSave={saveCurbsideSheet}
+        onVerify={() => void handleVerifyProvider()}
+        providerError={providerError}
+        providerResult={providerResult}
+        providerStatus={providerStatus}
+        saveDisabled={
+          !workingCurbsideDraft.providerName.trim() ||
+          providerStatus !== 'verified' ||
+          !providerLocation
+        }
+        saving={providerSaving}
         visible={curbsideSheetVisible}
       />
     </SafeAreaView>
