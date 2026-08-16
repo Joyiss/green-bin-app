@@ -54,6 +54,11 @@ const PICKUP_DAYS: PickupDay[] = [
   'Sunday',
 ];
 
+const PROVIDER_VERIFY_DELAY_MS = 600;
+const PROVIDER_VERIFY_ANIMATION_MS = 220;
+const PROVIDER_VERIFY_BUTTON_WIDTH = 88;
+const PROVIDER_VERIFY_BUTTON_GAP = 8;
+
 export function cloneCurbsideDraft(draft: CurbsideDraft): CurbsideDraft {
   return { ...draft };
 }
@@ -114,12 +119,61 @@ export function CurbsideServiceSheet({
   const progress = useRef(new Animated.Value(0)).current;
   const closingRef = useRef(false);
   const [reduceMotion, setReduceMotion] = useState(false);
+  const providerVerifyProgress = useRef(new Animated.Value(0)).current;
+  const providerVerifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [providerVerifyVisible, setProviderVerifyVisible] = useState(false);
+
+  const clearProviderVerifyTimer = useCallback(() => {
+    if (providerVerifyTimerRef.current !== null) {
+      clearTimeout(providerVerifyTimerRef.current);
+      providerVerifyTimerRef.current = null;
+    }
+  }, []);
+
+  const resetProviderVerification = useCallback(() => {
+    clearProviderVerifyTimer();
+    setProviderVerifyVisible(false);
+    providerVerifyProgress.stopAnimation();
+    providerVerifyProgress.setValue(0);
+  }, [clearProviderVerifyTimer, providerVerifyProgress]);
 
   useEffect(() => {
     void AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
     const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    const targetValue = providerVerifyVisible ? 1 : 0;
+
+    providerVerifyProgress.stopAnimation();
+    if (reduceMotion) {
+      providerVerifyProgress.setValue(targetValue);
+      return;
+    }
+
+    Animated.timing(providerVerifyProgress, {
+      duration: PROVIDER_VERIFY_ANIMATION_MS,
+      toValue: targetValue,
+      useNativeDriver: false,
+    }).start();
+
+    return () => providerVerifyProgress.stopAnimation();
+  }, [providerVerifyProgress, providerVerifyVisible, reduceMotion]);
+
+  useEffect(() => {
+    if (!visible) {
+      resetProviderVerification();
+    }
+  }, [resetProviderVerification, visible]);
+
+  useEffect(
+    () => () => {
+      clearProviderVerifyTimer();
+      providerVerifyProgress.stopAnimation();
+    },
+    [clearProviderVerifyTimer, providerVerifyProgress],
+  );
 
   useEffect(() => {
     if (!visible) {
@@ -149,6 +203,7 @@ export function CurbsideServiceSheet({
         return;
       }
       closingRef.current = true;
+      resetProviderVerification();
 
       const finish = () => {
         if (save) {
@@ -174,7 +229,23 @@ export function CurbsideServiceSheet({
         }
       });
     },
-    [draft, onDismiss, onSave, progress, reduceMotion],
+    [draft, onDismiss, onSave, progress, reduceMotion, resetProviderVerification],
+  );
+
+  const handleProviderNameChange = useCallback(
+    (providerName: string) => {
+      clearProviderVerifyTimer();
+      setProviderVerifyVisible(false);
+      onChange({ ...draft, providerName });
+
+      if (providerName.trim().length > 0) {
+        providerVerifyTimerRef.current = setTimeout(() => {
+          providerVerifyTimerRef.current = null;
+          setProviderVerifyVisible(true);
+        }, PROVIDER_VERIFY_DELAY_MS);
+      }
+    },
+    [clearProviderVerifyTimer, draft, onChange],
   );
 
   const panResponder = useMemo(
@@ -218,6 +289,14 @@ export function CurbsideServiceSheet({
   const sheetTranslateY = progress.interpolate({
     inputRange: [0, 1],
     outputRange: [700, 0],
+  });
+  const providerVerifyWidth = providerVerifyProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, PROVIDER_VERIFY_BUTTON_WIDTH],
+  });
+  const providerVerifyMarginLeft = providerVerifyProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, PROVIDER_VERIFY_BUTTON_GAP],
   });
 
   return (
@@ -312,15 +391,46 @@ export function CurbsideServiceSheet({
 
               <View style={styles.fieldGroup}>
                 <Text style={styles.fieldLabel}>Provider name (optional)</Text>
-                <TextInput
-                  accessibilityLabel="Curbside recycling provider name"
-                  autoCapitalize="words"
-                  onChangeText={(providerName) => onChange({ ...draft, providerName })}
-                  placeholder="Example: City sanitation"
-                  placeholderTextColor="#9A948C"
-                  style={styles.input}
-                  value={draft.providerName}
-                />
+                <View style={styles.providerRow}>
+                  <View style={styles.providerInputContainer}>
+                    <TextInput
+                      accessibilityLabel="Curbside recycling provider name"
+                      autoCapitalize="words"
+                      onChangeText={handleProviderNameChange}
+                      placeholder="Example: City sanitation"
+                      placeholderTextColor="#9A948C"
+                      style={styles.input}
+                      value={draft.providerName}
+                    />
+                  </View>
+                  <Animated.View
+                    accessibilityElementsHidden={!providerVerifyVisible}
+                    importantForAccessibility={
+                      providerVerifyVisible ? 'auto' : 'no-hide-descendants'
+                    }
+                    pointerEvents={providerVerifyVisible ? 'auto' : 'none'}
+                    style={[
+                      styles.verifyButtonContainer,
+                      {
+                        marginLeft: providerVerifyMarginLeft,
+                        opacity: providerVerifyProgress,
+                        width: providerVerifyWidth,
+                      },
+                    ]}
+                  >
+                    <Pressable
+                      accessibilityLabel="Verify provider name"
+                      accessibilityRole="button"
+                      onPress={() => undefined}
+                      style={({ pressed }) => [
+                        styles.verifyButton,
+                        pressed && styles.verifyButtonPressed,
+                      ]}
+                    >
+                      <Text style={styles.verifyButtonText}>Verify</Text>
+                    </Pressable>
+                  </Animated.View>
+                </View>
               </View>
 
               <PickupDayPicker
@@ -345,7 +455,7 @@ export function CurbsideServiceSheet({
                   accessibilityLabel="Pickup reminders"
                   onValueChange={(remindersEnabled) => onChange({ ...draft, remindersEnabled })}
                   thumbColor="#FFFFFF"
-                  trackColor={{ false: '#D7D2CB', true: '#6DB07A' }}
+                  trackColor={{ false: '#D7D2CB', true: '#11100F' }}
                   value={draft.remindersEnabled}
                 />
               </View>
@@ -401,22 +511,31 @@ const styles = StyleSheet.create({
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#DDD8D1',
     borderRadius: 14, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 44,
   },
-  binaryOptionSelected: { backgroundColor: '#E8F2E9', borderColor: '#6F9C78' },
+  binaryOptionSelected: { backgroundColor: '#11100F', borderColor: '#11100F' },
   binaryOptionText: { color: '#615D58', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
-  binaryOptionTextSelected: { color: '#214B30' },
+  binaryOptionTextSelected: { color: '#FFFFFF' },
+  providerRow: { alignItems: 'stretch', flexDirection: 'row' },
+  providerInputContainer: { flex: 1 },
   input: {
     backgroundColor: '#FFFFFF', borderColor: '#DDD8D1', borderRadius: 14,
     borderWidth: 1, color: '#171717', fontSize: 14, minHeight: 48,
     paddingHorizontal: 14, ...SECONDARY_TEXT_STYLES.regular,
   },
+  verifyButtonContainer: { borderRadius: 14, height: 48, overflow: 'hidden' },
+  verifyButton: {
+    alignItems: 'center', backgroundColor: '#11100F', borderRadius: 14,
+    height: 48, justifyContent: 'center', width: PROVIDER_VERIFY_BUTTON_WIDTH,
+  },
+  verifyButtonPressed: { backgroundColor: '#2B2927' },
+  verifyButtonText: { color: '#FFFFFF', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
   dayOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   dayOption: {
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#DDD8D1',
     borderRadius: 12, borderWidth: 1, justifyContent: 'center', minHeight: 38, minWidth: 42,
   },
-  dayOptionSelected: { backgroundColor: '#E8F2E9', borderColor: '#6F9C78' },
+  dayOptionSelected: { backgroundColor: '#11100F', borderColor: '#11100F' },
   dayOptionText: { color: '#68635E', fontSize: 12, ...PRIMARY_TEXT_STYLES.button },
-  dayOptionTextSelected: { color: '#214B30' },
+  dayOptionTextSelected: { color: '#FFFFFF' },
   reminderRow: {
     alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: '#E3DED7',
     borderRadius: 16, borderWidth: 1, flexDirection: 'row', gap: 12,
@@ -425,10 +544,10 @@ const styles = StyleSheet.create({
   reminderText: { flex: 1, gap: 3 },
   reminderCaption: { color: '#817C76', fontSize: 11, lineHeight: 15, ...SECONDARY_TEXT_STYLES.regular },
   saveButton: {
-    alignItems: 'center', backgroundColor: '#2E6B47', borderRadius: 16,
+    alignItems: 'center', backgroundColor: '#11100F', borderRadius: 16,
     justifyContent: 'center', minHeight: 50,
   },
-  savePressed: { backgroundColor: '#24583A', transform: [{ scale: 0.99 }] },
+  savePressed: { backgroundColor: '#2B2927', transform: [{ scale: 0.99 }] },
   saveText: { color: '#FFFFFF', fontSize: 15, ...PRIMARY_TEXT_STYLES.button },
   pressed: { opacity: 0.8 },
 });

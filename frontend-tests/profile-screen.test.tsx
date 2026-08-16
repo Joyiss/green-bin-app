@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, Linking } from 'react-native';
 
 const mockPush = jest.fn();
@@ -125,6 +125,59 @@ describe('Profile screen redesign', () => {
     await fireEvent.press(screen.getByText('Curbside Service'));
     expect(screen.getByDisplayValue('City Waste')).toBeTruthy();
     expect(screen.queryByDisplayValue('Unsaved Provider')).toBeNull();
+  });
+
+  it('reveals Verify after typing pauses and resets it for edits, clearing, and reopen', async () => {
+    const screen = await render(<ProfileScreen />);
+
+    await fireEvent.press(screen.getByText('Curbside Service'));
+    const providerInput = screen.getByLabelText('Curbside recycling provider name');
+    expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+
+    jest.useFakeTimers();
+    try {
+      await fireEvent.changeText(providerInput, 'City Waste');
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+
+      await act(async () => {
+        jest.advanceTimersByTime(599);
+      });
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+      });
+      const verifyButton = screen.getByLabelText('Verify provider name');
+      expect(verifyButton).toBeTruthy();
+
+      await fireEvent.press(verifyButton);
+      expect(screen.getByDisplayValue('City Waste')).toBeTruthy();
+
+      await fireEvent.changeText(providerInput, 'City Waste Services');
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+
+      await act(async () => {
+        jest.advanceTimersByTime(600);
+      });
+      expect(screen.getByLabelText('Verify provider name')).toBeTruthy();
+
+      await fireEvent.changeText(providerInput, '');
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+      await act(async () => {
+        jest.advanceTimersByTime(600);
+      });
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+
+      await fireEvent.changeText(providerInput, 'Saved Provider');
+      await fireEvent.press(screen.getByText('Save'));
+      await fireEvent.press(screen.getByText('Curbside Service'));
+
+      expect(screen.getByDisplayValue('Saved Provider')).toBeTruthy();
+      expect(screen.queryByLabelText('Verify provider name')).toBeNull();
+    } finally {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    }
   });
 
   it('opens About in-app and Privacy & Terms in the external browser', async () => {
