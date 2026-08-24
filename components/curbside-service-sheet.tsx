@@ -5,7 +5,6 @@ import {
   ActivityIndicator,
   Animated,
   KeyboardAvoidingView,
-  Linking,
   Modal,
   PanResponder,
   Platform,
@@ -61,6 +60,9 @@ const PROVIDER_VERIFY_DELAY_MS = 600;
 const PROVIDER_VERIFY_ANIMATION_MS = 220;
 const PROVIDER_VERIFY_BUTTON_WIDTH = 88;
 const PROVIDER_VERIFY_BUTTON_GAP = 8;
+// Reusable pickup-day and reminder UI is intentionally preserved for a later
+// release. Closed-testing builds must not expose or activate notifications.
+export const PICKUP_SCHEDULE_AND_NOTIFICATIONS_ENABLED = false;
 
 export function cloneCurbsideDraft(draft: CurbsideDraft): CurbsideDraft {
   return { ...draft };
@@ -109,9 +111,12 @@ export function CurbsideServiceSheet({
   draft,
   onChange,
   onDismiss,
+  onConfirm = async () => false,
   onSave,
   onVerify = () => undefined,
   providerError = null,
+  providerLocked = false,
+  providerLockRetryAt = null,
   providerResult = null,
   providerStatus = 'idle',
   locationLabel = null,
@@ -122,9 +127,12 @@ export function CurbsideServiceSheet({
   draft: CurbsideDraft;
   onChange: (draft: CurbsideDraft) => void;
   onDismiss: () => void;
+  onConfirm?: () => Promise<boolean>;
   onSave: (draft: CurbsideDraft) => void | boolean | Promise<void | boolean>;
   onVerify?: () => void;
   providerError?: string | null;
+  providerLocked?: boolean;
+  providerLockRetryAt?: string | null;
   providerResult?: ProviderVerificationResult | null;
   providerStatus?: 'idle' | 'loading' | 'verified' | 'not_verified' | 'uncertain' | 'cooldown' | 'failure';
   locationLabel?: string | null;
@@ -138,7 +146,11 @@ export function CurbsideServiceSheet({
   const [reduceMotion, setReduceMotion] = useState(false);
   const providerVerifyProgress = useRef(new Animated.Value(0)).current;
   const providerVerifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const providerInputRef = useRef<TextInput>(null);
+  const lastPromptedResultRef = useRef<ProviderVerificationResult | null>(null);
   const [providerVerifyVisible, setProviderVerifyVisible] = useState(false);
+  const [providerConfirmationVisible, setProviderConfirmationVisible] = useState(false);
+  const [providerCooldownVisible, setProviderCooldownVisible] = useState(false);
 
   const clearProviderVerifyTimer = useCallback(() => {
     if (providerVerifyTimerRef.current !== null) {
@@ -181,8 +193,32 @@ export function CurbsideServiceSheet({
   useEffect(() => {
     if (!visible) {
       resetProviderVerification();
+      setProviderConfirmationVisible(false);
+      setProviderCooldownVisible(false);
     }
   }, [resetProviderVerification, visible]);
+
+  useEffect(() => {
+    if (!providerResult) {
+      lastPromptedResultRef.current = null;
+      setProviderConfirmationVisible(false);
+      return;
+    }
+    if (
+      visible &&
+      !providerLocked &&
+      providerResult.status === 'verified' &&
+      (providerResult.location_match === 'regional' || providerResult.location_match === 'unknown') &&
+      lastPromptedResultRef.current !== providerResult
+    ) {
+      lastPromptedResultRef.current = providerResult;
+      setProviderConfirmationVisible(true);
+    }
+  }, [providerLocked, providerResult, visible]);
+
+  useEffect(() => {
+    if (providerLocked) resetProviderVerification();
+  }, [providerLocked, resetProviderVerification]);
 
   useEffect(
     () => () => {
@@ -321,6 +357,81 @@ export function CurbsideServiceSheet({
     inputRange: [0, 1],
     outputRange: [0, PROVIDER_VERIFY_BUTTON_GAP],
   });
+  const exactMatch = providerResult?.status === 'verified' && providerResult.location_match === 'exact';
+  const retryResult = Boolean(
+    providerResult && (
+      providerResult.status === 'not_verified' ||
+      providerResult.status === 'uncertain' ||
+      providerResult.location_match === 'outside'
+    )
+  );
+  const providerIcon = providerLocked
+    ? 'lock-closed'
+    : exactMatch
+      ? 'checkmark-circle'
+      : retryResult
+        ? 'alert-circle'
+        : null;
+  const providerHelper = exactMatch
+    ? 'Provider found for your area. Confirming locks changes for 24 hours.'
+    : retryResult
+      ? 'We couldn’t confirm this residential curbside provider. Check the name and try again.'
+      : providerLocked
+        ? 'Provider confirmed. Changes are locked for 24 hours.'
+        : null;
+  const providerActionLabel = exactMatch ? 'Confirm' : retryResult ? 'Retry' : 'Verify';
+  const providerRetryText = providerLockRetryAt && !Number.isNaN(Date.parse(providerLockRetryAt))
+    ? new Date(providerLockRetryAt).toLocaleString()
+    : 'the 24-hour lock expires';
+
+  const handleProviderAction = useCallback(() => {
+    if (exactMatch) {
+      void onConfirm();
+      return;
+    }
+    onVerify();
+  }, [exactMatch, onConfirm, onVerify]);
+
+  const handleRegionalConfirm = useCallback(async () => {
+    const confirmed = await onConfirm();
+    if (confirmed) setProviderConfirmationVisible(false);
+  }, [onConfirm]);
+
+  const handleRegionalEdit = useCallback(() => {
+    setProviderConfirmationVisible(false);
+    providerInputRef.current?.focus();
+  }, []);
+  const providerInputField = (
+    <View style={styles.providerInputFrame}>
+      <TextInput
+        accessibilityLabel="Curbside recycling provider name"
+        autoCapitalize="words"
+        editable={!providerLocked}
+        onChangeText={handleProviderNameChange}
+        placeholder="Example: City sanitation"
+        placeholderTextColor="#9A948C"
+        pointerEvents={providerLocked ? 'none' : 'auto'}
+        ref={providerInputRef}
+        style={[
+          styles.input,
+          exactMatch && styles.inputVerified,
+          retryResult && styles.inputRejected,
+          providerLocked && styles.inputLocked,
+          providerIcon && styles.inputWithIcon,
+        ]}
+        value={draft.providerName}
+      />
+      {providerIcon ? (
+        <Ionicons
+          accessibilityElementsHidden
+          color={providerLocked ? '#77716B' : exactMatch ? '#2E7D4F' : '#B44436'}
+          name={providerIcon}
+          size={20}
+          style={styles.providerStateIcon}
+        />
+      ) : null}
+    </View>
+  );
 
   return (
     <Modal
@@ -378,7 +489,7 @@ export function CurbsideServiceSheet({
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              <View style={styles.fieldGroup}>
+              {PICKUP_SCHEDULE_AND_NOTIFICATIONS_ENABLED ? <View style={styles.fieldGroup}>
                 <Text style={styles.fieldLabel}>Do you have curbside recycling?</Text>
                 <View style={styles.binaryOptions}>
                   {[
@@ -410,7 +521,7 @@ export function CurbsideServiceSheet({
                     );
                   })}
                 </View>
-              </View>
+              </View> : null}
 
               <View style={styles.fieldGroup}>
                 <Text style={styles.fieldLabel}>Provider name (required)</Text>
@@ -418,17 +529,18 @@ export function CurbsideServiceSheet({
                   {locationLabel ? `Verifying for ${locationLabel}` : 'Current location is unavailable.'}
                 </Text>
                 <View style={styles.providerRow}>
-                  <View style={styles.providerInputContainer}>
-                    <TextInput
-                      accessibilityLabel="Curbside recycling provider name"
-                      autoCapitalize="words"
-                      onChangeText={handleProviderNameChange}
-                      placeholder="Example: City sanitation"
-                      placeholderTextColor="#9A948C"
-                      style={styles.input}
-                      value={draft.providerName}
-                    />
-                  </View>
+                  {providerLocked ? (
+                    <Pressable
+                      accessibilityLabel="Locked curbside provider field"
+                      accessibilityRole="button"
+                      onPress={() => setProviderCooldownVisible(true)}
+                      style={styles.providerInputContainer}
+                    >
+                      {providerInputField}
+                    </Pressable>
+                  ) : (
+                    <View style={styles.providerInputContainer}>{providerInputField}</View>
+                  )}
                   <Animated.View
                     accessibilityElementsHidden={!providerVerifyVisible}
                     importantForAccessibility={
@@ -445,50 +557,40 @@ export function CurbsideServiceSheet({
                     ]}
                   >
                     <Pressable
-                      accessibilityLabel="Verify provider name"
+                      accessibilityLabel={`${providerActionLabel} provider name`}
                       accessibilityRole="button"
-                      disabled={providerStatus === 'loading' || !locationLabel || !draft.providerName.trim()}
-                      onPress={onVerify}
+                      disabled={providerStatus === 'loading' || saving || !locationLabel || !draft.providerName.trim()}
+                      onPress={handleProviderAction}
                       style={({ pressed }) => [
                         styles.verifyButton,
-                        (providerStatus === 'loading' || !locationLabel) && styles.buttonDisabled,
+                        (providerStatus === 'loading' || saving || !locationLabel) && styles.buttonDisabled,
                         pressed && styles.verifyButtonPressed,
                       ]}
                     >
-                      {providerStatus === 'loading' ? (
+                      {providerStatus === 'loading' || (saving && exactMatch) ? (
                         <ActivityIndicator color="#FFFFFF" size="small" />
                       ) : (
-                        <Text style={styles.verifyButtonText}>Verify</Text>
+                        <Text style={styles.verifyButtonText}>{providerActionLabel}</Text>
                       )}
                     </Pressable>
                   </Animated.View>
                 </View>
+                {providerHelper ? (
+                  <View accessibilityLiveRegion="polite" style={styles.providerHelperRow}>
+                    <Ionicons
+                      color={retryResult ? '#B44436' : providerLocked ? '#77716B' : '#2E7D4F'}
+                      name={retryResult ? 'alert-circle-outline' : providerLocked ? 'lock-closed-outline' : 'checkmark-circle-outline'}
+                      size={16}
+                    />
+                    <Text style={[
+                      styles.providerHelperText,
+                      retryResult && styles.providerHelperError,
+                    ]}>
+                      {providerHelper}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
-
-              {providerResult ? (
-                <View accessibilityLabel={`Provider verification ${providerResult.status}`} style={[
-                  styles.resultCard,
-                  providerResult.status === 'verified' ? styles.resultVerified : styles.resultOther,
-                ]}>
-                  <Text style={styles.resultTitle}>{providerResult.name}</Text>
-                  <Text style={styles.resultBadge}>{providerResult.match.replace('_', ' ')}</Text>
-                  <Text style={styles.resultReason}>{providerResult.reason}</Text>
-                  {providerResult.services.length ? (
-                    <Text style={styles.resultServices}>Services: {providerResult.services.join(', ')}</Text>
-                  ) : null}
-                  {providerResult.evidence.map((item) => (
-                    <Pressable
-                      accessibilityRole="link"
-                      key={item.url}
-                      onPress={() => void Linking.openURL(item.url)}
-                      style={styles.evidenceLink}
-                    >
-                      <Text style={styles.evidenceTitle}>{item.title}</Text>
-                      <Text numberOfLines={2} style={styles.evidenceSnippet}>{item.snippet}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null}
 
               {providerError ? (
                 <View accessibilityLiveRegion="polite" style={styles.errorCard}>
@@ -496,18 +598,18 @@ export function CurbsideServiceSheet({
                 </View>
               ) : null}
 
-              <PickupDayPicker
-                label="Trash pickup day"
-                onChange={(trashPickupDay) => onChange({ ...draft, trashPickupDay })}
-                value={draft.trashPickupDay}
-              />
-              <PickupDayPicker
-                label="Recycling pickup day"
-                onChange={(recyclingPickupDay) => onChange({ ...draft, recyclingPickupDay })}
-                value={draft.recyclingPickupDay}
-              />
-
-              <View style={styles.reminderRow}>
+              {PICKUP_SCHEDULE_AND_NOTIFICATIONS_ENABLED ? <>
+                <PickupDayPicker
+                  label="Trash pickup day"
+                  onChange={(trashPickupDay) => onChange({ ...draft, trashPickupDay })}
+                  value={draft.trashPickupDay}
+                />
+                <PickupDayPicker
+                  label="Recycling pickup day"
+                  onChange={(recyclingPickupDay) => onChange({ ...draft, recyclingPickupDay })}
+                  value={draft.recyclingPickupDay}
+                />
+                <View style={styles.reminderRow}>
                 <View style={styles.reminderText}>
                   <Text style={styles.fieldLabel}>Pickup reminders</Text>
                   <Text style={styles.reminderCaption}>
@@ -521,7 +623,8 @@ export function CurbsideServiceSheet({
                   trackColor={{ false: '#D7D2CB', true: '#11100F' }}
                   value={draft.remindersEnabled}
                 />
-              </View>
+                </View>
+              </> : null}
 
               <Pressable
                 accessibilityState={{ disabled: saveDisabled || saving }}
@@ -539,6 +642,100 @@ export function CurbsideServiceSheet({
             </ScrollView>
           </Animated.View>
         </KeyboardAvoidingView>
+        {providerConfirmationVisible && providerResult ? (
+          <View
+            accessibilityLabel="Provider confirmation popup"
+            accessibilityViewIsModal
+            style={[
+              styles.popupOverlay,
+              { paddingBottom: Math.max(insets.bottom, 16) + 16 },
+            ]}
+          >
+            <Pressable
+              accessibilityLabel="Close provider confirmation"
+              onPress={handleRegionalEdit}
+              style={StyleSheet.absoluteFill}
+            />
+            <View accessibilityRole="alert" style={styles.popupCard}>
+              <View style={styles.popupIcon}>
+                <Ionicons color="#15311A" name="help-circle-outline" size={25} />
+              </View>
+              <View style={styles.popupTextBlock}>
+                <Text style={styles.popupEyebrow}>Provider confirmation</Text>
+                <Text style={styles.popupTitle}>Is this your provider?</Text>
+                <Text style={styles.popupMessage}>
+                  We found {providerResult.name}, but couldn’t confirm service in your exact city. Is this the curbside provider you use?
+                </Text>
+                <Text style={styles.popupLockNote}>
+                  After confirmation, this provider cannot be changed for 24 hours.
+                </Text>
+              </View>
+              <View style={styles.popupActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={saving}
+                  onPress={handleRegionalEdit}
+                  style={({ pressed }) => [styles.popupSecondaryButton, pressed && styles.pressed]}
+                >
+                  <Text style={styles.popupSecondaryText}>No, edit</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={saving}
+                  onPress={() => void handleRegionalConfirm()}
+                  style={({ pressed }) => [
+                    styles.popupPrimaryButton,
+                    saving && styles.buttonDisabled,
+                    pressed && styles.verifyButtonPressed,
+                  ]}
+                >
+                  {saving ? <ActivityIndicator color="#FFFFFF" size="small" /> : (
+                    <Text style={styles.popupPrimaryText}>Yes, confirm</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+        {providerCooldownVisible && providerLocked ? (
+          <View
+            accessibilityLabel="Provider cooldown popup"
+            accessibilityViewIsModal
+            style={[
+              styles.popupOverlay,
+              { paddingBottom: Math.max(insets.bottom, 16) + 16 },
+            ]}
+          >
+            <Pressable
+              accessibilityLabel="Dismiss provider cooldown"
+              onPress={() => setProviderCooldownVisible(false)}
+              style={StyleSheet.absoluteFill}
+            />
+            <View accessibilityRole="alert" style={styles.popupCard}>
+              <View style={styles.popupIcon}>
+                <Ionicons color="#15311A" name="time-outline" size={25} />
+              </View>
+              <View style={styles.popupTextBlock}>
+                <Text style={styles.popupEyebrow}>Provider locked</Text>
+                <Text style={styles.popupTitle}>Changes are paused for 24 hours</Text>
+                <Text style={styles.popupMessage}>
+                  Your confirmed provider can be changed after {providerRetryText}.
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setProviderCooldownVisible(false)}
+                style={({ pressed }) => [
+                  styles.popupPrimaryButton,
+                  styles.popupPrimaryButtonFull,
+                  pressed && styles.verifyButtonPressed,
+                ]}
+              >
+                <Text style={styles.popupPrimaryText}>Got it</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
       </View>
     </Modal>
   );
@@ -586,11 +783,20 @@ const styles = StyleSheet.create({
   binaryOptionTextSelected: { color: '#FFFFFF' },
   providerRow: { alignItems: 'stretch', flexDirection: 'row' },
   providerInputContainer: { flex: 1 },
+  providerInputFrame: { position: 'relative' },
   input: {
     backgroundColor: '#FFFFFF', borderColor: '#DDD8D1', borderRadius: 14,
     borderWidth: 1, color: '#171717', fontSize: 14, minHeight: 48,
     paddingHorizontal: 14, ...SECONDARY_TEXT_STYLES.regular,
   },
+  inputVerified: { borderColor: '#4F9A68', borderWidth: 2 },
+  inputRejected: { borderColor: '#C75B4B', borderWidth: 2 },
+  inputLocked: { backgroundColor: '#E8E5E0', borderColor: '#D1CCC5', color: '#625D57' },
+  inputWithIcon: { paddingRight: 42 },
+  providerStateIcon: { position: 'absolute', right: 13, top: 14 },
+  providerHelperRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 7 },
+  providerHelperText: { color: '#356849', flex: 1, fontSize: 12, lineHeight: 17, ...SECONDARY_TEXT_STYLES.regular },
+  providerHelperError: { color: '#993D31' },
   verifyButtonContainer: { borderRadius: 14, height: 48, overflow: 'hidden' },
   verifyButton: {
     alignItems: 'center', backgroundColor: '#11100F', borderRadius: 14,
@@ -599,16 +805,6 @@ const styles = StyleSheet.create({
   verifyButtonPressed: { backgroundColor: '#2B2927' },
   verifyButtonText: { color: '#FFFFFF', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
   buttonDisabled: { opacity: 0.45 },
-  resultCard: { borderRadius: 16, borderWidth: 1, gap: 7, padding: 14 },
-  resultVerified: { backgroundColor: '#EFF8F1', borderColor: '#B9D8C1' },
-  resultOther: { backgroundColor: '#FFF8E8', borderColor: '#E8D5A3' },
-  resultTitle: { color: '#171717', fontSize: 16, ...PRIMARY_TEXT_STYLES.title },
-  resultBadge: { color: '#2E6B47', fontSize: 11, textTransform: 'uppercase', ...PRIMARY_TEXT_STYLES.label },
-  resultReason: { color: '#4F4A45', fontSize: 13, lineHeight: 18, ...SECONDARY_TEXT_STYLES.regular },
-  resultServices: { color: '#4F4A45', fontSize: 12, ...SECONDARY_TEXT_STYLES.semiBold },
-  evidenceLink: { borderTopColor: '#D9D4CD', borderTopWidth: StyleSheet.hairlineWidth, gap: 2, paddingTop: 7 },
-  evidenceTitle: { color: '#24583A', fontSize: 12, ...SECONDARY_TEXT_STYLES.extraBold },
-  evidenceSnippet: { color: '#6C6761', fontSize: 11, lineHeight: 15, ...SECONDARY_TEXT_STYLES.regular },
   errorCard: { backgroundColor: '#FFF0ED', borderColor: '#F0C8C0', borderRadius: 14, borderWidth: 1, padding: 12 },
   errorText: { color: '#8A3528', fontSize: 12, lineHeight: 17, ...SECONDARY_TEXT_STYLES.regular },
   dayOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
@@ -632,5 +828,39 @@ const styles = StyleSheet.create({
   },
   savePressed: { backgroundColor: '#2B2927', transform: [{ scale: 0.99 }] },
   saveText: { color: '#FFFFFF', fontSize: 15, ...PRIMARY_TEXT_STYLES.button },
+  popupOverlay: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(4, 8, 9, 0.42)',
+    justifyContent: 'flex-end', paddingBottom: 20, paddingHorizontal: 16, zIndex: 50,
+  },
+  popupCard: {
+    alignSelf: 'center', backgroundColor: '#FFFFFF', borderColor: '#E9E5DF',
+    borderRadius: 24, borderWidth: 1, gap: 14, padding: 18,
+    shadowColor: '#111827', shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18, shadowRadius: 24, width: '100%',
+  },
+  popupIcon: {
+    alignItems: 'center', backgroundColor: '#F4F1EC', borderRadius: 18,
+    height: 48, justifyContent: 'center', width: 48,
+  },
+  popupTextBlock: { gap: 7 },
+  popupEyebrow: {
+    color: '#807B75', fontSize: 10, letterSpacing: 2.4,
+    textTransform: 'uppercase', ...PRIMARY_TEXT_STYLES.label,
+  },
+  popupTitle: { color: '#111111', fontSize: 22, lineHeight: 27, ...PRIMARY_TEXT_STYLES.header },
+  popupMessage: { color: '#66605B', fontSize: 15, lineHeight: 22, ...SECONDARY_TEXT_STYLES.regular },
+  popupLockNote: { color: '#625D57', fontSize: 12, lineHeight: 17, ...SECONDARY_TEXT_STYLES.semiBold },
+  popupActions: { flexDirection: 'row', gap: 9 },
+  popupPrimaryButton: {
+    alignItems: 'center', backgroundColor: '#111111', borderRadius: 999,
+    flex: 1, justifyContent: 'center', minHeight: 48, paddingHorizontal: 16,
+  },
+  popupPrimaryButtonFull: { flex: 0, width: '100%' },
+  popupPrimaryText: { color: '#FFFFFF', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
+  popupSecondaryButton: {
+    alignItems: 'center', backgroundColor: '#F1EEE9', borderRadius: 999,
+    flex: 1, justifyContent: 'center', minHeight: 48, paddingHorizontal: 16,
+  },
+  popupSecondaryText: { color: '#302D2A', fontSize: 14, ...PRIMARY_TEXT_STYLES.button },
   pressed: { opacity: 0.8 },
 });

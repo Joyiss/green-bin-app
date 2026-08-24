@@ -190,6 +190,7 @@ export type NearbyLocationsResponse = {
 
 export type ProviderVerificationStatus = 'verified' | 'not_verified' | 'uncertain';
 export type ProviderMatch = 'confirmed' | 'rejected' | 'uncertain';
+export type ProviderLocationMatch = 'exact' | 'regional' | 'unknown' | 'outside';
 
 export type ProviderEvidence = {
   title: string;
@@ -202,6 +203,7 @@ export type ProviderVerificationResult = {
   name: string;
   services: string[];
   match: ProviderMatch;
+  location_match: ProviderLocationMatch;
   reason: string;
   evidence: ProviderEvidence[];
 };
@@ -736,12 +738,19 @@ export function normalizeProviderVerificationResult(value: unknown): ProviderVer
     value.match === 'confirmed' || value.match === 'rejected' || value.match === 'uncertain'
       ? value.match
       : null;
+  const locationMatch =
+    value.location_match === 'exact' ||
+    value.location_match === 'regional' ||
+    value.location_match === 'unknown' ||
+    value.location_match === 'outside'
+      ? value.location_match
+      : null;
   const expectedMatch = status
     ? { verified: 'confirmed', not_verified: 'rejected', uncertain: 'uncertain' }[status]
     : null;
   const name = text(value.name);
   const reason = text(value.reason);
-  if (!status || !match || match !== expectedMatch || !name || !reason || !Array.isArray(value.evidence)) {
+  if (!status || !match || !locationMatch || match !== expectedMatch || !name || !reason || !Array.isArray(value.evidence)) {
     throw new ApiContractError('Provider verification result is inconsistent.');
   }
   const evidence = value.evidence.map((item) => {
@@ -752,7 +761,10 @@ export function normalizeProviderVerificationResult(value: unknown): ProviderVer
     if (!title || !url || !snippet) throw new ApiContractError('Provider evidence is invalid.');
     return { title, url, snippet };
   });
-  return { status, name, services: stringArray(value.services), match, reason, evidence };
+  return {
+    status, name, services: stringArray(value.services), match,
+    location_match: locationMatch, reason, evidence,
+  };
 }
 
 function normalizeServiceProviderRecord(value: unknown): ServiceProviderRecord {
@@ -764,7 +776,10 @@ function normalizeServiceProviderRecord(value: unknown): ServiceProviderRecord {
   const state = text(value.state);
   const status = normalizeProviderStatus(value.status);
   const verifiedAt = text(value.verified_at);
-  if (!id || !canonicalName || !rawInputName || !city || !state || !status || !verifiedAt) {
+  if (
+    !id || !canonicalName || !rawInputName || !city || !state || !status ||
+    !verifiedAt || Number.isNaN(Date.parse(verifiedAt))
+  ) {
     throw new ApiContractError('Service provider record is invalid.');
   }
   const evidenceUrls = Array.isArray(value.evidence_urls)

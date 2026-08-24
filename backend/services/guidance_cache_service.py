@@ -16,7 +16,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-CACHE_KEY_VERSION = "guidance_cache_v2"
+CACHE_KEY_VERSION = "guidance_cache_v3"
 SOURCE_CORPUS_VERSION = "green_bin_rag_sources_v1"
 SOURCE_GROUNDED_CACHE_POLICY = "source_grounded"
 STATIC_RULES_CACHE_POLICY = "static_rules"
@@ -187,8 +187,6 @@ def build_source_grounded_cache_context(
     retrieval_inputs: dict[str, Any],
     retrieval_results: list[dict[str, Any]],
     llm_context: dict[str, Any],
-    jurisdiction_id: str | None = None,
-    local_rules_version: str | None = None,
 ) -> dict[str, Any] | None:
     retrieved_chunk_ids = _retrieved_chunk_ids(retrieval_results)
     if not retrieved_chunk_ids:
@@ -246,12 +244,18 @@ def build_source_grounded_cache_context(
         "prompt_version": GUIDANCE_PROMPT_VERSION,
         "cache_policy": SOURCE_GROUNDED_CACHE_POLICY,
     }
-    if jurisdiction_id:
-        cache_key_input["jurisdiction_id"] = normalize_guidance_key(jurisdiction_id)
-        cache_key_input["local_rules_version"] = normalize_guidance_key(
-            local_rules_version
+    confirmed_provider = _normalize_optional_string(
+        llm_context.get("confirmed_provider")
+    )
+    if confirmed_provider:
+        provider_location = _metadata_object(llm_context.get("location"))
+        cache_key_input["confirmed_provider_key"] = normalize_guidance_key(
+            confirmed_provider
         )
-
+        cache_key_input["provider_location"] = {
+            field: normalize_guidance_key(provider_location.get(field) or "") or ""
+            for field in ("city", "county", "state")
+        }
     return {
         "cache_key": _hash_payload(cache_key_input),
         "cache_key_input": cache_key_input,

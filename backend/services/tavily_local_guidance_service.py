@@ -50,7 +50,10 @@ MAX_TAVILY_RAW_EXCERPT_CHARS = 1500
 RAW_EXCERPT_WINDOW_CHARS = 360
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
-_LOCATION_FIELDS = ("city", "county", "state", "country", "waste_provider")
+_LOCATION_FIELDS = (
+    "city", "county", "state", "country", "waste_provider",
+    "provider_official_domain",
+)
 _LOCALITY_FIELDS = ("city", "county", "state", "waste_provider")
 _GENERIC_ITEM_NAMES = {
     "item",
@@ -952,10 +955,17 @@ def build_search_query(
         _category(classification) or _material(classification) or item
     ) or item
     location_phrase = _location_phrase_for_query(location)
-    query = (
-        f"{item} ({category}) disposal or recycling for residents in {location_phrase}: "
-        "curbside rules, drop-off, take-back, accepted items, fees, appointments"
-    )
+    provider = _text(location.get("waste_provider"))
+    if provider:
+        material = normalize_guidance_phrase(_material(classification)) or ""
+        item_context = item or material
+        state = _text(location.get("state")) or ""
+        query = f"{provider} accepted recycling items {item_context} {state}"
+    else:
+        query = (
+            f"{item} ({category}) disposal or recycling for residents in {location_phrase}: "
+            "curbside rules, drop-off, take-back, accepted items, fees, appointments"
+        )
     return re.sub(r"\s+", " ", query).strip()[:MAX_QUERY_LENGTH].rstrip()
 
 
@@ -1417,8 +1427,59 @@ def _source_matches_provider(record: _SourceRecord, location: dict[str, str]) ->
     provider_tokens = [token for token in provider.split() if len(token) >= 2]
     if provider in text:
         return True
+    official_domain = str(location.get("provider_official_domain") or "").casefold()
+    if official_domain and (
+        record.domain == official_domain or record.domain.endswith(f".{official_domain}")
+    ):
+        return True
     domain = normalize_guidance_phrase(record.domain.replace(".", " ")) or ""
     return bool(provider_tokens) and all(token in domain for token in provider_tokens)
+
+
+def _provider_item_evidence_type(
+    record: _SourceRecord,
+    classification: dict[str, Any],
+    location: dict[str, str],
+) -> str | None:
+    if not _source_matches_provider(record, location):
+        return None
+    text = _normalized_haystack(record)
+    if not _source_is_related(record, classification):
+        return None
+    rejection = bool(
+        re.search(
+            r"\b(?:not accepted|not recyclable|prohibited|cannot be recycled|"
+            r"do not accept|does not accept|keep out|stay out)\b",
+            text,
+        )
+    )
+    acceptance = bool(
+        re.search(
+            r"\b(?:accepts?|accepted|allowed|may place|can place|eligible)\b",
+            text,
+        )
+    )
+    if rejection:
+        return "rejection"
+    if acceptance:
+        return "acceptance"
+    return None
+
+
+def _provider_supported_actions(
+    record: _SourceRecord,
+    evidence_type: str | None,
+) -> list[str]:
+    if evidence_type == "rejection":
+        return ["check local guidance"]
+    if evidence_type != "acceptance":
+        return list(_CORE_DISPOSAL_ACTIONS)
+    text = _normalized_haystack(record)
+    if any(term in text for term in ("curbside", "recycling cart", "recycling bin")):
+        return ["recycle", "check local guidance"]
+    if any(term in text for term in ("drop off", "drop-off", "take back", "take-back")):
+        return ["drop off", "check local guidance"]
+    return ["check local guidance"]
 
 
 def _source_quality_rejection(record: _SourceRecord) -> str | None:
@@ -1563,6 +1624,8 @@ def _source_role(record: _SourceRecord, location: dict[str, str]) -> tuple[str, 
         return OFFICIAL_PRIMARY_ROLE, _OFFICIAL_CLAIM_SCOPE
     if any(term in text for term in _DIRECTORY_SOURCE_TERMS):
         return DISCOVERY_ONLY_ROLE, _DISCOVERY_CLAIM_SCOPE
+    if _source_matches_provider(record, location) and _has_meaningful_disposal_information(record):
+        return DIRECT_SERVICE_PROVIDER_ROLE, _PROVIDER_CLAIM_SCOPE
     if (
         _has_takeback_evidence(record)
         and any(term in text for term in _RETAIL_CONTEXT_TERMS)
@@ -1844,6 +1907,8 @@ def _accepted_result_to_evidence(
     classification: dict[str, Any],
     location: dict[str, str],
 ) -> dict[str, Any] | None:
+    if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
+        return None
     item = _normalized_item(classification)
     if not item or not (record.raw_content or record.snippet or record.content):
         return None
@@ -1852,6 +1917,9 @@ def _accepted_result_to_evidence(
         DIRECT_SERVICE_PROVIDER_ROLE,
         RETAILER_TAKEBACK_ROLE,
     }
+    provider_evidence_type = _provider_item_evidence_type(
+        record, classification, location
+    )
     guidance_applicable = local_primary or (
         provider_specific
         and validation.applicability_label
@@ -1878,6 +1946,7 @@ def _accepted_result_to_evidence(
         "trust_level": validation.trust_level,
         "source_role": validation.source_role,
         "claim_scope": list(validation.claim_scope),
+        "provider_evidence_type": provider_evidence_type,
     }
     normalized_details = _normalized_details(classification)
     location_exact = any(
@@ -1926,7 +1995,9 @@ def _accepted_result_to_evidence(
         "source_excerpt": source_excerpt or validation.excerpt,
         "source_claim": source_excerpt or validation.excerpt,
         "content": source_content,
-        "disposal_actions_supported": list(_CORE_DISPOSAL_ACTIONS),
+        "disposal_actions_supported": _provider_supported_actions(
+            record, provider_evidence_type
+        ),
         "warnings": [],
         "limitations": [],
         "confidence": "high" if guidance_applicable else "medium",
@@ -1944,6 +2015,7 @@ def _accepted_result_to_evidence(
             "tavily_trust_level": validation.trust_level,
             "applicability_label": validation.applicability_label,
             "source_role": validation.source_role,
+            "provider_evidence_type": provider_evidence_type,
             "claim_scope": list(validation.claim_scope),
             "source_context_extraction_reasons": extraction_reasons,
             "source_context_original_chars": len(record.raw_content or record.content),
@@ -2047,7 +2119,8 @@ def _outcome(
 def _log_outcome(outcome: dict[str, Any]) -> None:
     logger.info(
         "tavily_local_guidance request_id=%s status=%s called=%s skip_reason=%s "
-        "duration_ms=%s result_count=%s trusted_source_count=%s reported_credit_usage=%s call_count=%s",
+        "duration_ms=%s result_count=%s trusted_source_count=%s reported_credit_usage=%s call_count=%s "
+        "provider_context_used=%s canonical_provider=%s provider_location=%s provider_specific_evidence=%s",
         request_context.get_predict_request_id(),
         outcome.get("status"),
         outcome.get("called"),
@@ -2057,7 +2130,45 @@ def _log_outcome(outcome: dict[str, Any]) -> None:
         outcome.get("trusted_source_count"),
         outcome.get("credits"),
         outcome.get("call_count"),
+        outcome.get("provider_context_used", False),
+        outcome.get("canonical_provider"),
+        outcome.get("provider_location"),
+        outcome.get("provider_specific_evidence", False),
     )
+
+
+def _attach_provider_diagnostics(
+    outcome: dict[str, Any],
+    location: dict[str, str],
+    *,
+    provider_evidence_types: set[str] | None = None,
+) -> dict[str, Any]:
+    provider = _text(location.get("waste_provider"))
+    provider_location = {
+        field: _text(location.get(field)) or ""
+        for field in ("city", "county", "state")
+    }
+    evidence_types = provider_evidence_types or set()
+    outcome.update(
+        {
+            "provider_context_used": bool(provider),
+            "canonical_provider": provider,
+            "provider_location": provider_location if provider else None,
+            "provider_specific_evidence": bool(provider and evidence_types),
+            "provider_acceptance_evidence": bool(
+                provider and "acceptance" in evidence_types
+            ),
+            "provider_rejection_evidence": bool(
+                provider and "rejection" in evidence_types
+            ),
+            "provider_evidence_status": (
+                "acceptance" if "acceptance" in evidence_types
+                else "rejection" if "rejection" in evidence_types
+                else "unavailable"
+            ) if provider else None,
+        }
+    )
+    return outcome
 
 
 def _log_query(query: str) -> None:
@@ -2120,22 +2231,31 @@ def _is_timeout(exc: Exception) -> bool:
     return isinstance(exc, (TimeoutError, requests.Timeout)) or "timeout" in type(exc).__name__.casefold()
 
 
-def _search_request(client: Any, *, query: str, timeout_seconds: float) -> Any:
-    return client.search(
-        query=query,
-        topic="general",
-        search_depth="basic",
-        chunks_per_source=3,
-        max_results=5,
-        country="united states",
-        include_answer=False,
-        include_raw_content=False,
-        include_images=False,
-        auto_parameters=False,
-        exact_match=False,
-        include_usage=True,
-        timeout=timeout_seconds,
-    )
+def _search_request(
+    client: Any,
+    *,
+    query: str,
+    timeout_seconds: float,
+    official_domain: str | None = None,
+) -> Any:
+    search_options: dict[str, Any] = {
+        "query": query,
+        "topic": "general",
+        "search_depth": "basic",
+        "chunks_per_source": 3,
+        "max_results": 5,
+        "country": "united states",
+        "include_answer": False,
+        "include_raw_content": False,
+        "include_images": False,
+        "auto_parameters": False,
+        "exact_match": False,
+        "include_usage": True,
+        "timeout": timeout_seconds,
+    }
+    if official_domain:
+        search_options["include_domains"] = [official_domain]
+    return client.search(**search_options)
 
 
 def _validated_search_results(
@@ -2143,12 +2263,13 @@ def _validated_search_results(
     *,
     classification: dict[str, Any],
     location: dict[str, str],
-) -> tuple[int, list[dict[str, Any]], int]:
+) -> tuple[int, list[dict[str, Any]], int, set[str]]:
     results = payload.get("results") if isinstance(payload, dict) else None
     results = results if isinstance(results, list) else []
     records = _source_records(results, location)
     accepted: list[dict[str, Any]] = []
     local_primary_count = 0
+    provider_evidence_types: set[str] = set()
     for record in records:
         validation = _validation_result(
             record,
@@ -2156,19 +2277,9 @@ def _validated_search_results(
             location=location,
         )
         _log_validation_result(record.position, validation)
-        # Provider role, page type, exact wording, and unconfirmed applicability
-        # are analyzer concerns. Reject here only deterministic blocked-domain or
-        # obvious item/location mismatches.
-        basic_rejections = {
-            "social_or_forum_source",
-            "wrong_state",
-            "different_city",
-            "different_county",
-            "jurisdiction_mismatch",
-            "unrelated_source",
-            "item_relevance_not_established",
-        }
-        if set(validation.rejection_reasons) & basic_rejections:
+        # The deterministic trust decision is final. Ranking scores can order
+        # accepted sources, but can never promote a rejected source.
+        if validation.trust_level in {REJECTED, DISCOVERY_ONLY}:
             continue
         evidence = _accepted_result_to_evidence(
             record,
@@ -2178,24 +2289,35 @@ def _validated_search_results(
         )
         if evidence is not None:
             accepted.append(evidence)
+            evidence_type = evidence["chunk"]["source_metadata"].get(
+                "provider_evidence_type"
+            )
+            if evidence_type in {"acceptance", "rejection"}:
+                provider_evidence_types.add(evidence_type)
             if validation.trust_level == LOCAL_PRIMARY:
                 local_primary_count += 1
-    return len(results), accepted, local_primary_count
+    return len(results), accepted, local_primary_count, provider_evidence_types
 
 
 def search_local_guidance(
     classification: dict[str, Any],
     *,
     clarification_required: bool = False,
-    manual_rule_applied: bool = False,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
-    if manual_rule_applied:
-        outcome = _outcome("manual_local_rule", skip_reason="trusted_manual_rule")
+    location = normalize_coarse_location(classification.get("location"))
+
+    def complete(
+        outcome: dict[str, Any], *, provider_evidence_types: set[str] | None = None
+    ) -> dict[str, Any]:
+        _attach_provider_diagnostics(
+            outcome,
+            location,
+            provider_evidence_types=provider_evidence_types,
+        )
         _log_outcome(outcome)
         return outcome
 
-    location = normalize_coarse_location(classification.get("location"))
     logger.info(
         "tavily_search_identity request_id=%s recognized_item=%s search_item=%s",
         request_context.get_predict_request_id(),
@@ -2209,8 +2331,7 @@ def search_local_guidance(
     )
     if eligibility_reason:
         outcome = _outcome("tavily_disabled", skip_reason=eligibility_reason)
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
 
     api_key = str(os.getenv("TAVILY_API_KEY") or "").strip()
     if not _enabled() or not api_key:
@@ -2220,8 +2341,7 @@ def search_local_guidance(
                 "feature_disabled" if not _enabled() else "missing_tavily_api_key"
             ),
         )
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
 
     current_time = now_utc or datetime.now(UTC)
     daily_limit = _positive_int_env(
@@ -2238,8 +2358,7 @@ def search_local_guidance(
         monthly_limit=monthly_limit,
     ):
         outcome = _outcome("tavily_disabled", skip_reason="local_budget_limit_reached")
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
     try:
         reservation = tavily_budget_repository.reserve_tavily_search_budget(
             daily_limit=daily_limit,
@@ -2248,12 +2367,10 @@ def search_local_guidance(
         )
     except tavily_budget_repository.TavilyBudgetRepositoryError:
         outcome = _outcome("tavily_disabled", skip_reason="budget_tracking_unavailable")
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
     if not reservation.allowed:
         outcome = _outcome("tavily_disabled", skip_reason="database_budget_limit_reached")
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
 
     timeout_seconds = _positive_float_env(
         "TAVILY_TIMEOUT_SECONDS",
@@ -2263,8 +2380,7 @@ def search_local_guidance(
         client = _get_client(api_key)
     except Exception:
         outcome = _outcome("tavily_error", called=False, duration_ms=0.0)
-        _log_outcome(outcome)
-        return outcome
+        return complete(outcome)
 
     request_started = perf_counter()
     accepted: list[dict[str, Any]] = []
@@ -2273,6 +2389,7 @@ def search_local_guidance(
     reported_credits = 0
     has_reported_credits = False
     search_call_count = 0
+    provider_evidence_types: set[str] = set()
     try:
         query = build_search_query(classification, location)
         _log_query(query)
@@ -2280,9 +2397,15 @@ def search_local_guidance(
             client,
             query=query,
             timeout_seconds=timeout_seconds,
+            official_domain=_text(location.get("provider_official_domain")),
         )
         search_call_count = 1
-        payload_result_count, payload_accepted, payload_local_count = (
+        (
+            payload_result_count,
+            payload_accepted,
+            payload_local_count,
+            payload_provider_evidence_types,
+        ) = (
             _validated_search_results(
                 payload,
                 classification=classification,
@@ -2292,6 +2415,7 @@ def search_local_guidance(
         result_count += payload_result_count
         accepted.extend(payload_accepted)
         local_primary_count += payload_local_count
+        provider_evidence_types.update(payload_provider_evidence_types)
         payload_credits = _credit_usage(payload)
         if payload_credits is not None:
             reported_credits += payload_credits
@@ -2304,8 +2428,9 @@ def search_local_guidance(
             call_count=max(1, search_call_count),
             duration_ms=(perf_counter() - request_started) * 1000,
         )
-        _log_outcome(outcome)
-        return outcome
+        return complete(
+            outcome, provider_evidence_types=provider_evidence_types
+        )
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -2333,8 +2458,9 @@ def search_local_guidance(
         credits=reported_credits if has_reported_credits else None,
         retrieval_results=accepted,
     )
-    _log_outcome(outcome)
-    return outcome
+    return complete(
+        outcome, provider_evidence_types=provider_evidence_types
+    )
 
 
 def reset_tavily_budget_guard_for_tests() -> None:

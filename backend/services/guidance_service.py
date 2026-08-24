@@ -8,14 +8,14 @@ from typing import Any
 try:
     from ..materials import resolve_material_label
     from ..rules import get_rules
-    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, local_guidance_matcher, request_context, tavily_local_guidance_service
+    from . import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context, tavily_local_guidance_service
     from .guidance_key_service import normalize_guidance_phrase
     from .guidance_response_model import post_process_structured_guidance
     from .recognition_clarification_service import evaluate_clarification
 except ImportError:
     from materials import resolve_material_label
     from rules import get_rules
-    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, local_guidance_matcher, request_context, tavily_local_guidance_service
+    from services import guidance_cache_service, guidance_llm_service, guidance_retrieval_service, request_context, tavily_local_guidance_service
     from services.guidance_key_service import normalize_guidance_phrase
     from services.guidance_response_model import post_process_structured_guidance
     from services.recognition_clarification_service import evaluate_clarification
@@ -312,7 +312,6 @@ _TAVILY_ELIGIBILITY_SKIP_REASONS = {
     "clarification_required",
     "item_not_specific",
     "missing_location",
-    "trusted_manual_rule",
 }
 _LOCAL_GUIDANCE_UNAVAILABLE_MESSAGE = (
     "Verified local guidance is temporarily unavailable. "
@@ -346,7 +345,7 @@ def _attach_tavily_outcome(
     existing_metadata = existing_metadata if isinstance(existing_metadata, dict) else {}
     outcome_evidence_status = (
         "accepted"
-        if status in {"manual_local_rule", "tavily_verified_local"}
+        if status == "tavily_verified_local"
         else "supporting"
         if status == "tavily_official_supporting"
         else "unavailable"
@@ -364,6 +363,11 @@ def _attach_tavily_outcome(
         "tavily_trusted_source_count": int(
             outcome.get("trusted_source_count") or 0
         ),
+        "provider_context_used": outcome.get("provider_context_used") is True,
+        "provider_specific_evidence": outcome.get("provider_specific_evidence") is True,
+        "provider_acceptance_evidence": outcome.get("provider_acceptance_evidence") is True,
+        "provider_rejection_evidence": outcome.get("provider_rejection_evidence") is True,
+        "provider_evidence_status": outcome.get("provider_evidence_status"),
     }
     credits = outcome.get("credits")
     if isinstance(credits, int) and credits >= 0:
@@ -389,6 +393,32 @@ def _attach_tavily_outcome(
 
     if guidance.get("guidance_source") == "safe_fallback":
         metadata["guidance_fallback_status"] = "general_fallback"
+
+    confirmed_provider = _first_non_empty_string(outcome.get("canonical_provider"))
+    if confirmed_provider and outcome.get("provider_evidence_status") == "unavailable":
+        confirmation_step = (
+            f"Check whether {confirmed_provider} accepts this item before placing it "
+            "in curbside recycling."
+        )
+        steps = _guidance_text_list(guidance.get("steps"))
+        if not any(confirmed_provider.casefold() in step.casefold() for step in steps):
+            guidance["steps"] = [*steps, confirmation_step]
+
+        structured = guidance.get("structured_guidance")
+        if not isinstance(structured, dict):
+            structured = metadata.get("structured_guidance")
+        if isinstance(structured, dict):
+            disposal_steps = _guidance_text_list(structured.get("disposal_steps"))
+            if not any(
+                confirmed_provider.casefold() in step.casefold()
+                for step in disposal_steps
+            ):
+                structured = {
+                    **structured,
+                    "disposal_steps": [*disposal_steps, confirmation_step],
+                }
+                guidance["structured_guidance"] = structured
+                metadata["structured_guidance"] = structured
 
     guidance = _with_metadata(guidance, metadata)
     if _guidance_uses_verified_local_source(guidance):
@@ -790,12 +820,20 @@ def _general_fallback_guidance(
     )
     subject = f"the {item.lower()}" if item else "this item"
 
+    normalized_details = classification.get("normalized")
+    normalized_details = (
+        normalized_details if isinstance(normalized_details, dict) else {}
+    )
     item_terms = normalize(
         classification.get("item"),
         classification.get("normalized_item"),
         classification.get("broad_category"),
         classification.get("category"),
         classification.get("material_category"),
+        normalized_details.get("normalized_item"),
+        normalized_details.get("disposal_category"),
+        normalized_details.get("material_category"),
+        normalized_details.get("primary_material"),
     )
     condition_flags = normalize(
         classification.get("condition_flags"),
@@ -813,7 +851,7 @@ def _general_fallback_guidance(
     organic_terms = {
         "food scrap", "food scraps", "food waste", "fruit peel",
         "vegetable scraps", "coffee grounds", "tea leaves",
-        "yard waste", "leaves", "plant material",
+        "yard waste", "leaves", "plant material", "organic", "fruit",
     }
     disposable_terms = {
         "wrapper", "plastic film", "chip bag", "food packaging",
@@ -950,7 +988,7 @@ def _general_fallback_guidance(
         "impact_level": "General Guidance",
         "summary": summary,
         "steps": steps,
-        "guidance_source": "general_fallback",
+        "guidance_source": "safe_fallback",
         "warnings": notes,
         "guidance_metadata": {
             "final_generation_path": "general_fallback",
@@ -1836,57 +1874,6 @@ def _build_json_guidance_metadata(
     return metadata
 
 
-def _manual_rule_outcome(local_result: dict[str, Any]) -> dict[str, Any]:
-    sources: list[dict[str, Any]] = []
-    for result in local_result.get("retrieval_results") or []:
-        chunk = result.get("chunk") if isinstance(result, dict) else None
-        source = chunk.get("source_metadata") if isinstance(chunk, dict) else None
-        if isinstance(source, dict):
-            sources.append(source)
-    return {
-        "status": "manual_local_rule",
-        "skip_reason": "complete_manual_rule",
-        "called": False,
-        "result_count": 0,
-        "trusted_source_count": len(sources),
-        "sources": sources,
-        "retrieval_results": [],
-    }
-
-
-def _attach_manual_evidence(
-    guidance: dict[str, Any],
-    local_result: dict[str, Any],
-) -> dict[str, Any]:
-    local_guidance = local_result.get("guidance")
-    if not isinstance(local_guidance, dict):
-        return guidance
-    details = local_guidance.get("local_guidance")
-    if isinstance(details, dict):
-        guidance["local_guidance"] = details
-    local_metadata = local_guidance.get("guidance_metadata")
-    local_metadata = local_metadata if isinstance(local_metadata, dict) else {}
-    guidance = _with_metadata(
-        guidance,
-        {
-            "jurisdiction_id": local_metadata.get("jurisdiction_id"),
-            "local_rules_version": local_metadata.get("local_rules_version"),
-            "applicable_local_rule_ids": list(
-                local_metadata.get("applicable_local_rule_ids") or []
-            ),
-            "local_rule_applicability": local_metadata.get(
-                "local_rule_applicability"
-            ),
-            "local_evidence_status": (
-                "accepted"
-                if local_result.get("status") == "applicable"
-                else str(local_result.get("status") or "unavailable")
-            ),
-        },
-    )
-    return guidance
-
-
 def _retrieval_applicability(result: dict[str, Any]) -> str:
     status = str(result.get("applicability") or "applicable")
     return status if status in {"applicable", "conditional", "not_applicable"} else "conditional"
@@ -2075,9 +2062,6 @@ def _build_guidance_confidence(
     metadata = guidance.get("guidance_metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     applicable_ids = list(metadata.get("applicable_chunk_ids") or [])
-    applicable_local_rule_ids = list(
-        metadata.get("applicable_local_rule_ids") or []
-    )
     conditional_ids = list(metadata.get("conditional_chunk_ids") or [])
     not_applicable_ids = list(metadata.get("not_applicable_chunk_ids") or [])
     source = str(guidance.get("guidance_source") or "unknown")
@@ -2092,22 +2076,6 @@ def _build_guidance_confidence(
         level = "low"
         score = 0.25
         reason_codes.append("no_disposal_action_selected")
-    elif source == "local_rules" and applicable_local_rule_ids:
-        local_applicability = str(
-            metadata.get("local_rule_applicability") or ""
-        ).casefold()
-        if local_applicability == "applicable":
-            level = "high"
-            score = 0.94
-            reason_codes.append("approved_local_rule")
-        elif local_applicability == "conditional":
-            level = "medium"
-            score = 0.7
-            reason_codes.append("local_rule_condition_unresolved")
-        else:
-            level = "high"
-            score = 0.9
-            reason_codes.append("explicit_local_exclusion")
     elif source == "json_rag_llm_generated" and applicable_ids:
         if metadata.get("requires_location_check") is True:
             level = "medium"
@@ -2168,8 +2136,6 @@ def _build_guidance_confidence(
         "conditional_chunk_ids": conditional_ids,
         "not_applicable_chunk_ids": not_applicable_ids,
     }
-    if applicable_local_rule_ids:
-        applicability["applicable_local_rule_ids"] = applicable_local_rule_ids
 
     return {
         "level": level,
@@ -2332,6 +2298,13 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
 
     normalized_details = _normalized_open_details(classification)
     visual_observations = _visual_observations(classification)
+    location = classification.get("location")
+    location = location if isinstance(location, dict) else None
+    confirmed_provider = (
+        _first_non_empty_string(location.get("waste_provider"))
+        if location is not None
+        else None
+    )
     return {
         "recognized_item": _first_non_empty_string(classification.get("item")),
         "normalized_item_label": _first_non_empty_string(
@@ -2364,7 +2337,8 @@ def _build_llm_context(classification: dict[str, Any]) -> dict[str, Any]:
             classification.get("trusted_guidance_label"),
             normalized_details.get("matched_supported_label"),
         ),
-        "location": classification.get("location"),
+        "location": location,
+        "confirmed_provider": confirmed_provider,
     }
 
 
@@ -2597,7 +2571,6 @@ def _resolve_guidance(
     classification: dict[str, Any],
     *,
     clarification_decision: dict[str, Any] | None = None,
-    jurisdiction_id: str | None = None,
 ) -> dict[str, Any]:
     decision = clarification_decision or evaluate_clarification(classification)
     if decision.get("required") is True:
@@ -2622,27 +2595,10 @@ def _resolve_guidance(
         )
         return guidance
 
-    local_result = local_guidance_matcher.match_local_guidance(
+    tavily_outcome = tavily_local_guidance_service.search_local_guidance(
         classification,
-        jurisdiction_id,
+        clarification_required=decision.get("required") is True,
     )
-    manual_retrieval_results = [
-        result
-        for result in (local_result.get("retrieval_results") or [])
-        if isinstance(result, dict)
-    ]
-    if local_result.get("can_skip_tavily") is True:
-        tavily_local_guidance_service.log_tavily_skip(
-            "manual_local_rule",
-            "complete_manual_rule",
-        )
-        tavily_outcome = _manual_rule_outcome(local_result)
-    else:
-        tavily_outcome = tavily_local_guidance_service.search_local_guidance(
-            classification,
-            clarification_required=decision.get("required") is True,
-            manual_rule_applied=False,
-        )
     tavily_retrieval_results = tavily_outcome.get("retrieval_results")
     tavily_retrieval_results = (
         tavily_retrieval_results
@@ -2653,7 +2609,6 @@ def _resolve_guidance(
     _log_resolution_started(classification, retrieval_inputs)
     retrieval_started = perf_counter()
     retrieval_results = [
-        *manual_retrieval_results,
         *tavily_retrieval_results,
         *_lookup_json_guidance(
             classification,
@@ -2718,7 +2673,6 @@ def _resolve_guidance(
                 source_result_count=0,
                 text_llm_call_count=1,
             )
-            llm_guidance = _attach_manual_evidence(llm_guidance, local_result)
             return _attach_tavily_outcome(llm_guidance, tavily_outcome)
 
         failure_reason = (
@@ -2744,7 +2698,6 @@ def _resolve_guidance(
             text_llm_call_count=1,
             failure_reason=failure_reason,
         )
-        guidance = _attach_manual_evidence(guidance, local_result)
         return _attach_tavily_outcome(guidance, tavily_outcome)
 
     cache_context = (
@@ -2755,8 +2708,6 @@ def _resolve_guidance(
             retrieval_inputs=retrieval_inputs,
             retrieval_results=source_results,
             llm_context=llm_context,
-            jurisdiction_id=jurisdiction_id,
-            local_rules_version=local_result.get("rules_version"),
         )
     )
     cached_guidance = guidance_cache_service.get_cached_source_grounded_guidance(
@@ -2776,7 +2727,6 @@ def _resolve_guidance(
             source_result_count=len(source_results),
             text_llm_call_count=0,
         )
-        cached_guidance = _attach_manual_evidence(cached_guidance, local_result)
         return _attach_tavily_outcome(cached_guidance, tavily_outcome)
 
     llm_started = perf_counter()
@@ -2822,7 +2772,6 @@ def _resolve_guidance(
             source_result_count=len(source_results),
             text_llm_call_count=1,
         )
-        llm_guidance = _attach_manual_evidence(llm_guidance, local_result)
         return _attach_tavily_outcome(llm_guidance, tavily_outcome)
 
     failure_reason = _first_non_empty_string(llm_result.get("failure_reason")) or "gemini_unavailable"
@@ -2843,13 +2792,11 @@ def _resolve_guidance(
         text_llm_call_count=1,
         failure_reason=failure_reason,
     )
-    guidance = _attach_manual_evidence(guidance, local_result)
     return _attach_tavily_outcome(guidance, tavily_outcome)
 
 
 def _structured_reference_candidates(
     metadata: dict[str, Any],
-    local_guidance: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
     references: list[dict[str, str]] = []
     accepted_sources = metadata.get("accepted_sources")
@@ -2863,18 +2810,6 @@ def _structured_reference_candidates(
             if title and url and claim:
                 references.append(
                     {"source_title": title, "url": url, "supports_claim": claim}
-                )
-
-    if isinstance(local_guidance, dict):
-        local_claim = _first_non_empty_string(local_guidance.get("local_action"))
-        for source in local_guidance.get("sources") or []:
-            if not isinstance(source, dict):
-                continue
-            title = _first_non_empty_string(source.get("title"), source.get("publisher"))
-            url = _first_non_empty_string(source.get("url"))
-            if title and url and local_claim:
-                references.append(
-                    {"source_title": title, "url": url, "supports_claim": local_claim}
                 )
 
     source_names = _guidance_text_list(metadata.get("source_names"))
@@ -2896,17 +2831,6 @@ def _structured_destination(
     guidance: dict[str, Any],
     metadata: dict[str, Any],
 ) -> str | None:
-    local_guidance = guidance.get("local_guidance")
-    if isinstance(local_guidance, dict):
-        destinations = local_guidance.get("destinations")
-        if isinstance(destinations, list) and destinations and isinstance(destinations[0], dict):
-            destination = _first_non_empty_string(destinations[0].get("name"))
-            if destination:
-                return destination
-        allowed_names = _guidance_text_list(local_guidance.get("allowed_location_names"))
-        if allowed_names:
-            return allowed_names[0]
-
     accepted_sources = metadata.get("accepted_sources")
     if isinstance(accepted_sources, list):
         for source in accepted_sources:
@@ -2932,12 +2856,7 @@ def _build_structured_response_guidance(
     if not isinstance(stored, dict):
         stored = metadata.get("structured_guidance")
 
-    references = _structured_reference_candidates(
-        metadata,
-        guidance.get("local_guidance")
-        if isinstance(guidance.get("local_guidance"), dict)
-        else None,
-    )
+    references = _structured_reference_candidates(metadata)
     if isinstance(stored, dict):
         candidate = {**stored}
         if not candidate.get("references") and references:
@@ -2993,11 +2912,13 @@ def build_prediction_response(
     *,
     jurisdiction_id: str | None = None,
 ) -> dict[str, Any]:
+    # Internal callers may still pass the legacy value, but it no longer selects
+    # hard-coded jurisdiction guidance or changes cache applicability.
+    _ = jurisdiction_id
     clarification_decision = evaluate_clarification(classification)
     guidance = _resolve_guidance(
         classification,
         clarification_decision=clarification_decision,
-        jurisdiction_id=jurisdiction_id,
     )
 
     guidance_metadata = guidance.get("guidance_metadata")
@@ -3009,8 +2930,6 @@ def build_prediction_response(
             final_path = "direct_rag_fallback"
         elif guidance_metadata.get("deterministic_fallback_used") is True:
             final_path = "deterministic_fallback"
-        elif source == "local_rules":
-            final_path = "local_rules"
         elif source in {"safe_fallback", "legacy_rules_fallback"}:
             final_path = "legacy_safe_fallback"
         else:
@@ -3080,11 +2999,6 @@ def build_prediction_response(
 
     if isinstance(guidance_metadata, dict) and guidance_metadata:
         response["guidance_metadata"] = guidance_metadata
-
-    local_guidance = guidance.get("local_guidance")
-    if isinstance(local_guidance, dict):
-        response["jurisdiction_id"] = jurisdiction_id
-        response["local_guidance"] = local_guidance
 
     response["guidance_confidence"] = _build_guidance_confidence(
         guidance,

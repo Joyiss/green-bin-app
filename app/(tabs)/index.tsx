@@ -56,7 +56,6 @@ import {
   fetchPrediction,
   fetchSupportedLabels,
   prewarmApi,
-  sendFeedback,
 } from '@/api/client';
 import {
   normalizeScanLimitResponse,
@@ -82,11 +81,6 @@ import {
   resolvePredictionFlowStatus,
 } from '@/app/prediction-flow';
 import {
-  createFeedbackSubmissionCoordinator,
-  isRetryableFeedbackError,
-  type FeedbackUpdate,
-} from '@/app/feedback-flow';
-import {
   DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
   DEVELOPMENT_LOCATION_TOOLS_ENABLED,
   loadDevelopmentLocationSettings,
@@ -95,7 +89,10 @@ import {
   shouldShowDevelopmentLocation,
   type DevelopmentLocationSettings,
 } from '@/app/development-location';
-import { getAppLocationContext } from '@/app/location-context';
+import {
+  getAppLocationContext,
+  LocationPermissionError,
+} from '@/app/location-context';
 import { scannerChromeVisibility } from '@/app/confident-result-state';
 import {
   buildResultSheetPresentation,
@@ -115,10 +112,6 @@ import {
   getInstallationId,
   saveScanUsageMetadata,
 } from '../../storage/scanUsage';
-import {
-  enqueueFeedback,
-  flushFeedbackQueue,
-} from '../../storage/feedbackQueue';
 
 const CAMERA_CONTROLS_NAV_CLEARANCE = 52;
 const CAMERA_READY_FALLBACK_DELAY_MS = 450;
@@ -266,12 +259,6 @@ type ActiveScanSession = {
   coarseDisposalLocation: CoarseDisposalLocation | null;
   developmentOverrideActive: boolean;
 };
-
-async function sendFeedbackRequestRaw(requestId: string, update: FeedbackUpdate) {
-  await sendFeedback(requestId, update);
-}
-
-const sendFeedbackRequest = createFeedbackSubmissionCoordinator(sendFeedbackRequestRaw);
 
 function getDisposalActionText(disposalAction: string | null) {
   return (disposalAction ?? 'follow local guidance').trim().toLowerCase();
@@ -1304,12 +1291,10 @@ export default function ScannerScreen() {
   useEffect(() => {
     isMountedRef.current = true;
     void prewarmApi();
-    void flushFeedbackQueue(sendFeedbackRequest);
 
     const appStateSubscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         void prewarmApi();
-        void flushFeedbackQueue(sendFeedbackRequest);
         void refreshCameraPermission().catch(() => undefined);
       }
     });
@@ -1512,20 +1497,6 @@ export default function ScannerScreen() {
       if (materialLabelsAbortControllerRef.current === controller) {
         materialLabelsAbortControllerRef.current = null;
         setIsLoadingMaterialLabels(false);
-      }
-    }
-  };
-
-  const submitFeedbackUpdate = async (update: FeedbackUpdate) => {
-    const requestId = activeScanSessionRef.current?.originalRequestId;
-    if (!requestId) {
-      return;
-    }
-    try {
-      await sendFeedbackRequest(requestId, update);
-    } catch (error) {
-      if (isRetryableFeedbackError(error)) {
-        await enqueueFeedback(requestId, update);
       }
     }
   };
@@ -1807,9 +1778,19 @@ export default function ScannerScreen() {
           const locationContext = await getAppLocationContext();
           deviceJurisdictionId = locationContext.jurisdictionId;
           deviceLocation = locationContext.coarseDisposalLocation;
-        } catch {
+        } catch (error) {
           deviceJurisdictionId = null;
           deviceLocation = null;
+          if (isMountedRef.current) {
+            Alert.alert(
+              error instanceof LocationPermissionError
+                ? 'Location is off'
+                : 'Location unavailable',
+              error instanceof LocationPermissionError
+                ? 'Your scan will continue with general guidance. Enable location later for local rules and nearby options.'
+                : 'Your scan will continue with general guidance. You can retry location on your next scan.',
+            );
+          }
         }
       }
       const predictionLocation = resolveDevelopmentPredictionLocation({
@@ -1886,15 +1867,6 @@ export default function ScannerScreen() {
       if (!isMountedRef.current || requestId !== predictRequestRef.current) {
         return;
       }
-      if (selectedItem && originalRequestId && prediction.request_id) {
-        void submitFeedbackUpdate({
-          item_correct: false,
-          prediction_changed: true,
-          corrected_item: prediction.item || selectedItem,
-          correction_request_id: prediction.request_id,
-        });
-      }
-      void flushFeedbackQueue(sendFeedbackRequest);
     } catch (error) {
       if (!isMountedRef.current || requestId !== predictRequestRef.current) {
         return;

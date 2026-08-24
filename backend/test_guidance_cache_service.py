@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from services import guidance_cache_service
 
@@ -72,6 +73,48 @@ def _llm_context(condition_flags=None, special_flags=None):
 
 
 class GuidanceCacheServiceTests(unittest.TestCase):
+    def _provider_cache(self, provider, *, city="Seattle", county="King County", state="Washington"):
+        llm_context = _llm_context()
+        llm_context.update(
+            {
+                "confirmed_provider": provider,
+                "location": {"city": city, "county": county, "state": state},
+            }
+        )
+        return guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[_retrieval_result()],
+            llm_context=llm_context,
+        )
+
+    def test_provider_cache_is_separated_by_provider_and_no_provider(self):
+        no_provider = guidance_cache_service.build_source_grounded_cache_context(
+            classification=_classification(),
+            retrieval_inputs=_retrieval_inputs(),
+            retrieval_results=[_retrieval_result()],
+            llm_context=_llm_context(),
+        )
+        provider_a = self._provider_cache("Waste Pro")
+        provider_b = self._provider_cache("Red Oak Sanitation")
+
+        self.assertNotEqual(no_provider["cache_key"], provider_a["cache_key"])
+        self.assertNotEqual(provider_a["cache_key"], provider_b["cache_key"])
+        self.assertNotIn("confirmed_provider_key", no_provider["cache_key_input"])
+        self.assertNotIn("provider_location", no_provider["cache_key_input"])
+        self.assertEqual(provider_a["cache_key_input"]["confirmed_provider_key"], "waste_pro")
+
+    def test_provider_cache_is_separated_by_exact_location(self):
+        seattle = self._provider_cache("Waste Pro")
+        tacoma = self._provider_cache(
+            "Waste Pro", city="Tacoma", county="Pierce County"
+        )
+        blank_county = self._provider_cache("Waste Pro", county="")
+
+        self.assertNotEqual(seattle["cache_key"], tacoma["cache_key"])
+        self.assertNotEqual(seattle["cache_key"], blank_county["cache_key"])
+        self.assertEqual(blank_county["cache_key_input"]["provider_location"]["county"], "")
+
     def test_source_cache_key_is_deterministic_for_reordered_inputs(self):
         left = guidance_cache_service.build_source_grounded_cache_context(
             classification=_classification(),
@@ -248,6 +291,32 @@ class GuidanceCacheServiceTests(unittest.TestCase):
             guidance["guidance_metadata"]["guidance_cache_key"],
             "cache-key",
         )
+
+    def test_previous_manual_rule_cache_version_is_not_reused(self):
+        old_row = {
+            "cache_key": "old-manual-key",
+            "cache_key_version": "guidance_cache_v2",
+            "guidance_source": "json_rag_llm_generated",
+            "disposal_action": "drop-off",
+            "summary": "Use the old manual destination.",
+            "steps": ["Use the old manual destination."],
+            "retrieved_chunk_ids": ["manual-fc_electronics"],
+            "guidance_metadata": {
+                "retrieved_chunk_ids": ["manual-fc_electronics"],
+                "applicable_chunk_ids": ["manual-fc_electronics"],
+            },
+        }
+        with patch.object(
+            guidance_cache_service.disposal_guidance_repository,
+            "get_guidance_by_cache_key",
+            return_value=old_row,
+        ):
+            result = guidance_cache_service.get_cached_source_grounded_guidance(
+                {"cache_key": "old-manual-key"}
+            )
+
+        self.assertEqual(guidance_cache_service.CACHE_KEY_VERSION, "guidance_cache_v3")
+        self.assertIsNone(result)
 
     def test_cacheability_rejects_unsafe_cases(self):
         cache_context = {

@@ -54,6 +54,24 @@ def _chunk(
 
 
 class GuidanceRetrievalServiceTests(unittest.TestCase):
+    def test_forsyth_retrieval_never_returns_manual_rule_sources(self):
+        results = retrieve_guidance_chunks(
+            item_label="Laptop",
+            material="Electronics",
+            category="Electronics",
+            special_flags=["electronics"],
+            location={
+                "city": "Cumming",
+                "county": "Forsyth County",
+                "state": "Georgia",
+            },
+        )
+
+        for result in results:
+            chunk = result.get("chunk") or {}
+            self.assertFalse(str(chunk.get("id") or "").startswith("manual-fc"))
+            self.assertNotEqual(chunk.get("source_type"), "manual_local_rule")
+
     def _property_applicability(self, required_property, *, flags=None, observations=None):
         return classify_chunk_applicability(
             _chunk(

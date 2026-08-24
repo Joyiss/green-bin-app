@@ -99,6 +99,57 @@ def _open_classification(
 
 
 class GuidanceServiceTests(unittest.TestCase):
+    def test_verified_provider_without_item_evidence_gets_cautious_confirmation_step(self):
+        classification = _open_classification(
+            item="Plastic Water Bottle",
+            category="Plastic",
+            material_category="Plastic",
+            broad_category="Plastic",
+        )
+        classification["location"] = {
+            "city": "Cumming",
+            "state": "Georgia",
+            "waste_provider": "Custom Disposal",
+        }
+        outcome = {
+            "status": "tavily_insufficient_evidence",
+            "called": True,
+            "call_count": 1,
+            "result_count": 0,
+            "trusted_source_count": 0,
+            "retrieval_results": [],
+            "sources": [],
+            "provider_context_used": True,
+            "canonical_provider": "Custom Disposal",
+            "provider_specific_evidence": False,
+            "provider_acceptance_evidence": False,
+            "provider_rejection_evidence": False,
+            "provider_evidence_status": "unavailable",
+        }
+        with (
+            patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
+                return_value=outcome,
+            ),
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
+            ),
+        ):
+            response = build_prediction_response(classification)
+
+        combined = " ".join(response["steps"])
+        self.assertIn("Check whether Custom Disposal accepts this item", combined)
+        self.assertNotIn("Custom Disposal recycling cart", combined)
+        self.assertEqual(
+            response["guidance_metadata"]["provider_evidence_status"],
+            "unavailable",
+        )
+
     def test_guidance_lookup_prefers_disposal_category_and_keeps_material_separate(self):
         classification = {
             "item": "Calculator",
@@ -222,7 +273,7 @@ class GuidanceServiceTests(unittest.TestCase):
         )
         mock_rules.assert_not_called()
 
-    def test_visual_observations_are_passed_to_source_grounded_llm(self):
+    def test_visual_observations_and_confirmed_provider_are_passed_to_source_grounded_llm(self):
         observations = [
             {
                 "aspect": "form_factor",
@@ -241,6 +292,12 @@ class GuidanceServiceTests(unittest.TestCase):
             visual_evidence="Crinkly opened pouch.",
             visual_observations=observations,
         )
+        classification["location"] = {
+            "city": "Ball Ground",
+            "county": "Forsyth County",
+            "state": "Georgia",
+            "waste_provider": "Red Oak Sanitation",
+        }
         retrieval_results = [
             _retrieval_result(
                 _json_chunk(
@@ -268,6 +325,16 @@ class GuidanceServiceTests(unittest.TestCase):
 
         with (
             patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
+                return_value={
+                    "status": "tavily_disabled",
+                    "called": False,
+                    "call_count": 0,
+                    "skip_reason": "feature_disabled",
+                    "retrieval_results": [],
+                },
+            ),
+            patch(
                 "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
                 return_value=retrieval_results,
             ),
@@ -288,6 +355,10 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["disposal_action"], "trash")
         self.assertEqual(mock_llm.call_args.kwargs["visual_observations"], observations)
         self.assertIn("flexible pouch", mock_llm.call_args.kwargs["visual_evidence"])
+        self.assertEqual(
+            mock_llm.call_args.kwargs["confirmed_provider"],
+            "Red Oak Sanitation",
+        )
 
     def test_source_grounded_cache_hit_skips_llm_generation(self):
         classification = {
@@ -310,7 +381,7 @@ class GuidanceServiceTests(unittest.TestCase):
                 "requires_location_check": True,
                 "guidance_cache_hit": True,
                 "guidance_cache_key": "cache-key",
-                "cache_key_version": "guidance_cache_v2",
+                "cache_key_version": "guidance_cache_v3",
             },
             "cache_hit": True,
         }
@@ -836,7 +907,7 @@ class GuidanceServiceTests(unittest.TestCase):
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
-        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
+        self.assertIn("waste provider", " ".join(response["steps"]).lower())
         self.assertEqual(
             response["guidance_metadata"]["fallback_reason"],
             "missing_summary",
@@ -907,7 +978,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("sheet music", response["summary"].lower())
-        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
+        self.assertIn("waste provider", " ".join(response["steps"]).lower())
 
     def test_sheet_music_with_llm_disabled_falls_back_safely(self):
         classification = _open_classification(
@@ -991,7 +1062,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("curtain", response["summary"].lower())
-        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
+        self.assertIn("waste provider", " ".join(response["steps"]).lower())
 
     def test_rubiks_cube_invalid_general_safe_output_uses_reuse_focused_deterministic_fallback(self):
         classification = _open_classification(
@@ -1015,7 +1086,7 @@ class GuidanceServiceTests(unittest.TestCase):
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
         self.assertIn("rubik", response["summary"].lower())
-        self.assertIn("local trash guidance", " ".join(response["steps"]).lower())
+        self.assertIn("waste provider", " ".join(response["steps"]).lower())
         self.assertNotIn("curbside recycling is accepted", response["summary"].lower())
 
     def test_plastic_container_invalid_general_safe_output_uses_container_specific_deterministic_fallback(self):
@@ -1351,7 +1422,7 @@ class GuidanceServiceTests(unittest.TestCase):
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
         self.assertEqual(response["disposal_action"], "check local guidance")
-        self.assertIn("Verified local guidance is unavailable", response["summary"])
+        self.assertIn("not enough information", response["summary"].lower())
 
     def test_safe_fallback_is_never_written_to_guidance_cache(self):
         classification = {

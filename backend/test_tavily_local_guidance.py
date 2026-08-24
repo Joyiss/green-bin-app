@@ -122,12 +122,35 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
             ),
             {"city": "Austin", "county": "Travis County", "state": "Texas"},
         )
-
         self.assertEqual(
             query,
             "television (electronics) disposal or recycling for residents in Austin, Texas: "
             "curbside rules, drop-off, take-back, accepted items, fees, appointments",
         )
+
+    def test_confirmed_provider_query_is_short_and_uses_state_only(self):
+        query = tavily.build_search_query(
+            _classification(
+                "Plastic bottle",
+                material_category="Plastic",
+                category="Containers",
+                condition_flags=["contaminated"],
+                special_handling_flags=[],
+            ),
+            {
+                "city": "Ball Ground",
+                "county": "Forsyth County",
+                "state": "Georgia",
+                "waste_provider": "Red Oak Sanitation",
+            },
+        )
+
+        self.assertEqual(
+            query,
+            "Red Oak Sanitation accepted recycling items contaminated plastic bottle Georgia",
+        )
+        self.assertNotIn("Ball Ground", query)
+        self.assertNotIn("Forsyth County", query)
 
     def test_short_meaningful_labels_are_searchable_after_normalization(self):
         location = {"city": "Raleigh", "state": "North Carolina"}
@@ -718,9 +741,7 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         directory_evidence = tavily._accepted_result_to_evidence(
             directory_record, directory, classification=classification, location=location
         )
-        self.assertIsNotNone(directory_evidence)
-        self.assertEqual(directory_evidence["applicability"], "conditional")
-        self.assertFalse(directory_evidence["chunk"]["source_metadata"]["trusted"])
+        self.assertIsNone(directory_evidence)
         self.assertEqual(article.source_role, tavily.REPUTABLE_SUPPORTING_ROLE)
         self.assertEqual(article.claim_scope, ("supporting_context",))
         self.assertEqual(article_evidence["applicability"], "conditional")
@@ -1152,30 +1173,36 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertNotIn("Popular Pages", captured["prompt"])
         self.assertNotIn("Unrelated department link 90", captured["prompt"])
 
-    def test_complete_forsyth_manual_evidence_makes_zero_tavily_calls(self):
+    def test_forsyth_provider_scan_uses_exactly_one_balanced_tavily_search(self):
         classification = _classification(
             "Laptop",
             location={
                 "city": "Cumming",
                 "county": "Forsyth County",
                 "state": "Georgia",
+                "waste_provider": "Red Oak Sanitation",
             },
         )
-        with patch(
-            "services.guidance_service.tavily_local_guidance_service.search_local_guidance"
-        ) as mock_tavily:
-            response = guidance_service.build_prediction_response(
-                classification,
-                jurisdiction_id="forsyth_county_ga",
-            )
+        client, env = self._search({"results": [], "usage": {"credits": 1}})
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+        ):
+            outcome = tavily.search_local_guidance(classification)
 
-        mock_tavily.assert_not_called()
+        client.search.assert_called_once()
+        self.assertEqual(outcome["call_count"], 1)
+        query = client.search.call_args.kwargs["query"]
+        self.assertIn("Red Oak Sanitation", query)
         self.assertEqual(
-            response["guidance_metadata"]["local_guidance_status"],
-            "manual_local_rule",
+            query,
+            "Red Oak Sanitation accepted recycling items laptop Georgia",
         )
-        self.assertNotEqual(response["guidance_source"], "local_rules")
-        self.assertEqual(response["local_guidance"]["rule_id"], "fc_electronics")
+        self.assertNotIn("manual-fc", str(outcome))
 
     def test_unknown_and_clarification_required_items_make_zero_search_calls(self):
         client, env = self._search({"results": []})
@@ -1312,6 +1339,134 @@ class TavilyLocalGuidanceTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "tavily_insufficient_evidence")
         client.search.assert_called_once()
         self.assertEqual(outcome["call_count"], 1)
+
+    def test_provider_search_reports_provider_context_and_matching_evidence(self):
+        client, env = self._search(
+            {
+                "results": [
+                    _result(
+                        title="Battery disposal | Red Oak Sanitation",
+                        url="https://redoaksanitation.example/battery-disposal",
+                        content=(
+                            "Red Oak Sanitation accepts household batteries at its Georgia "
+                            "recycling drop-off."
+                        ),
+                    )
+                ],
+                "usage": {"credits": 1},
+            }
+        )
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+        ):
+            outcome = tavily.search_local_guidance(
+                _classification(
+                    location={
+                        "city": "Ball Ground",
+                        "county": "Forsyth County",
+                        "state": "Georgia",
+                        "waste_provider": "Red Oak Sanitation",
+                    }
+                )
+            )
+
+        client.search.assert_called_once()
+        self.assertEqual(outcome["call_count"], 1)
+        self.assertTrue(outcome["provider_context_used"])
+        self.assertEqual(outcome["canonical_provider"], "Red Oak Sanitation")
+        self.assertEqual(
+            outcome["provider_location"],
+            {"city": "Ball Ground", "county": "Forsyth County", "state": "Georgia"},
+        )
+        self.assertTrue(outcome["provider_specific_evidence"])
+        self.assertTrue(outcome["provider_acceptance_evidence"])
+        self.assertEqual(outcome["provider_evidence_status"], "acceptance")
+
+    def test_provider_rejection_evidence_is_distinct_from_acceptance(self):
+        client, env = self._search(
+            {
+                "results": [
+                    _result(
+                        title="Recycling rules | Custom Disposal",
+                        url="https://customdisposal.example/recycling",
+                        content=(
+                            "Custom Disposal does not accept plastic water bottles in "
+                            "its curbside recycling service in Georgia."
+                        ),
+                    )
+                ],
+                "usage": {"credits": 1},
+            }
+        )
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "services.tavily_local_guidance_service.tavily_budget_repository.reserve_tavily_search_budget",
+                return_value=_reservation(),
+            ),
+            patch("services.tavily_local_guidance_service._get_client", return_value=client),
+        ):
+            outcome = tavily.search_local_guidance(
+                _classification(
+                    "Plastic water bottle",
+                    material_category="Plastic",
+                    category="Containers",
+                    special_handling_flags=[],
+                    location={
+                        "city": "Cumming",
+                        "state": "Georgia",
+                        "waste_provider": "Custom Disposal",
+                    },
+                )
+            )
+
+        self.assertTrue(outcome["provider_specific_evidence"])
+        self.assertFalse(outcome["provider_acceptance_evidence"])
+        self.assertTrue(outcome["provider_rejection_evidence"])
+        self.assertEqual(outcome["provider_evidence_status"], "rejection")
+        actions = outcome["retrieval_results"][0]["chunk"]["disposal_actions_supported"]
+        self.assertEqual(actions, ["check local guidance"])
+
+    def test_rejected_high_score_and_wrong_jurisdiction_results_never_become_chunks(self):
+        payload = {
+            "results": [
+                _result(
+                    title="Recycling discussion",
+                    url="https://reddit.com/r/recycling/high-score",
+                    content="Raleigh users discuss household battery recycling.",
+                    score=0.999,
+                ),
+                _result(
+                    title="Battery recycling | City of Charlotte",
+                    url="https://charlottenc.gov/batteries",
+                    content="City of Charlotte accepts household batteries for recycling.",
+                    score=0.998,
+                ),
+                _result(score=0.2),
+            ]
+        }
+
+        count, accepted, _, _ = tavily._validated_search_results(
+            payload,
+            classification=_classification(),
+            location={
+                "city": "Raleigh",
+                "county": "Wake County",
+                "state": "North Carolina",
+            },
+        )
+
+        self.assertEqual(count, 3)
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(
+            accepted[0]["chunk"]["source_url"],
+            "https://raleighnc.gov/trash-recycling-and-clean/household-hazardous-waste",
+        )
 
     def test_only_official_supporting_sources_are_not_verified_local(self):
         client, env = self._search(

@@ -74,6 +74,7 @@ def current_provider(
             _client().table("service_providers")
             .select("id,canonical_name,raw_input_name,services,city,state,county,status,evidence_urls,verified_at,created_at,updated_at")
             .eq("client_id_hash", client_id_hash)
+            .eq("status", "verified")
             .order("verified_at", desc=True)
             .execute()
         )
@@ -85,6 +86,10 @@ def current_provider(
         normalize_key_field(state),
     )
     for row in _rows(response):
+        if row.get("status") != "verified" or not normalize_key_field(
+            row.get("canonical_name")
+        ):
+            continue
         candidate = (
             normalize_key_field(row.get("city")),
             normalize_key_field(row.get("county")),

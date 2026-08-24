@@ -149,12 +149,9 @@ export function areDevelopmentLocationToolsEnabled(
   return isDevelopment || secureTestingEnabled;
 }
 
-// No secure testing-build flag currently exists in the app. Keep the switcher
-// development-only rather than accepting a public/client-controlled override.
-export const DEVELOPMENT_LOCATION_TOOLS_ENABLED =
-  areDevelopmentLocationToolsEnabled(
-    typeof __DEV__ !== 'undefined' && __DEV__,
-  );
+// Manual/test locations remain reusable developer tooling, but are disabled for
+// the closed-testing build so device location is the only tester-facing flow.
+export const DEVELOPMENT_LOCATION_TOOLS_ENABLED = false;
 
 export function createDevelopmentLocationOverride(
   city: unknown,

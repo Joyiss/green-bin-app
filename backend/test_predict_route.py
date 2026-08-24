@@ -1,5 +1,6 @@
 import io
 import asyncio
+import hashlib
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -41,12 +42,6 @@ class PredictRouteTests(unittest.TestCase):
         )
         self.clip_ready_patch.start()
         self.addCleanup(self.clip_ready_patch.stop)
-        self.feedback_storage_patch = patch(
-            "routes.predict.feedback_context_service.store_prediction_context",
-            return_value=True,
-        )
-        self.feedback_storage_patch.start()
-        self.addCleanup(self.feedback_storage_patch.stop)
 
     def test_predict_allows_missing_client_id_when_not_required(self):
         client = TestClient(app)
@@ -100,7 +95,7 @@ class PredictRouteTests(unittest.TestCase):
         mock_consume.assert_not_called()
         mock_tavily.assert_not_called()
 
-    def test_predict_passes_only_coarse_location_into_guidance(self):
+    def test_predict_ignores_client_supplied_provider_and_passes_only_coarse_location(self):
         client = TestClient(app)
         classification = {
             "item": "Battery",
@@ -139,11 +134,172 @@ class PredictRouteTests(unittest.TestCase):
                 "county": "Wake County",
                 "state": "North Carolina",
                 "country": "United States",
-                "waste_provider": "City of Raleigh Solid Waste",
             },
         )
         self.assertNotIn("latitude", passed_classification["location"])
         self.assertNotIn("longitude", passed_classification["location"])
+
+    def test_predict_adds_confirmed_provider_including_regional_confirmation_to_guidance(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Battery", "category": "Battery", "status": "confident", "candidates": []
+        }
+        provider = {
+            # Stage 1 persists exact, regional, and unknown user confirmations
+            # identically as verified rows scoped to the app location.
+            "canonical_name": "Red Oak Sanitation",
+            "status": "verified",
+            "city": "Ball Ground",
+            "county": "Forsyth County",
+            "state": "Georgia",
+            "evidence_urls": [
+                "https://www.google.com/search?q=red+oak",
+                "https://www.redoaksanitation.com/recycling",
+            ],
+        }
+        with (
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan", return_value=None),
+            patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
+            patch("routes.predict.build_prediction_response", return_value={"item": "Battery"}) as mock_guidance,
+            patch("routes.predict.service_provider_repository.current_provider", return_value=provider) as mock_current,
+        ):
+            response = client.post(
+                "/predict",
+                data={
+                    "selected_item": "Battery",
+                    "city": "Ball Ground",
+                    "county": "Forsyth County",
+                    "state": "Georgia",
+                    "waste_provider": "Untrusted Client Provider",
+                },
+                headers={"X-GreenBin-Client-Id": "installation-123"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("provider_context_used", response.json())
+        self.assertNotIn("canonical_provider", response.json())
+        mock_current.assert_called_once_with(
+            client_id_hash=hashlib.sha256(b"installation-123").hexdigest(),
+            city="Ball Ground",
+            county="Forsyth County",
+            state="Georgia",
+        )
+        self.assertEqual(
+            mock_guidance.call_args.args[0]["location"]["waste_provider"],
+            "Red Oak Sanitation",
+        )
+        self.assertEqual(
+            mock_guidance.call_args.args[0]["location"]["provider_official_domain"],
+            "redoaksanitation.com",
+        )
+        self.assertNotIn("Untrusted Client Provider", str(mock_guidance.call_args))
+
+    def test_predict_provider_lookup_failure_falls_back_without_provider(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Battery", "category": "Battery", "status": "confident", "candidates": []
+        }
+        with (
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan", return_value=None),
+            patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
+            patch("routes.predict.build_prediction_response", return_value={"item": "Battery"}) as mock_guidance,
+            patch(
+                "routes.predict.service_provider_repository.current_provider",
+                side_effect=RuntimeError("database unavailable"),
+            ),
+        ):
+            response = client.post(
+                "/predict",
+                data={"selected_item": "Battery", "city": "Seattle", "state": "Washington"},
+                headers={"X-GreenBin-Client-Id": "installation-123"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("waste_provider", mock_guidance.call_args.args[0]["location"])
+
+    def test_predict_unverified_provider_is_not_used(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Battery", "category": "Battery", "status": "confident", "candidates": []
+        }
+        with (
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan", return_value=None),
+            patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
+            patch("routes.predict.build_prediction_response", return_value={"item": "Battery"}) as mock_guidance,
+            patch(
+                "routes.predict.service_provider_repository.current_provider",
+                return_value={
+                    "canonical_name": "Maybe Waste",
+                    "status": "uncertain",
+                    "city": "Seattle",
+                    "county": None,
+                    "state": "Washington",
+                },
+            ),
+        ):
+            response = client.post(
+                "/predict",
+                data={"selected_item": "Battery", "city": "Seattle", "state": "Washington"},
+                headers={"X-GreenBin-Client-Id": "installation-123"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("waste_provider", mock_guidance.call_args.args[0]["location"])
+
+    def test_forsyth_predict_uses_standard_tavily_pipeline(self):
+        client = TestClient(app)
+        classification = {
+            "item": "Laptop",
+            "category": "Electronics",
+            "status": "confident",
+            "candidates": [],
+        }
+        tavily_outcome = {
+            "status": "tavily_insufficient_evidence",
+            "called": True,
+            "call_count": 1,
+            "result_count": 0,
+            "trusted_source_count": 0,
+            "retrieval_results": [],
+            "sources": [],
+        }
+        with (
+            patch("routes.predict.scan_rate_limit_service.check_scan_limits"),
+            patch("routes.predict.scan_rate_limit_service.consume_scan", return_value=None),
+            patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
+            patch("routes.predict.service_provider_repository.current_provider", return_value=None),
+            patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
+                return_value=tavily_outcome,
+            ) as mock_tavily,
+            patch(
+                "services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks",
+                return_value=[],
+            ),
+            patch(
+                "services.guidance_service.guidance_llm_service.try_generate_general_safe_guidance",
+                return_value={"guidance": None, "failure_reason": "llm_disabled"},
+            ),
+        ):
+            response = client.post(
+                "/predict",
+                data={
+                    "selected_item": "Laptop",
+                    "city": "Cumming",
+                    "county": "Forsyth County",
+                    "state": "Georgia",
+                    "jurisdiction_id": "forsyth_county_ga",
+                },
+                headers={"X-GreenBin-Client-Id": "installation-123"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_tavily.assert_called_once()
+        self.assertNotIn("local_guidance", response.json())
+        self.assertEqual(response.json()["guidance_metadata"]["tavily_call_count"], 1)
 
     def test_predict_success_includes_scan_limit_metadata_when_available(self):
         client = TestClient(app)
@@ -285,7 +441,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertIn("stage=guidance", combined)
         self.assertIn("stage=total", combined)
 
-    def test_predict_returns_request_id_and_stores_trusted_original_context(self):
+    def test_predict_returns_request_id_without_feedback_storage_dependency(self):
         client = TestClient(app)
         classification = {
             "item": "Calculator",
@@ -303,10 +459,6 @@ class PredictRouteTests(unittest.TestCase):
                 "routes.predict.build_prediction_response",
                 return_value={"item": "Calculator"},
             ),
-            patch(
-                "routes.predict.feedback_context_service.store_prediction_context",
-                return_value=True,
-            ) as mock_store,
         ):
             response = client.post(
                 "/predict",
@@ -316,11 +468,8 @@ class PredictRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["request_id"], "mobile-original-1")
-        kwargs = mock_store.call_args.kwargs
-        self.assertEqual(kwargs["request_id"], "mobile-original-1")
-        self.assertIsNone(kwargs["original_request_id"])
 
-    def test_correction_request_links_original_context(self):
+    def test_original_request_header_does_not_change_prediction_contract(self):
         client = TestClient(app)
         classification = {
             "item": "Metal Cup",
@@ -338,10 +487,6 @@ class PredictRouteTests(unittest.TestCase):
                 "routes.predict.build_prediction_response",
                 return_value={"item": "Metal Cup"},
             ),
-            patch(
-                "routes.predict.feedback_context_service.store_prediction_context",
-                return_value=True,
-            ) as mock_store,
         ):
             response = client.post(
                 "/predict",
@@ -353,10 +498,7 @@ class PredictRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        kwargs = mock_store.call_args.kwargs
-        self.assertEqual(kwargs["request_id"], "mobile-correction-2")
-        self.assertEqual(kwargs["original_request_id"], "mobile-original-1")
-        self.assertEqual(kwargs["selected_item"], "Metal Cup")
+        self.assertEqual(response.json()["request_id"], "mobile-correction-2")
 
     def test_predict_preserves_existing_shape_and_includes_cache_metadata(self):
         client = TestClient(app)
@@ -505,8 +647,8 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(payload["status"], "confident")
         self.assertEqual(payload["disposal_action"], "check local guidance")
         self.assertEqual(payload["guidance_source"], "safe_fallback")
-        self.assertIn("verified local guidance is unavailable", payload["summary"].casefold())
-        self.assertIn("trash", " ".join(payload["steps"]).casefold())
+        self.assertIn("not enough information", payload["summary"].casefold())
+        self.assertIn("waste provider", " ".join(payload["steps"]).casefold())
         self.assertNotIn(payload["disposal_action"], {"recycle", "donate/reuse"})
         self.assertEqual(
             payload["recognition_details"]["normalized"],
@@ -867,7 +1009,7 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["guidance_source"], "safe_fallback")
         self.assertEqual(response.json()["disposal_action"], "check local guidance")
-        self.assertIn("Verified local guidance is unavailable", response.json()["summary"])
+        self.assertIn("special disposal route", response.json()["summary"])
 
     def test_predict_unknown_open_result_stays_safe(self):
         client = TestClient(app)

@@ -13,6 +13,14 @@ jest.mock('../api/client', () => ({
   sendScanFeedback: jest.fn().mockResolvedValue({ recorded: true, request_id: 'request-1' }),
 }));
 
+beforeEach(() => {
+  jest.mocked(sendScanFeedback).mockReset();
+  jest.mocked(sendScanFeedback).mockResolvedValue({
+    recorded: true,
+    request_id: 'request-1',
+  });
+});
+
 const presentation: ResultSheetPresentation = {
   action: 'Drop off',
   bestOption: 'Take this item to River County Device Recovery for local drop-off.',
@@ -326,6 +334,40 @@ test('a failed negative submission keeps the dialog selections and details', asy
   expect(view.getByLabelText('Feedback details').props.value).toBe('Missing preparation advice.');
   expect(view.getByRole('button', { name: 'Missing important information' }).props.accessibilityState)
     .toMatchObject({ selected: true });
+});
+
+test('feedback ignores repeated taps while a request is in flight and preserves success state', async () => {
+  let resolveSubmission: (() => void) | undefined;
+  jest.mocked(sendScanFeedback).mockImplementationOnce(
+    () => new Promise((resolve) => {
+      resolveSubmission = () => resolve({ recorded: true, request_id: 'request-1' });
+    }),
+  );
+  const { view } = await renderScreen();
+  const thumbsUp = view.getByRole('button', { name: 'Thumbs Up' });
+
+  await fireEvent.press(thumbsUp);
+  await fireEvent.press(thumbsUp);
+
+  expect(sendScanFeedback).toHaveBeenCalledTimes(1);
+  expect(view.getByRole('button', { name: 'Thumbs Down' }).props.accessibilityState)
+    .toMatchObject({ disabled: true });
+  await act(async () => resolveSubmission?.());
+  await waitFor(() => {
+    expect(view.getByRole('button', { name: 'Thumbs Up' }).props.accessibilityState)
+      .toMatchObject({ selected: true });
+  });
+});
+
+test('missing feedback request ID shows a short retryable message without sending', async () => {
+  const view = await render(
+    <ResultFeedback presentation={presentation} requestId={null} />,
+  );
+
+  await fireEvent.press(view.getByRole('button', { name: 'Thumbs Up' }));
+
+  expect(view.getByRole('alert')).toHaveTextContent(/Feedback isn’t available for this scan/);
+  expect(sendScanFeedback).not.toHaveBeenCalled();
 });
 
 test('instruction primary actions scroll without changing Nearby behavior', async () => {

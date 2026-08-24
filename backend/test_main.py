@@ -20,6 +20,35 @@ class MaterialLabelsEndpointTests(unittest.TestCase):
 
 
 class NearbyLocationsEndpointTests(unittest.TestCase):
+    def test_legacy_local_rule_parameters_are_accepted_but_do_not_filter_results(self):
+        client = TestClient(app)
+        resolution = {
+            "material_id": 20,
+            "resolved_material_label": "Laptop",
+            "search_skipped": False,
+        }
+        locations = [
+            {"id": "tolbert", "name": "Tolbert Street Center"},
+            {"id": "other", "name": "Another Electronics Site"},
+        ]
+        with (
+            patch("main.resolve_earth911_material", return_value=resolution),
+            patch("main._search_locations_for_material", return_value=locations),
+        ):
+            response = client.get(
+                "/nearby_locations",
+                params={
+                    "item": "Laptop",
+                    "lat": 34.2,
+                    "lon": -84.1,
+                    "jurisdiction_id": "forsyth_county_ga",
+                    "local_rule_id": "fc_electronics",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["locations"], locations)
+
     def test_nearby_locations_uses_resolved_supported_material(self):
         client = TestClient(app)
         resolution = {

@@ -11,17 +11,11 @@ from supabase import Client, create_client
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 _SUPABASE_CLIENT: Client | None = None
-_TABLE_NAME = "closed_test_feedback"
-_CORRECTION_TABLE_NAME = "closed_test_correction_context"
-_SCAN_FEEDBACK_TABLE_NAME = "scan_feedback"
+_TABLE_NAME = "scan_feedback"
 logger = logging.getLogger(__name__)
 
 
 class FeedbackRepositoryUnavailable(RuntimeError):
-    pass
-
-
-class FeedbackContextNotFound(RuntimeError):
     pass
 
 
@@ -35,14 +29,14 @@ def _get_supabase_client() -> Client | None:
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
     if not supabase_url or not supabase_key:
         logger.info(
-            "Closed-test feedback storage unavailable because service-role credentials are missing."
+            "Scan feedback storage unavailable because service-role credentials are missing."
         )
         return None
 
     try:
         _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
     except Exception as exc:
-        logger.warning("Failed to create closed-test feedback client: %s", exc)
+        logger.warning("Failed to create scan feedback client: %s", type(exc).__name__)
         return None
     return _SUPABASE_CLIENT
 
@@ -50,7 +44,7 @@ def _get_supabase_client() -> Client | None:
 def _require_client() -> Client:
     client = _get_supabase_client()
     if client is None:
-        raise FeedbackRepositoryUnavailable("Closed-test feedback storage is unavailable.")
+        raise FeedbackRepositoryUnavailable("Scan feedback storage is unavailable.")
     return client
 
 
@@ -62,134 +56,12 @@ def _first_row(response: Any) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def store_original_context(payload: dict[str, Any]) -> bool:
-    try:
-        response = (
-            _require_client()
-            .table(_TABLE_NAME)
-            .upsert(payload, on_conflict="request_id")
-            .execute()
-        )
-    except Exception as exc:
-        logger.warning(
-            "Closed-test prediction context was not stored. request_id=%s error_type=%s",
-            payload.get("request_id"),
-            type(exc).__name__,
-        )
-        return False
-    return _first_row(response) is not None
-
-
-def attach_correction_context(
-    *,
-    original_request_id: str,
-    correction_request_id: str,
-    corrected_item: str,
-    guidance_context: dict[str, Any],
-) -> bool:
-    correction_payload = {
-        "request_id": correction_request_id,
-        "original_request_id": original_request_id,
-        "corrected_item": corrected_item,
-        **guidance_context,
-    }
-    try:
-        response = (
-            _require_client()
-            .table(_CORRECTION_TABLE_NAME)
-            .upsert(correction_payload, on_conflict="request_id")
-            .execute()
-        )
-    except Exception as exc:
-        logger.warning(
-            "Closed-test correction context was not linked. request_id=%s correction_request_id=%s error_type=%s",
-            original_request_id,
-            correction_request_id,
-            type(exc).__name__,
-        )
-        return False
-    return _first_row(response) is not None
-
-
-def get_correction_context(
-    *, original_request_id: str, correction_request_id: str
-) -> dict[str, Any]:
-    try:
-        response = (
-            _require_client()
-            .table(_CORRECTION_TABLE_NAME)
-            .select("*")
-            .eq("request_id", correction_request_id)
-            .eq("original_request_id", original_request_id)
-            .limit(1)
-            .execute()
-        )
-    except FeedbackRepositoryUnavailable:
-        raise
-    except Exception as exc:
-        raise FeedbackRepositoryUnavailable(
-            f"Could not read closed-test correction context: {exc}"
-        ) from exc
-    row = _first_row(response)
-    if row is None:
-        raise FeedbackContextNotFound(correction_request_id)
-    return row
-
-
-def get_feedback_context(request_id: str) -> dict[str, Any]:
-    try:
-        response = (
-            _require_client()
-            .table(_TABLE_NAME)
-            .select("*")
-            .eq("request_id", request_id)
-            .limit(1)
-            .execute()
-        )
-    except FeedbackRepositoryUnavailable:
-        raise
-    except Exception as exc:
-        raise FeedbackRepositoryUnavailable(
-            f"Could not read closed-test feedback context: {exc}"
-        ) from exc
-
-    row = _first_row(response)
-    if row is None:
-        raise FeedbackContextNotFound(request_id)
-    return row
-
-
-def update_user_feedback(
-    request_id: str,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    try:
-        response = (
-            _require_client()
-            .table(_TABLE_NAME)
-            .update(payload)
-            .eq("request_id", request_id)
-            .execute()
-        )
-    except FeedbackRepositoryUnavailable:
-        raise
-    except Exception as exc:
-        raise FeedbackRepositoryUnavailable(
-            f"Could not update closed-test feedback: {exc}"
-        ) from exc
-
-    row = _first_row(response)
-    if row is None:
-        raise FeedbackContextNotFound(request_id)
-    return row
-
-
 def upsert_scan_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     """Store result-sheet feedback with the server-side Supabase client."""
     try:
         response = (
             _require_client()
-            .table(_SCAN_FEEDBACK_TABLE_NAME)
+            .table(_TABLE_NAME)
             .upsert(payload, on_conflict="request_id")
             .execute()
         )

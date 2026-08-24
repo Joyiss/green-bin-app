@@ -7,7 +7,7 @@ import {
 
 const result = {
   status: 'verified', name: 'City Sanitation', services: ['Residential recycling'],
-  match: 'confirmed', reason: 'The provider serves this location.',
+  match: 'confirmed', location_match: 'exact', reason: 'The provider serves this location.',
   evidence: [{ title: 'Provider page', url: 'https://provider.example/service', snippet: 'Residential curbside collection.' }],
 };
 
@@ -20,6 +20,13 @@ describe('provider API contracts', () => {
 
   it('rejects status and match mismatches', () => {
     expect(() => normalizeProviderVerificationResult({ ...result, match: 'uncertain' }))
+      .toThrow(ApiContractError);
+  });
+
+  it('requires Gemini location_match without inferring it from reason text', () => {
+    const { location_match: _locationMatch, ...missing } = result;
+    expect(() => normalizeProviderVerificationResult(missing)).toThrow(ApiContractError);
+    expect(() => normalizeProviderVerificationResult({ ...result, location_match: 'nearby' }))
       .toThrow(ApiContractError);
   });
 

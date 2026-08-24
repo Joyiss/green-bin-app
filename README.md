@@ -80,7 +80,7 @@ From the **repository root** (`green-bin-app/`):
 
 5. Apply `backend/migrations/004_tavily_search_budget.sql` before enabling Tavily local guidance. Its atomic RPC enforces the daily and monthly limits across concurrent backend instances and stores no user or request data.
 
-6. For closed-testing feedback, apply `backend/migrations/003_closed_test_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review and the documented manual 90-day cleanup query are in `backend/queries/closed_test_feedback_review.sql`.
+6. For closed-testing feedback, apply `backend/migrations/005_scan_feedback.sql` in Supabase before enabling testers. The table has RLS enabled and grants access only to the service role. Review queries are in `backend/queries/scan_feedback_review.sql`.
 
 The prediction endpoint still sends uploaded images to Cloudflare Workers AI. Only text generation moved to Gemini.
 

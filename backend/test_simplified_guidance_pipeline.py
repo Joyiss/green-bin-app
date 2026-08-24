@@ -141,33 +141,31 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             all(item["value"] == "unknown" for item in payload["visual_observations"])
         )
 
-    def test_incomplete_manual_rule_does_not_block_tavily(self):
-        incomplete = {
-            "status": "applicable",
-            "rules_version": "test",
-            "can_skip_tavily": False,
-            "retrieval_results": [],
-            "guidance": {
-                "local_guidance": {"rule_id": "incomplete"},
-                "guidance_metadata": {
-                    "jurisdiction_id": "forsyth_county_ga",
-                    "applicable_local_rule_ids": ["incomplete"],
-                    "local_rule_applicability": "applicable",
-                },
-            },
-        }
+    def test_forsyth_has_no_manual_skip_and_reaches_tavily_with_provider_context(self):
+        classification = _classification(
+            location={
+                "city": "Cumming",
+                "county": "Forsyth County",
+                "state": "Georgia",
+                "waste_provider": "Red Oak Sanitation",
+            }
+        )
         with (
-            patch("services.guidance_service.local_guidance_matcher.match_local_guidance", return_value=incomplete),
             patch("services.guidance_service.tavily_local_guidance_service.search_local_guidance", return_value=_outcome()) as search,
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch.dict(os.environ, {"ENABLE_LLM_GUIDANCE": "false"}, clear=False),
         ):
-            guidance_service.build_prediction_response(
-                _classification(location={"city": "Cumming", "state": "Georgia"}),
+            response = guidance_service.build_prediction_response(
+                classification,
                 jurisdiction_id="forsyth_county_ga",
             )
 
-        search.assert_called_once()
+        search.assert_called_once_with(
+            classification,
+            clarification_required=False,
+        )
+        self.assertNotIn("local_guidance", response)
+        self.assertNotIn("applicable_local_rule_ids", response["guidance_metadata"])
 
     def test_official_city_county_and_state_sources_are_classified(self):
         cases = (
@@ -313,7 +311,6 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
         }
         with (
             self._llm_env(),
-            patch("services.guidance_service.local_guidance_matcher.match_local_guidance", return_value={"status": "no_match"}),
             patch("services.guidance_service.tavily_local_guidance_service.search_local_guidance", return_value=_outcome()),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[result]),
             patch("services.guidance_service.guidance_cache_service.get_cached_source_grounded_guidance", return_value=None),
@@ -350,26 +347,32 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
             "Official disposal guidance applies.",
         )
 
-    def test_llm_failure_preserves_manual_local_evidence(self):
+    def test_forsyth_tavily_failure_reaches_existing_safe_fallback(self):
         with (
             self._llm_env(),
+            patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
+                return_value=_outcome("tavily_error"),
+            ),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
-            patch("services.guidance_service.guidance_cache_service.build_source_grounded_cache_context", return_value=None),
             patch(
                 "services.guidance_llm_service._text_llm_request",
                 side_effect=GeminiTextError("timeout", "timed out"),
             ),
         ):
             response = guidance_service.build_prediction_response(
-                _classification("Laptop", normalized={"disposal_category": "Electronics"}),
+                _classification(
+                    "Laptop",
+                    normalized={"disposal_category": "Electronics"},
+                    location={"city": "Cumming", "county": "Forsyth County", "state": "Georgia"},
+                ),
                 jurisdiction_id="forsyth_county_ga",
             )
 
         self.assertEqual(response["guidance_source"], "safe_fallback")
-        self.assertEqual(response["local_guidance"]["rule_id"], "fc_electronics")
-        self.assertTrue(response["guidance_metadata"]["source_urls"])
-        self.assertEqual(response["guidance_metadata"]["local_evidence_status"], "accepted")
-        self.assertEqual(response["guidance_metadata"]["guidance_generation_status"], "failed")
+        self.assertEqual(response["guidance_metadata"]["fallback_reason"], "timeout")
+        self.assertTrue(response["guidance_metadata"]["tavily_called"])
+        self.assertNotIn("local_guidance", response)
 
     def test_verified_local_requires_applicable_local_evidence(self):
         federal = _chunk(requires_location_check=True)
@@ -386,7 +389,6 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
         }
         with (
             self._llm_env(),
-            patch("services.guidance_service.local_guidance_matcher.match_local_guidance", return_value={"status": "no_match"}),
             patch("services.guidance_service.tavily_local_guidance_service.search_local_guidance", return_value=_outcome("tavily_official_supporting", [federal])),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
             patch("services.guidance_llm_service._text_llm_request", return_value=json.dumps(federal_payload)),
@@ -397,14 +399,22 @@ class SimplifiedGuidancePipelineTests(unittest.TestCase):
         self.assertNotEqual(response["impact_level"], "Verified Local Guidance")
 
         local_payload = dict(federal_payload)
+        local = _chunk(local=True)
         with (
             self._llm_env(),
+            patch(
+                "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
+                return_value=_outcome("tavily_verified_local", [local]),
+            ),
             patch("services.guidance_service.guidance_retrieval_service.retrieve_guidance_chunks", return_value=[]),
-            patch("services.guidance_service.guidance_cache_service.build_source_grounded_cache_context", return_value=None),
             patch("services.guidance_llm_service._text_llm_request", return_value=json.dumps(local_payload)),
         ):
             local_response = guidance_service.build_prediction_response(
-                _classification("Laptop", normalized={"disposal_category": "Electronics"}),
+                _classification(
+                    "Laptop",
+                    normalized={"disposal_category": "Electronics"},
+                    location={"city": "Cumming", "county": "Forsyth County", "state": "Georgia"},
+                ),
                 jurisdiction_id="forsyth_county_ga",
             )
         self.assertEqual(local_response["impact_level"], "Verified Local Guidance")

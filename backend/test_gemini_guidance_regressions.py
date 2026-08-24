@@ -246,10 +246,6 @@ class GeminiGuidanceRegressionTests(unittest.TestCase):
         }
         with (
             patch(
-                "services.guidance_service.local_guidance_matcher.match_local_guidance",
-                return_value={"status": "no_match"},
-            ),
-            patch(
                 "services.guidance_service.tavily_local_guidance_service.search_local_guidance",
                 return_value=tavily_outcome,
             ),

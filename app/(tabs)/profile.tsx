@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState, type ComponentProps } from 'react';
+import { useCallback, useRef, useState, type ComponentProps } from 'react';
 import {
   Alert,
   Linking,
@@ -31,16 +31,11 @@ import {
 } from '@/api/client';
 import {
   normalizeProviderCooldownError,
+  type ProviderRestriction,
   type ProviderVerificationResult,
   type ServiceProviderRecord,
 } from '@/api/contracts';
 import { ApiError, getApiErrorMessage } from '@/api/request';
-import {
-  AnimatedDisclosure,
-  MOTION_DURATION_BASE,
-  MOTION_EASING,
-  useReducedMotionPreference,
-} from '@/components/animated-interactions';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import {
   cloneCurbsideDraft,
@@ -48,13 +43,7 @@ import {
   EMPTY_CURBSIDE_DRAFT,
   type CurbsideDraft,
 } from '@/components/curbside-service-sheet';
-import { LocationTestingSection } from '@/components/location-testing-section';
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
 import {
   DEFAULT_DAILY_SCAN_LIMIT,
   DEFAULT_MONTHLY_SCAN_LIMIT,
@@ -76,10 +65,7 @@ const FEEDBACK_BODY = [
   'Device/app notes:',
 ].join('\n');
 
-type DropoffDistanceMiles = 5 | 10 | 25 | 50;
-
 type SettingsRowProps = {
-  chevronExpanded?: boolean;
   icon: ComponentProps<typeof Ionicons>['name'];
   label: string;
   onPress?: () => void;
@@ -87,7 +73,6 @@ type SettingsRowProps = {
   value: string;
 };
 
-const DROPOFF_DISTANCES: DropoffDistanceMiles[] = [5, 10, 25, 50];
 const RESET_TIMING_PLACEHOLDER =
   'Reset timing available after your next accepted scan.';
 
@@ -113,21 +98,6 @@ function normalizedProviderName(value: string) {
 
 function providerLocationLabel(location: ProviderLocationRequest | null) {
   return location ? [location.city, location.county, location.state].filter(Boolean).join(', ') : null;
-}
-
-function resultFromProvider(provider: ServiceProviderRecord): ProviderVerificationResult {
-  return {
-    status: 'verified',
-    name: provider.canonical_name,
-    services: provider.services,
-    match: 'confirmed',
-    reason: 'This provider was previously verified and confirmed for your current location.',
-    evidence: provider.evidence_urls.map((url) => ({
-      title: new URL(url).hostname,
-      url,
-      snippet: 'Previously verified provider evidence.',
-    })),
-  };
 }
 
 async function resolveProfileProviderLocation(): Promise<ProviderLocationRequest | null> {
@@ -183,32 +153,7 @@ export function formatResetTiming(resetAt: string | null) {
   }).format(resetDate)}`;
 }
 
-function DistanceChevron({ expanded }: { expanded: boolean }) {
-  const reducedMotion = useReducedMotionPreference();
-  const progress = useSharedValue(expanded ? 1 : 0);
-
-  useEffect(() => {
-    progress.value = reducedMotion
-      ? expanded ? 1 : 0
-      : withTiming(expanded ? 1 : 0, {
-          duration: MOTION_DURATION_BASE,
-          easing: MOTION_EASING,
-        });
-  }, [expanded, progress, reducedMotion]);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${progress.value * 90}deg` }],
-  }));
-
-  return (
-    <Animated.View style={!reducedMotion && animatedStyle}>
-      <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
-    </Animated.View>
-  );
-}
-
 function SettingsRow({
-  chevronExpanded,
   icon,
   label,
   onPress,
@@ -225,11 +170,7 @@ function SettingsRow({
         <Text numberOfLines={1} style={styles.settingsValue}>{value}</Text>
       </View>
       {onPress ? (
-        chevronExpanded === undefined ? (
-          <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
-        ) : (
-          <DistanceChevron expanded={chevronExpanded} />
-        )
+        <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
       ) : null}
     </>
   );
@@ -293,8 +234,6 @@ export default function ProfileScreen() {
     DEFAULT_SCAN_USAGE_DISPLAY_STATE,
   );
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [dropoffDistance, setDropoffDistance] = useState<DropoffDistanceMiles>(10);
-  const [distanceMenuOpen, setDistanceMenuOpen] = useState(false);
   const [curbsideSheetVisible, setCurbsideSheetVisible] = useState(false);
   const [savedCurbsideDraft, setSavedCurbsideDraft] = useState<CurbsideDraft | null>(null);
   const [workingCurbsideDraft, setWorkingCurbsideDraft] = useState<CurbsideDraft>(
@@ -302,12 +241,14 @@ export default function ProfileScreen() {
   );
   const [providerLocation, setProviderLocation] = useState<ProviderLocationRequest | null>(null);
   const [savedProvider, setSavedProvider] = useState<ServiceProviderRecord | null>(null);
+  const [providerRestriction, setProviderRestriction] = useState<ProviderRestriction | null>(null);
   const [providerResult, setProviderResult] = useState<ProviderVerificationResult | null>(null);
   const [providerStatus, setProviderStatus] = useState<'idle' | 'loading' | 'verified' | 'not_verified' | 'uncertain' | 'cooldown' | 'failure'>('idle');
   const [providerError, setProviderError] = useState<string | null>(null);
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState(false);
-  const appVersion = Constants.expoConfig?.version ?? 'Version unavailable (placeholder)';
+  const providerConfirmingRef = useRef(false);
+  const appVersion = Constants.expoConfig?.version ?? 'Unavailable';
 
   useFocusEffect(
     useCallback(() => {
@@ -347,11 +288,12 @@ export default function ProfileScreen() {
           const response = await fetchCurrentProvider(location, clientId, controller.signal);
           if (!isActive) return;
           setSavedProvider(response.provider);
+          setProviderRestriction(response.restriction);
           if (response.provider) {
             const draft = { ...EMPTY_CURBSIDE_DRAFT, providerName: response.provider.raw_input_name };
             setSavedCurbsideDraft(draft);
             setWorkingCurbsideDraft(cloneCurbsideDraft(draft));
-            setProviderResult(resultFromProvider(response.provider));
+            setProviderResult(null);
             setProviderStatus('verified');
           } else {
             setSavedCurbsideDraft(null);
@@ -361,6 +303,7 @@ export default function ProfileScreen() {
         } catch {
           if (!isActive) return;
           setSavedProvider(null);
+          setProviderRestriction(null);
           setProviderStatus('failure');
           setProviderError('Could not load the provider for this location. You can try again by reopening Profile.');
         }
@@ -411,12 +354,11 @@ export default function ProfileScreen() {
   }, []);
 
   const openCurbsideSheet = useCallback(() => {
-    setDistanceMenuOpen(false);
     setWorkingCurbsideDraft(
       cloneCurbsideDraft(savedCurbsideDraft ?? EMPTY_CURBSIDE_DRAFT),
     );
     if (savedProvider) {
-      setProviderResult(resultFromProvider(savedProvider));
+      setProviderResult(null);
       setProviderStatus('verified');
     } else if (providerLocation) {
       setProviderResult(null);
@@ -440,7 +382,7 @@ export default function ProfileScreen() {
         normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
         normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
       );
-      setProviderResult(stillConfirmed ? resultFromProvider(savedProvider) : null);
+      setProviderResult(null);
       setProviderStatus(stillConfirmed ? 'verified' : 'idle');
       setVerificationId(null);
       setProviderError(null);
@@ -495,41 +437,77 @@ export default function ProfileScreen() {
     }
   }, [providerLocation, workingCurbsideDraft.providerName]);
 
-  const saveCurbsideSheet = useCallback(async (draft: CurbsideDraft) => {
-    if (!draft.providerName.trim() || providerStatus !== 'verified' || !providerLocation) return false;
-    const existingMatch = savedProvider && (
-      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
-      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
-    );
+  const confirmPendingProvider = useCallback(async () => {
+    const rawName = workingCurbsideDraft.providerName.trim();
+    if (
+      providerConfirmingRef.current ||
+      !rawName ||
+      !verificationId ||
+      !providerLocation ||
+      providerStatus !== 'verified'
+    ) {
+      return false;
+    }
+    providerConfirmingRef.current = true;
     setProviderSaving(true);
     try {
-      let confirmedProvider = savedProvider;
-      if (!existingMatch) {
-        if (!verificationId) return false;
-        const clientId = await getInstallationId();
-        confirmedProvider = (await confirmServiceProvider(
-          verificationId, draft.providerName.trim(), clientId,
-        )).provider;
-      }
-      const nextDraft = cloneCurbsideDraft(draft);
+      const clientId = await getInstallationId();
+      const confirmedProvider = (await confirmServiceProvider(
+        verificationId, rawName, clientId,
+      )).provider;
+      const nextDraft = cloneCurbsideDraft(workingCurbsideDraft);
+      const verifiedAt = Date.parse(confirmedProvider.verified_at);
       setSavedProvider(confirmedProvider);
       setSavedCurbsideDraft(nextDraft);
       setWorkingCurbsideDraft(nextDraft);
-      setCurbsideSheetVisible(false);
+      setProviderResult(null);
+      setVerificationId(null);
+      setProviderStatus('verified');
+      setProviderError(null);
+      setProviderRestriction({
+        reason: 'successful_confirmation',
+        retry_at: new Date(verifiedAt + 24 * 60 * 60 * 1000).toISOString(),
+      });
       return true;
     } catch (error) {
       const cooldown = error instanceof ApiError ? normalizeProviderCooldownError(error.body) : null;
       const message = cooldown
         ? `This provider cannot be changed until ${new Date(cooldown.retry_at).toLocaleString()}.`
         : 'Green Bin could not save this provider. Please try again.';
+      if (cooldown) setProviderRestriction(cooldown);
       setProviderStatus(cooldown ? 'cooldown' : 'failure');
       setProviderError(message);
       Alert.alert('Could not save provider', message);
       return false;
     } finally {
+      providerConfirmingRef.current = false;
       setProviderSaving(false);
     }
-  }, [providerLocation, providerStatus, savedProvider, verificationId]);
+  }, [providerLocation, providerStatus, verificationId, workingCurbsideDraft]);
+
+  const saveCurbsideSheet = useCallback(async (draft: CurbsideDraft) => {
+    if (!draft.providerName.trim() || providerStatus !== 'verified' || !providerLocation) return false;
+    const existingMatch = savedProvider && (
+      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
+      normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
+    );
+    if (!existingMatch) return false;
+    const nextDraft = cloneCurbsideDraft(draft);
+    setSavedCurbsideDraft(nextDraft);
+    setWorkingCurbsideDraft(nextDraft);
+    setCurbsideSheetVisible(false);
+    return true;
+  }, [providerLocation, providerStatus, savedProvider]);
+
+  const providerLocked = Boolean(
+    savedProvider &&
+    providerRestriction?.reason === 'successful_confirmation' &&
+    Date.parse(providerRestriction.retry_at) > Date.now()
+  );
+  const savedProviderMatchesDraft = Boolean(savedProvider && (
+    normalizedProviderName(workingCurbsideDraft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
+    normalizedProviderName(workingCurbsideDraft.providerName) === normalizedProviderName(savedProvider.canonical_name)
+  ));
 
   return (
     <SafeAreaView edges={['top']} style={styles.page}>
@@ -547,7 +525,7 @@ export default function ProfileScreen() {
         }
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.title}>Profile.</Text>
+        <Text style={styles.title}>profile.</Text>
 
         <View style={styles.scanAllowanceCard}>
           <View style={styles.allowanceHeadingRow}>
@@ -584,47 +562,8 @@ export default function ProfileScreen() {
               value={savedCurbsideDraft ? 'Configured' : 'Not configured'}
             />
             <SettingsRow
-              chevronExpanded={distanceMenuOpen}
-              icon="navigate-outline"
-              label="Maximum Drop-off Distance"
-              onPress={() => setDistanceMenuOpen((open) => !open)}
-              value={`${dropoffDistance} miles`}
-            />
-            <AnimatedDisclosure expanded={distanceMenuOpen}>
-              <View accessibilityLabel="Maximum drop-off distance options" style={styles.distanceMenu}>
-                {DROPOFF_DISTANCES.map((distance, index) => {
-                  const selected = dropoffDistance === distance;
-                  return (
-                    <Pressable
-                      accessibilityRole="radio"
-                      accessibilityState={{ checked: selected }}
-                      key={distance}
-                      onPress={() => {
-                        setDropoffDistance(distance);
-                        setDistanceMenuOpen(false);
-                      }}
-                      style={({ pressed }) => [
-                        styles.distanceOption,
-                        index < DROPOFF_DISTANCES.length - 1 && styles.distanceOptionDivider,
-                        pressed && styles.settingsRowPressed,
-                      ]}
-                    >
-                      <Text style={[styles.distanceOptionText, selected && styles.distanceOptionTextSelected]}>
-                        {distance} miles
-                      </Text>
-                      <Ionicons
-                        color={selected ? '#2E6B47' : '#B7B2AC'}
-                        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
-                        size={20}
-                      />
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </AnimatedDisclosure>
-            <SettingsRow
               icon="information-circle-outline"
-              label="About Green Bin & Developer"
+              label="About Green Bin"
               onPress={() => router.push('/about-green-bin')}
               value="Learn more"
             />
@@ -663,22 +602,25 @@ export default function ProfileScreen() {
           </Pressable>
         </View>
 
-        {DEVELOPMENT_LOCATION_TOOLS_ENABLED ? <LocationTestingSection /> : null}
       </ScrollView>
 
       <CurbsideServiceSheet
         draft={workingCurbsideDraft}
         locationLabel={providerLocationLabel(providerLocation)}
         onChange={handleCurbsideDraftChange}
+        onConfirm={confirmPendingProvider}
         onDismiss={dismissCurbsideSheet}
         onSave={saveCurbsideSheet}
         onVerify={() => void handleVerifyProvider()}
         providerError={providerError}
+        providerLocked={providerLocked}
+        providerLockRetryAt={providerLocked ? providerRestriction?.retry_at ?? null : null}
         providerResult={providerResult}
         providerStatus={providerStatus}
         saveDisabled={
           !workingCurbsideDraft.providerName.trim() ||
           providerStatus !== 'verified' ||
+          !savedProviderMatchesDraft ||
           !providerLocation
         }
         saving={providerSaving}
@@ -743,17 +685,6 @@ const styles = StyleSheet.create({
   settingsLabel: { color: '#1D1C1A', fontSize: 14, ...PRIMARY_TEXT_STYLES.label },
   settingsValue: { color: '#827D77', fontSize: 12, ...SECONDARY_TEXT_STYLES.regular },
   settingsDivider: { backgroundColor: '#ECE8E2', height: StyleSheet.hairlineWidth, marginLeft: 70 },
-  distanceMenu: {
-    backgroundColor: '#F7F5F1', borderBottomColor: '#ECE8E2', borderBottomWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#ECE8E2', borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 16, paddingLeft: 70,
-  },
-  distanceOption: {
-    alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', minHeight: 46,
-  },
-  distanceOptionDivider: { borderBottomColor: '#E7E2DB', borderBottomWidth: StyleSheet.hairlineWidth },
-  distanceOptionText: { color: '#5F5A54', fontSize: 13, ...SECONDARY_TEXT_STYLES.semiBold },
-  distanceOptionTextSelected: { color: '#24583A', ...SECONDARY_TEXT_STYLES.extraBold },
   sectionGroup: { gap: 10 },
   sectionLabel: {
     color: '#807B75', fontSize: 10, letterSpacing: 2.8, paddingHorizontal: 4,

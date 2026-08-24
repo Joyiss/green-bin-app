@@ -13,7 +13,7 @@ export default function AboutGreenBinScreen() {
     <SafeAreaView edges={['top']} style={styles.page}>
       <View style={styles.header}>
         <Pressable
-          accessibilityLabel="Close About Green Bin & Developer"
+          accessibilityLabel="Close About Green Bin"
           accessibilityRole="button"
           hitSlop={8}
           onPress={() => router.back()}

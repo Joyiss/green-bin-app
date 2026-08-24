@@ -23,8 +23,8 @@ class Query:
 class ServiceProviderRepositoryTests(unittest.TestCase):
     def test_current_provider_is_hash_scoped_and_location_specific(self):
         query = Query([
-            {"id": "old", "city": "Atlanta", "county": "Fulton", "state": "Georgia"},
-            {"id": "current", "city": "  Seattle ", "county": None, "state": "WASHINGTON"},
+            {"id": "old", "canonical_name": "Old Provider", "status": "verified", "city": "Atlanta", "county": "Fulton", "state": "Georgia"},
+            {"id": "current", "canonical_name": "Current Provider", "status": "verified", "city": "  Seattle ", "county": None, "state": "WASHINGTON"},
         ])
         client = MagicMock()
         client.table.return_value = query
@@ -33,15 +33,30 @@ class ServiceProviderRepositoryTests(unittest.TestCase):
                 client_id_hash="a" * 64, city="seattle", county="", state="washington"
             )
         self.assertEqual(result["id"], "current")
+        client.table.assert_called_once_with("service_providers")
         self.assertIn(("client_id_hash", "a" * 64), query.filters)
+        self.assertIn(("status", "verified"), query.filters)
 
     def test_different_location_returns_none(self):
-        query = Query([{"id": "old", "city": "Atlanta", "county": None, "state": "Georgia"}])
+        query = Query([{"id": "old", "canonical_name": "Old Provider", "status": "verified", "city": "Atlanta", "county": None, "state": "Georgia"}])
         client = MagicMock()
         client.table.return_value = query
         with patch.object(repository, "_client", return_value=client):
             result = repository.current_provider(
                 client_id_hash="b" * 64, city="Seattle", county=None, state="Washington"
+            )
+        self.assertIsNone(result)
+
+    def test_unverified_or_nameless_provider_is_not_current(self):
+        query = Query([
+            {"id": "unverified", "canonical_name": "Maybe Waste", "status": "uncertain", "city": "Seattle", "county": None, "state": "Washington"},
+            {"id": "nameless", "canonical_name": " ", "status": "verified", "city": "Seattle", "county": None, "state": "Washington"},
+        ])
+        client = MagicMock()
+        client.table.return_value = query
+        with patch.object(repository, "_client", return_value=client):
+            result = repository.current_provider(
+                client_id_hash="d" * 64, city="Seattle", county=None, state="Washington"
             )
         self.assertIsNone(result)
 

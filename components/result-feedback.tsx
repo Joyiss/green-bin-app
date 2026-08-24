@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import * as Clipboard from 'expo-clipboard';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -106,6 +106,7 @@ export function ResultFeedback({
   const [savedRating, setSavedRating] = useState<ScanFeedbackRating | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const submittingRef = useRef(false);
   const shareText = useMemo(() => formatResultForSharing(presentation), [presentation]);
   const location = presentation.status.find(
     (row) => row.label.toLocaleLowerCase() === 'location',
@@ -117,12 +118,13 @@ export function ResultFeedback({
     reasons: ScanFeedbackReason[],
     optionalDetails: string,
   ) => {
-    if (disabled || isSubmitting) return;
+    if (disabled || submittingRef.current) return;
     if (!requestId?.trim()) {
-      setFeedbackError('This scan is missing its request ID. Your feedback was not submitted.');
+      setFeedbackError('Feedback isn’t available for this scan. Please rescan and try again.');
       return;
     }
 
+    submittingRef.current = true;
     setSubmittingRating(rating);
     setFeedbackError(null);
     try {
@@ -143,6 +145,7 @@ export function ResultFeedback({
     } catch {
       setFeedbackError('Couldn’t submit feedback. Your selections are still here—please try again.');
     } finally {
+      submittingRef.current = false;
       setSubmittingRating(null);
     }
   };
@@ -351,9 +354,9 @@ const styles = StyleSheet.create({
   action: {
     alignItems: 'center',
     borderRadius: 999,
-    height: 36,
+    height: 44,
     justifyContent: 'center',
-    width: 36,
+    width: 44,
   },
   actionDisabled: { opacity: 0.5 },
   actionPressed: { opacity: 0.68 },
@@ -363,6 +366,7 @@ const styles = StyleSheet.create({
     borderColor: '#DED9D2',
     borderRadius: 999,
     borderWidth: 1,
+    minHeight: 44,
     paddingHorizontal: 12,
     paddingVertical: 9,
   },
@@ -376,7 +380,7 @@ const styles = StyleSheet.create({
   },
   chipTextSelected: { color: '#FFFFFF' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  closeButton: { alignItems: 'center', height: 32, justifyContent: 'center', width: 32 },
+  closeButton: { alignItems: 'center', height: 44, justifyContent: 'center', width: 44 },
   container: {
     alignSelf: 'flex-start',
     flexDirection: 'row',

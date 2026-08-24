@@ -11,7 +11,7 @@ import {
 } from '@/api/contracts';
 import { ApiError, requestJson } from '@/api/request';
 import { API_BASE_URL } from '@/constants/api';
-import type { FeedbackUpdate, ScanFeedbackSubmission } from '@/app/feedback-flow';
+import type { ScanFeedbackSubmission } from '@/app/feedback-flow';
 
 const HEALTH_TIMEOUT_MS = 30_000;
 const PREDICT_TIMEOUT_MS = 90_000;
@@ -98,29 +98,12 @@ export function fetchNearbyLocations(
   });
 }
 
-export function sendFeedback(
-  requestId: string,
-  update: FeedbackUpdate,
-  signal?: AbortSignal,
-) {
-  return requestJson(apiUrl(`/feedback/${encodeURIComponent(requestId)}`), {
-    init: {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(update),
-    },
-    signal,
-    timeoutMs: FEEDBACK_TIMEOUT_MS,
-    validate: (value) => normalizeFeedbackResponse(value, requestId),
-  });
-}
-
 export function sendScanFeedback(
   submission: ScanFeedbackSubmission,
   signal?: AbortSignal,
 ) {
   return requestJson(
-    apiUrl(`/scan-feedback/${encodeURIComponent(submission.request_id)}`),
+    apiUrl(`/feedback/${encodeURIComponent(submission.request_id)}`),
     {
       init: {
         method: 'PUT',
