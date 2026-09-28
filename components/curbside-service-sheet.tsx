@@ -4,6 +4,7 @@ import {
   AccessibilityInfo,
   ActivityIndicator,
   Animated,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   PanResponder,
@@ -60,6 +61,13 @@ const PROVIDER_VERIFY_DELAY_MS = 600;
 const PROVIDER_VERIFY_ANIMATION_MS = 220;
 const PROVIDER_VERIFY_BUTTON_WIDTH = 88;
 const PROVIDER_VERIFY_BUTTON_GAP = 8;
+export const CURBSIDE_KEYBOARD_AVOIDING_BEHAVIOR = 'padding' as const;
+export function shouldEnableCurbsideKeyboardAvoidance(
+  platform: string,
+  keyboardVisible: boolean,
+) {
+  return platform !== 'android' || keyboardVisible;
+}
 // Reusable pickup-day and reminder UI is intentionally preserved for a later
 // release. Closed-testing builds must not expose or activate notifications.
 export const PICKUP_SCHEDULE_AND_NOTIFICATIONS_ENABLED = false;
@@ -151,6 +159,7 @@ export function CurbsideServiceSheet({
   const [providerVerifyVisible, setProviderVerifyVisible] = useState(false);
   const [providerConfirmationVisible, setProviderConfirmationVisible] = useState(false);
   const [providerCooldownVisible, setProviderCooldownVisible] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   const clearProviderVerifyTimer = useCallback(() => {
     if (providerVerifyTimerRef.current !== null) {
@@ -195,8 +204,26 @@ export function CurbsideServiceSheet({
       resetProviderVerification();
       setProviderConfirmationVisible(false);
       setProviderCooldownVisible(false);
+      setKeyboardVisible(false);
     }
   }, [resetProviderVerification, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setKeyboardVisible(Keyboard.isVisible());
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [visible]);
 
   useEffect(() => {
     if (!providerResult) {
@@ -452,7 +479,8 @@ export function CurbsideServiceSheet({
           style={StyleSheet.absoluteFill}
         />
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={CURBSIDE_KEYBOARD_AVOIDING_BEHAVIOR}
+          enabled={shouldEnableCurbsideKeyboardAvoidance(Platform.OS, keyboardVisible)}
           pointerEvents="box-none"
           style={styles.keyboardAvoider}
         >

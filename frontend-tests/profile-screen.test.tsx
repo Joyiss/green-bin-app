@@ -2,6 +2,11 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { AccessibilityInfo, Alert, Linking, StyleSheet } from 'react-native';
 import { ApiError } from '@/api/request';
 
+import {
+  CURBSIDE_KEYBOARD_AVOIDING_BEHAVIOR,
+  shouldEnableCurbsideKeyboardAvoidance,
+} from '@/components/curbside-service-sheet';
+
 const mockPush = jest.fn();
 const mockGetAppLocationContext: jest.Mock = jest.fn(async () => ({
   coordinates: { latitude: 33.7, longitude: -84.4 }, jurisdictionId: null,
@@ -144,6 +149,17 @@ describe('Profile screen redesign', () => {
     expect(screen.queryByText('Pickup reminders')).toBeNull();
     expect(screen.queryByText('Trash pickup day')).toBeNull();
     expect(screen.queryByText('Test Location')).toBeNull();
+  });
+
+  it('moves the curbside sheet above the keyboard on every platform', () => {
+    expect(CURBSIDE_KEYBOARD_AVOIDING_BEHAVIOR).toBe('padding');
+    expect(shouldEnableCurbsideKeyboardAvoidance('android', true)).toBe(true);
+    expect(shouldEnableCurbsideKeyboardAvoidance('ios', true)).toBe(true);
+  });
+
+  it('removes Android keyboard spacing after the keyboard closes', () => {
+    expect(shouldEnableCurbsideKeyboardAvoidance('android', false)).toBe(false);
+    expect(shouldEnableCurbsideKeyboardAvoidance('ios', false)).toBe(true);
   });
 
   it('reuses location without requesting permission and scopes current-provider loading', async () => {
