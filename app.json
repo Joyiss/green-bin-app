@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "backgroundColor": "#F3F1EE",
+    "backgroundColor": "#F8F5F2",
     "scheme": "greenbinapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -27,16 +27,16 @@
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundColor": "#F3F1EE"
+        "backgroundColor": "#F8F5F2"
       }
     },
     "androidNavigationBar": {
-      "backgroundColor": "#00000000",
+      "backgroundColor": "#000000",
       "barStyle": "dark-content",
       "enforceContrast": false
     },
     "androidStatusBar": {
-      "backgroundColor": "#F3F1EE",
+      "backgroundColor": "#F8F5F2",
       "barStyle": "light-content",
       "hidden": false,
       "translucent": true
@@ -50,9 +50,9 @@
       [
         "expo-navigation-bar",
         {
-          "backgroundColor": "#00000000",
+          "backgroundColor": "#000000",
           "barStyle": "dark",
-          "borderColor": "#00000000",
+          "borderColor": "#000000",
           "visibility": "hidden",
           "behavior": "overlay-swipe",
           "position": "absolute"
@@ -82,9 +82,9 @@
         {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#F3F1EE",
+          "backgroundColor": "#F8F5F2",
           "dark": {
-            "backgroundColor": "#F3F1EE"
+            "backgroundColor": "#F8F5F2"
           }
         }
       ],
