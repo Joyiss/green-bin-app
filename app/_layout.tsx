@@ -8,6 +8,7 @@ import { AppState, InteractionManager, Platform } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { captureAppOpened } from '@/analytics';
 import { FONT_SOURCES } from '@/constants/typography';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -66,6 +67,10 @@ export default function RootLayout() {
   const statusBarStyle = isScanScreen ? 'light' : 'dark';
   useAndroidNavigationBar(isScanScreen);
 
+  useEffect(() => {
+    captureAppOpened();
+  }, []);
+
   if (!fontsLoaded && !fontError) {
     return null;
   }
@@ -98,6 +103,7 @@ export default function RootLayout() {
             }}
           />
           <Stack.Screen name="about-green-bin" options={{ headerShown: false }} />
+          <Stack.Screen name="feedback-board" options={{ headerShown: false }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

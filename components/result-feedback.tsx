@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 
+import { captureAnalyticsEvent } from '@/analytics';
 import { sendScanFeedback } from '@/api/client';
 import type {
   ScanFeedbackRating,
@@ -141,6 +142,7 @@ export function ResultFeedback({
       if (rating === 'negative') {
         setDialogVisible(false);
       }
+      captureAnalyticsEvent('scan_feedback_submitted', { rating });
       onFeedbackSuccess?.();
     } catch {
       setFeedbackError('Couldn’t submit feedback. Your selections are still here—please try again.');
@@ -153,6 +155,7 @@ export function ResultFeedback({
   const handleCopy = async () => {
     try {
       await Clipboard.setStringAsync(shareText);
+      captureAnalyticsEvent('guidance_copied');
       setActionMessage('Result copied');
     } catch {
       setActionMessage('Couldn’t copy the result');
@@ -162,6 +165,7 @@ export function ResultFeedback({
   const handleShare = async () => {
     try {
       await Share.share({ message: shareText, title: `${presentation.item} disposal guidance` });
+      captureAnalyticsEvent('guidance_shared');
       setActionMessage(null);
     } catch {
       setActionMessage('Couldn’t open the share menu');

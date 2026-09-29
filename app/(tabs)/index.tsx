@@ -42,6 +42,11 @@ import Reanimated, {
 } from 'react-native-reanimated';
 
 import {
+  captureAnalyticsEvent,
+  type ScanErrorType,
+  type ScanFailureStage,
+} from '@/analytics';
+import {
   BOTTOM_NAV_BAR_HEIGHT,
   BOTTOM_NAV_BAR_MIN_BOTTOM_OFFSET,
   BOTTOM_NAV_BAR_TOTAL_HEIGHT,
@@ -340,6 +345,55 @@ function getNormalizedGuidanceMetadata(
       'location_search_recommended',
     ),
   };
+}
+
+function getScanCompletionProperties(prediction: PredictionResponse, startedAt: number) {
+  const metadata = getNormalizedGuidanceMetadata(prediction);
+  const presentation = buildResultSheetPresentation(prediction);
+
+  return {
+    duration_ms: Math.max(0, Date.now() - startedAt),
+    disposal_category:
+      (getNormalizedRecognitionValue(prediction, 'disposal_category')
+        ?? prediction.category.trim())
+      || 'unknown',
+    local_guidance_available: Boolean(
+      prediction.local_guidance && prediction.local_guidance.applicability !== 'excluded',
+    ),
+    source_count: presentation.references.length,
+    provider_verified: metadata.provider_context_used === true,
+  };
+}
+
+function getScanFailureClassification(error: unknown): {
+  error_type: ScanErrorType;
+  failure_stage: ScanFailureStage;
+} {
+  if (!(error instanceof ApiError)) {
+    return { error_type: 'unknown', failure_stage: 'unknown' };
+  }
+
+  if (error.status === 401 || error.status === 403) {
+    return { error_type: 'permission', failure_stage: 'prediction' };
+  }
+
+  if (error.kind === 'network') {
+    return { error_type: 'network', failure_stage: 'upload' };
+  }
+  if (error.kind === 'timeout') {
+    return { error_type: 'timeout', failure_stage: 'prediction' };
+  }
+  if (error.kind === 'rate_limit') {
+    return { error_type: 'rate_limit', failure_stage: 'prediction' };
+  }
+  if (error.kind === 'invalid_response') {
+    return { error_type: 'invalid_response', failure_stage: 'prediction' };
+  }
+  if (error.kind === 'unavailable' || (error.status !== null && error.status >= 500)) {
+    return { error_type: 'server', failure_stage: 'prediction' };
+  }
+
+  return { error_type: 'unknown', failure_stage: 'unknown' };
 }
 
 function shortenImpactLabel(impactLevel: string | null) {
@@ -1729,6 +1783,9 @@ export default function ScannerScreen() {
     }
 
     const requestSource: PredictionRequestSource = selectedItem ? 'selection' : 'image';
+    const analyticsStartedAt = Date.now();
+    let analyticsSettled = false;
+    captureAnalyticsEvent('scan_started');
     const fallbackCandidates = requestSource === 'selection' ? candidates : [];
     const originalRequestId =
       requestSource === 'selection'
@@ -1859,6 +1916,12 @@ export default function ScannerScreen() {
         return;
       }
 
+      captureAnalyticsEvent(
+        'scan_completed',
+        getScanCompletionProperties(prediction, analyticsStartedAt),
+      );
+      analyticsSettled = true;
+
       await saveScanUsageMetadata(prediction);
       if (!isMountedRef.current || requestId !== predictRequestRef.current) {
         return;
@@ -1870,6 +1933,14 @@ export default function ScannerScreen() {
     } catch (error) {
       if (!isMountedRef.current || requestId !== predictRequestRef.current) {
         return;
+      }
+
+      if (!analyticsSettled) {
+        captureAnalyticsEvent('scan_failed', {
+          duration_ms: Math.max(0, Date.now() - analyticsStartedAt),
+          ...getScanFailureClassification(error),
+        });
+        analyticsSettled = true;
       }
 
       const scanLimit =

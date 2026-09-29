@@ -9,11 +9,18 @@ import { sendScanFeedback } from '../api/client';
 import { ConfidentResultScreen } from '../components/confident-result-screen';
 import { ResultFeedback } from '../components/result-feedback';
 
+const mockCaptureAnalyticsEvent = jest.fn();
+
+jest.mock('@/analytics', () => ({
+  captureAnalyticsEvent: (...args: unknown[]) => mockCaptureAnalyticsEvent(...args),
+}));
+
 jest.mock('../api/client', () => ({
   sendScanFeedback: jest.fn().mockResolvedValue({ recorded: true, request_id: 'request-1' }),
 }));
 
 beforeEach(() => {
+  mockCaptureAnalyticsEvent.mockClear();
   jest.mocked(sendScanFeedback).mockReset();
   jest.mocked(sendScanFeedback).mockResolvedValue({
     recorded: true,
@@ -293,6 +300,8 @@ test('copy includes the complete result and Share opens the native menu', async 
   expect(share).toHaveBeenCalledWith(expect.objectContaining({
     message: expect.stringContaining('River County Device Recovery'),
   }));
+  expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith('guidance_copied');
+  expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith('guidance_shared');
 });
 
 test('thumbs down opens a centered multi-reason feedback dialog', async () => {
@@ -319,6 +328,9 @@ test('thumbs down opens a centered multi-reason feedback dialog', async () => {
     reasons: ['item_identified_incorrectly', 'local_information_inaccurate'],
     request_id: 'request-1',
   }));
+  expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith('scan_feedback_submitted', {
+    rating: 'negative',
+  });
 });
 
 test('a failed negative submission keeps the dialog selections and details', async () => {
@@ -330,6 +342,10 @@ test('a failed negative submission keeps the dialog selections and details', asy
   await fireEvent.press(view.getByRole('button', { name: 'Submit' }));
 
   await waitFor(() => expect(view.getByText(/Your selections are still here/)).toBeTruthy());
+  expect(mockCaptureAnalyticsEvent).not.toHaveBeenCalledWith(
+    'scan_feedback_submitted',
+    expect.anything(),
+  );
   expect(view.getByText('Share feedback')).toBeTruthy();
   expect(view.getByLabelText('Feedback details').props.value).toBe('Missing preparation advice.');
   expect(view.getByRole('button', { name: 'Missing important information' }).props.accessibilityState)
@@ -356,6 +372,10 @@ test('feedback ignores repeated taps while a request is in flight and preserves 
   await waitFor(() => {
     expect(view.getByRole('button', { name: 'Thumbs Up' }).props.accessibilityState)
       .toMatchObject({ selected: true });
+  });
+  expect(mockCaptureAnalyticsEvent).toHaveBeenCalledTimes(1);
+  expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith('scan_feedback_submitted', {
+    rating: 'positive',
   });
 });
 

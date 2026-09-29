@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { captureAnalyticsEvent } from '@/analytics';
 import { BOTTOM_NAV_BAR_HEIGHT } from '@/components/bottom-nav-bar';
 import { LocationCard, type LocationCardProps } from '@/components/location-card';
 import { LocationCardSkeletonList } from '@/components/location-card-skeleton';
@@ -136,6 +137,7 @@ export default function NearbyScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      captureAnalyticsEvent('dropoff_viewed');
       refreshOnFocus((current) => current + 1);
     }, []),
   );
@@ -634,6 +636,7 @@ export default function NearbyScreen() {
               key={location.id}
               {...location}
               onPress={() => {
+                captureAnalyticsEvent('dropoff_location_opened');
                 if (location.directionsUrl) {
                   Linking.openURL(location.directionsUrl).catch(() => {
                     Alert.alert(

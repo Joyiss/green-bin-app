@@ -8,6 +8,7 @@ import {
 } from '@/components/curbside-service-sheet';
 
 const mockPush = jest.fn();
+const mockCaptureAnalyticsEvent = jest.fn();
 const mockGetAppLocationContext: jest.Mock = jest.fn(async () => ({
   coordinates: { latitude: 33.7, longitude: -84.4 }, jurisdictionId: null,
   coarseDisposalLocation: { city: 'Atlanta', county: 'Fulton', state: 'Georgia' },
@@ -37,6 +38,10 @@ const mockGetScanUsageDisplayState = jest.fn(async () => ({
   monthlyLimit: 20,
   monthlyResetAt: '2026-09-01T00:00:00.000Z',
   monthlyScansRemaining: 12,
+}));
+
+jest.mock('@/analytics', () => ({
+  captureAnalyticsEvent: (...args: unknown[]) => mockCaptureAnalyticsEvent(...args),
 }));
 
 jest.mock('expo-router', () => ({
@@ -107,6 +112,7 @@ import ProfileScreen, {
 
 describe('Profile screen redesign', () => {
   beforeEach(() => {
+    mockCaptureAnalyticsEvent.mockClear();
     mockPush.mockClear();
     mockGetScanUsageDisplayState.mockClear();
     mockFetchCurrentProvider.mockClear();
@@ -328,6 +334,10 @@ describe('Profile screen redesign', () => {
     await act(async () => { jest.advanceTimersByTime(600); });
     await fireEvent.press(screen.getByLabelText('Verify provider name'));
     await waitFor(() => expect(screen.getByText('Is this your provider?')).toBeTruthy());
+    expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith(
+      'provider_verification_completed',
+      { outcome: 'verified' },
+    );
     expect(screen.getByText("We found Custom Disposal, but couldn’t confirm service in your exact city. Is this the curbside provider you use?")).toBeTruthy();
     expect(screen.getByText('After confirmation, this provider cannot be changed for 24 hours.')).toBeTruthy();
     await fireEvent.press(screen.getByText('No, edit'));
@@ -400,6 +410,10 @@ describe('Profile screen redesign', () => {
     await act(async () => { jest.advanceTimersByTime(600); });
     await fireEvent.press(screen.getByLabelText('Verify provider name'));
     await waitFor(() => expect(screen.getByText('Retry')).toBeTruthy());
+    expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith(
+      'provider_verification_completed',
+      { outcome: 'not_found' },
+    );
     expect(screen.getByText('We couldn’t confirm this residential curbside provider. Check the name and try again.')).toBeTruthy();
     expect(screen.queryByText('Operates outside Georgia.')).toBeNull();
     expect(screen.queryByText('Dumpster rental')).toBeNull();
@@ -480,6 +494,10 @@ describe('Profile screen redesign', () => {
     await waitFor(() => expect(alertSpy).toHaveBeenCalledWith(
       'Provider verification unavailable', expect.stringContaining('Three unsuccessful attempts'),
     ));
+    expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith(
+      'provider_verification_completed',
+      { outcome: 'error' },
+    );
     expect(screen.getByText(/Three unsuccessful attempts reached the limit/)).toBeTruthy();
     jest.useRealTimers();
   });
@@ -496,6 +514,32 @@ describe('Profile screen redesign', () => {
     );
     expect(Linking.openURL).toHaveBeenCalledWith(
       'https://joyiss.github.io/green-bin-legal/',
+    );
+  });
+
+  it('opens Send Feedback on the dedicated in-app screen', async () => {
+    const screen = await render(<ProfileScreen />);
+
+    await fireEvent.press(screen.getByText('Send Feedback'));
+
+    expect(mockPush).toHaveBeenCalledWith('/feedback-board');
+  });
+
+  it('keeps email feedback available as Contact Support', async () => {
+    const screen = await render(<ProfileScreen />);
+
+    await fireEvent.press(screen.getByText('Contact Support'));
+
+    expect(Linking.canOpenURL).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'subject=Green%20Bin%20Support%20Request&body=Hi%20Green%20Bin%20Support%2C',
+      ),
+    );
+    expect(Linking.openURL).toHaveBeenCalledWith(
+      expect.stringContaining('I%20need%20help%20with%3A'),
+    );
+    expect(Linking.openURL).not.toHaveBeenCalledWith(
+      expect.stringContaining('What%20worked%20well%3F'),
     );
   });
 

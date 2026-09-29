@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { captureAnalyticsEvent } from '@/analytics';
 import {
   DEFAULT_DEVELOPMENT_LOCATION_SETTINGS,
   DEVELOPMENT_LOCATION_TOOLS_ENABLED,
@@ -52,17 +53,19 @@ import {
   type ScanUsageDisplayState,
 } from '@/storage/scanUsage';
 
-const FEEDBACK_EMAIL = 'mallela.rakshan@gmail.com';
-const FEEDBACK_SUBJECT = 'Green Bin Feedback';
+const SUPPORT_EMAIL = 'mallela.rakshan@gmail.com';
+const SUPPORT_SUBJECT = 'Green Bin Support Request';
 const PRIVACY_TERMS_URL = 'https://joyiss.github.io/green-bin-legal/';
-const FEEDBACK_BODY = [
-  'What worked well?',
+const SUPPORT_BODY = [
+  'Hi Green Bin Support,',
   '',
-  'What was confusing?',
+  'I need help with:',
   '',
-  'Was any scan result wrong?',
+  'What I expected to happen:',
   '',
-  'Device/app notes:',
+  'What happened instead:',
+  '',
+  'Device or app details (optional):',
 ].join('\n');
 
 type SettingsRowProps = {
@@ -86,10 +89,10 @@ const DEFAULT_SCAN_USAGE_DISPLAY_STATE: ScanUsageDisplayState = {
   monthlyScansRemaining: DEFAULT_MONTHLY_SCAN_LIMIT,
 };
 
-function getFeedbackMailtoUrl() {
-  const subject = encodeURIComponent(FEEDBACK_SUBJECT);
-  const body = encodeURIComponent(FEEDBACK_BODY);
-  return `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
+function getSupportMailtoUrl() {
+  const subject = encodeURIComponent(SUPPORT_SUBJECT);
+  const body = encodeURIComponent(SUPPORT_BODY);
+  return `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
 }
 
 function normalizedProviderName(value: string) {
@@ -324,17 +327,21 @@ export default function ProfileScreen() {
     }
   }, []);
 
-  const handleSendFeedbackPress = useCallback(async () => {
-    const feedbackUrl = getFeedbackMailtoUrl();
+  const handleSendFeedbackPress = useCallback(() => {
+    router.push('/feedback-board');
+  }, [router]);
+
+  const handleContactSupportPress = useCallback(async () => {
+    const supportUrl = getSupportMailtoUrl();
     try {
-      const canOpenFeedbackUrl = await Linking.canOpenURL(feedbackUrl);
-      if (!canOpenFeedbackUrl) {
-        Alert.alert('Could not open email', `Please email feedback to ${FEEDBACK_EMAIL}.`);
+      const canOpenSupportUrl = await Linking.canOpenURL(supportUrl);
+      if (!canOpenSupportUrl) {
+        Alert.alert('Could not open email', `Please email support at ${SUPPORT_EMAIL}.`);
         return;
       }
-      await Linking.openURL(feedbackUrl);
+      await Linking.openURL(supportUrl);
     } catch {
-      Alert.alert('Could not open email', `Please email feedback to ${FEEDBACK_EMAIL}.`);
+      Alert.alert('Could not open email', `Please email support at ${SUPPORT_EMAIL}.`);
     }
   }, []);
 
@@ -410,6 +417,14 @@ export default function ProfileScreen() {
     try {
       const clientId = await getInstallationId();
       const response = await verifyServiceProvider(name, providerLocation, clientId);
+      captureAnalyticsEvent('provider_verification_completed', {
+        outcome:
+          response.result.status === 'verified'
+            ? 'verified'
+            : response.result.status === 'uncertain'
+              ? 'uncertain'
+              : 'not_found',
+      });
       setProviderResult(response.result);
       setVerificationId(response.verification_id);
       setProviderStatus(response.result.status);
@@ -419,6 +434,7 @@ export default function ProfileScreen() {
         Alert.alert('Provider verification paused', `Try again after ${retry}.`);
       }
     } catch (error) {
+      captureAnalyticsEvent('provider_verification_completed', { outcome: 'error' });
       const cooldown = error instanceof ApiError ? normalizeProviderCooldownError(error.body) : null;
       if (cooldown) {
         const retry = new Date(cooldown.retry_at).toLocaleString();
@@ -590,12 +606,28 @@ export default function ProfileScreen() {
             style={({ pressed }) => [styles.actionCard, pressed && styles.cardPressed]}
           >
             <View style={styles.actionIcon}>
+              <Ionicons color="#1B1B1B" name="chatbubble-ellipses-outline" size={20} />
+            </View>
+            <View style={styles.actionTextBlock}>
+              <Text style={styles.actionTitle}>Send Feedback</Text>
+              <Text style={styles.actionDescription}>
+                Share ideas, vote on requests, and follow Green Bin updates.
+              </Text>
+            </View>
+            <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={handleContactSupportPress}
+            style={({ pressed }) => [styles.actionCard, pressed && styles.cardPressed]}
+          >
+            <View style={styles.actionIcon}>
               <Ionicons color="#1B1B1B" name="mail-outline" size={20} />
             </View>
             <View style={styles.actionTextBlock}>
-              <Text style={styles.actionTitle}>Send feedback</Text>
+              <Text style={styles.actionTitle}>Contact Support</Text>
               <Text style={styles.actionDescription}>
-                Share what worked, what was confusing, or any scan result that looked wrong.
+                Email us if you need help or want to report a problem.
               </Text>
             </View>
             <Ionicons color="#8D8A86" name="chevron-forward" size={18} />
