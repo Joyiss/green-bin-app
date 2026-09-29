@@ -48,6 +48,21 @@ describe('analytics wrapper', () => {
     });
   });
 
+  it('does not send an item name as a disposal category', () => {
+    const capture = jest.fn();
+    setAnalyticsClientForTests({ capture } as never);
+    captureAnalyticsEvent('scan_completed', {
+      duration_ms: 100,
+      disposal_category: 'Private item name',
+      local_guidance_available: false,
+      source_count: 0,
+      provider_verified: false,
+    });
+    expect(capture).toHaveBeenCalledWith('scan_completed', expect.objectContaining({
+      disposal_category: 'unknown',
+    }));
+  });
+
   it('captures app_opened once even when startup reruns', () => {
     const capture = jest.fn();
     setAnalyticsClientForTests({ capture } as never);

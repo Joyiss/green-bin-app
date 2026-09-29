@@ -39,10 +39,19 @@ except ImportError:
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
+def _safe_log_level(requested: str | None) -> int:
+    level = getattr(logging, (requested or "WARNING").upper(), logging.WARNING)
+    return max(level, logging.WARNING) if isinstance(level, int) else logging.WARNING
+
+
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    level=_safe_log_level(os.getenv("LOG_LEVEL")),
     format="%(levelname)s:%(name)s:%(message)s",
 )
+for _namespace in ("main", "routes", "repositories", "services"):
+    logging.getLogger(_namespace).setLevel(logging.WARNING)
 
 EARTH911_BASE_URL = os.getenv("EARTH911_BASE_URL", "https://api.earth911.com").rstrip("/")
 EARTH911_API_KEY = os.getenv("EARTH911_API_KEY")
@@ -404,8 +413,8 @@ def get_material_id(item: str) -> dict[str, int | None]:
         return {"material_id": _extract_material_id(material_result, item)}
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("Unexpected get_material_id failure")
+    except Exception as exc:
+        logger.error("Unexpected get_material_id failure. error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={"error": "Unable to resolve this material right now."},
@@ -418,8 +427,8 @@ def search_locations(lat: float, lon: float, material_id: int) -> dict[str, list
         return {"locations": _raw_search_locations(lat, lon, material_id)}
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("Unexpected search_locations failure")
+    except Exception as exc:
+        logger.error("Unexpected search_locations failure. error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={"error": "Unable to search nearby locations right now."},
@@ -432,8 +441,8 @@ def get_location_details(location_id: str) -> dict[str, Any]:
         return {"details": _location_details(location_id)}
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("Unexpected get_location_details failure")
+    except Exception as exc:
+        logger.error("Unexpected get_location_details failure. error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={"error": "Unable to load location details right now."},
@@ -475,24 +484,8 @@ def nearby_locations(
         )
         material_id = material_resolution.get("material_id")
         logger.info(
-            "earth911_material_resolution original_label=%s normalized_label=%s resolved_material_label=%s matched_material=%s material_id=%s match_type=%s routing_category=%s routing_category_source=%s catalog_family_filter=%s protected_item=%s protected_item_specific=%s llm_selection=%s llm_confidence=%s llm_reason=%s validation_failure_reason=%s catalog_selection_candidates=%s stale_catalog_used=%s search_skipped=%s",
-            material_resolution.get("original_label"),
-            material_resolution.get("normalized_label"),
-            material_resolution.get("resolved_material_label"),
-            material_resolution.get("matched_material_name"),
-            material_resolution.get("material_id"),
-            material_resolution.get("match_type"),
-            material_resolution.get("routing_category"),
-            material_resolution.get("routing_category_source"),
-            material_resolution.get("catalog_family_filter"),
-            material_resolution.get("protected_item"),
-            material_resolution.get("protected_item_specific"),
-            material_resolution.get("llm_selection"),
-            material_resolution.get("llm_confidence"),
-            material_resolution.get("llm_reason"),
-            material_resolution.get("validation_failure_reason"),
-            material_resolution.get("catalog_selection_candidates"),
-            material_resolution.get("stale_catalog_used"),
+            "earth911_material_resolution matched=%s search_skipped=%s",
+            material_id is not None,
             material_resolution.get("search_skipped"),
         )
 
@@ -517,8 +510,8 @@ def nearby_locations(
         }
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("Unexpected nearby_locations failure")
+    except Exception as exc:
+        logger.error("Unexpected nearby_locations failure. error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={"error": "Unable to load nearby locations right now."},

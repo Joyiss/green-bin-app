@@ -8,6 +8,22 @@ import {
 
 const LOCATION_CACHE_MS = 5 * 60 * 1000;
 const POSITION_TIMEOUT_MS = 15_000;
+const LAST_KNOWN_TIMEOUT_MS = 5_000;
+const GEOCODE_TIMEOUT_MS = 10_000;
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => {
+        timeoutId = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 export type AppCoordinates = {
   latitude: number;
@@ -40,20 +56,14 @@ export class LocationUnavailableError extends Error {
 let cachedContext: { value: AppLocationContext; expiresAt: number } | null = null;
 
 async function getUsablePosition() {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const currentPosition = await Promise.race([
-    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(
-      () => null,
-    ),
-    new Promise<null>((resolve) => {
-      timeoutId = setTimeout(() => resolve(null), POSITION_TIMEOUT_MS);
-    }),
-  ]).finally(() => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  });
-  return currentPosition ?? Location.getLastKnownPositionAsync();
+  const currentPosition = await settleWithin(
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+    POSITION_TIMEOUT_MS,
+  );
+  return currentPosition ?? settleWithin(
+    Location.getLastKnownPositionAsync(),
+    LAST_KNOWN_TIMEOUT_MS,
+  );
 }
 
 export async function getAppLocationContext({
@@ -89,9 +99,11 @@ export async function getAppLocationContext({
   let jurisdictionId: string | null = null;
   let coarseDisposalLocation: CoarseDisposalLocation | null = null;
   try {
-    const addresses = await Location.reverseGeocodeAsync(coordinates);
-    jurisdictionId = detectJurisdiction(addresses);
-    coarseDisposalLocation = extractCoarseDisposalLocation(addresses);
+    const addresses = await settleWithin(Location.reverseGeocodeAsync(coordinates), GEOCODE_TIMEOUT_MS);
+    if (addresses) {
+      jurisdictionId = detectJurisdiction(addresses);
+      coarseDisposalLocation = extractCoarseDisposalLocation(addresses);
+    }
   } catch {
     jurisdictionId = null;
     coarseDisposalLocation = null;

@@ -1067,16 +1067,14 @@ def _build_cloudflare_response_error(
         else None
     )
     logger.warning(
-        "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+        "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s retry_after=%s rate_limit_type=%s",
         CLOUDFLARE_AI_MODEL,
         request_label,
         latency_ms,
         status_code,
         error_code,
-        error_message,
         retry_after,
         rate_limit_type,
-        response_body,
     )
     message = (
         IMAGE_RECOGNITION_TEMPORARILY_UNAVAILABLE
@@ -1206,16 +1204,14 @@ def _call_vision_model(
             response_body = _json_preview(response_json)
             status_code = _response_status_code(response)
             logger.warning(
-                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s retry_after=%s rate_limit_type=%s",
                 CLOUDFLARE_AI_MODEL,
                 request_label,
                 _duration_ms(extraction_started),
                 status_code,
                 error_code,
-                error_message,
                 _header_value(response, "retry-after"),
                 None,
-                response_body,
             )
             raise CloudflareVLMError(
                 message="Cloudflare Workers AI vision request failed.",
@@ -1238,16 +1234,14 @@ def _call_vision_model(
         )
         if not isinstance(exc, CloudflareVLMError):
             logger.warning(
-                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s cloudflare_error_message=%s retry_after=%s rate_limit_type=%s response_body=%s",
+                "cloudflare_vlm_error provider=cloudflare model=%s use_case=%s latency_ms=%.1f status_code=%s cloudflare_error_code=%s retry_after=%s rate_limit_type=%s",
                 CLOUDFLARE_AI_MODEL,
                 request_label,
                 _duration_ms(extraction_started),
                 _response_status_code(response),
                 None,
-                None,
                 _header_value(response, "retry-after"),
                 None,
-                _safe_response_body_preview(getattr(response, "text", "")),
             )
         raise
     _log_vlm_timing(

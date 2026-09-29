@@ -635,17 +635,16 @@ export default function NearbyScreen() {
             <LocationCard
               key={location.id}
               {...location}
-              onPress={() => {
-                captureAnalyticsEvent('dropoff_location_opened');
-                if (location.directionsUrl) {
-                  Linking.openURL(location.directionsUrl).catch(() => {
-                    Alert.alert(
-                      'Unable to open directions',
-                      'Try opening this location in your maps app.',
-                    );
-                  });
-                }
-              }}
+              onPress={location.directionsUrl ? () => {
+                Linking.openURL(location.directionsUrl!).then(() => {
+                  captureAnalyticsEvent('dropoff_location_opened');
+                }).catch(() => {
+                  Alert.alert(
+                    'Unable to open directions',
+                    'Try opening this location in your maps app.',
+                  );
+                });
+              } : undefined}
             />
           ))}
 

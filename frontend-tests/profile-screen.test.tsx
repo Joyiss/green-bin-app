@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { AccessibilityInfo, Alert, Linking, StyleSheet } from 'react-native';
+import { AccessibilityInfo, Alert, Linking, Modal, StyleSheet } from 'react-native';
 import { ApiError } from '@/api/request';
 
 import {
@@ -116,7 +116,15 @@ describe('Profile screen redesign', () => {
     mockPush.mockClear();
     mockGetScanUsageDisplayState.mockClear();
     mockFetchCurrentProvider.mockClear();
-    mockVerifyServiceProvider.mockClear();
+    mockVerifyServiceProvider.mockReset();
+    mockVerifyServiceProvider.mockResolvedValue({
+      verification_id: 'verification-id', cached: false, cooldown: null,
+      result: {
+        status: 'verified', name: 'City Waste', services: ['Residential recycling'],
+        match: 'confirmed', location_match: 'exact', reason: 'City Waste serves the broader Atlanta area.',
+        evidence: [{ title: 'Provider', url: 'https://provider.example', snippet: 'Curbside service.' }],
+      },
+    });
     mockConfirmServiceProvider.mockClear();
     mockGetAppLocationContext.mockClear();
     mockGetAppLocationContext.mockResolvedValue({
@@ -266,6 +274,42 @@ describe('Profile screen redesign', () => {
     jest.useRealTimers();
   });
 
+  it('ignores rapid duplicate verification and an obsolete result after the name changes', async () => {
+    let resolveVerification: ((value: any) => void) | null = null;
+    mockVerifyServiceProvider.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveVerification = resolve;
+    }));
+    const screen = await render(<ProfileScreen />);
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
+    await fireEvent.press(screen.getByText('Curbside Service'));
+    jest.useFakeTimers();
+    try {
+      const providerInput = screen.getByLabelText('Curbside recycling provider name');
+      await fireEvent.changeText(providerInput, 'City Waste');
+      await act(async () => { jest.advanceTimersByTime(600); });
+      const verifyButton = screen.getByLabelText('Verify provider name');
+      await fireEvent.press(verifyButton);
+      await fireEvent.press(verifyButton);
+      expect(mockVerifyServiceProvider).toHaveBeenCalledTimes(1);
+      await fireEvent.changeText(providerInput, 'Different Provider');
+      await act(async () => {
+        resolveVerification?.({
+          verification_id: 'old-verification', cached: false, cooldown: null,
+          result: {
+            status: 'verified', name: 'City Waste', services: [], match: 'confirmed',
+            location_match: 'exact', reason: '', evidence: [],
+          },
+        });
+      });
+      expect(screen.queryByLabelText('Confirm provider name')).toBeNull();
+      expect(mockCaptureAnalyticsEvent).not.toHaveBeenCalledWith(
+        'provider_verification_completed', expect.anything(),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('reveals Verify after typing pauses and resets it for edits, clearing, and reopen', async () => {
     const screen = await render(<ProfileScreen />);
 
@@ -345,6 +389,31 @@ describe('Profile screen redesign', () => {
     expect(screen.getByLabelText('Curbside recycling provider name').props.editable).not.toBe(false);
     expect(mockConfirmServiceProvider).not.toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  it('Android back closes the provider popup before the curbside sheet', async () => {
+    mockVerifyServiceProvider.mockResolvedValueOnce({
+      verification_id: 'regional-id', cached: false, cooldown: null,
+      result: {
+        status: 'verified', name: 'Custom Disposal', services: [],
+        match: 'confirmed', location_match: 'regional', reason: '', evidence: [],
+      },
+    });
+    const screen = await render(<ProfileScreen />);
+    await waitFor(() => expect(mockFetchCurrentProvider).toHaveBeenCalled());
+    await fireEvent.press(screen.getByText('Curbside Service'));
+    jest.useFakeTimers();
+    try {
+      await fireEvent.changeText(screen.getByLabelText('Curbside recycling provider name'), 'Custom Disposal');
+      await act(async () => { jest.advanceTimersByTime(600); });
+      await fireEvent.press(screen.getByLabelText('Verify provider name'));
+      await waitFor(() => expect(screen.getByText('Is this your provider?')).toBeTruthy());
+      await fireEvent(screen.getByTestId('curbside-service-modal'), 'requestClose');
+      expect(screen.queryByText('Is this your provider?')).toBeNull();
+      expect(screen.getByLabelText('Close curbside service settings')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('confirms a regional match from the modal and locks the field', async () => {

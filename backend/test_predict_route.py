@@ -65,6 +65,24 @@ class PredictRouteTests(unittest.TestCase):
         self.assertEqual(payload, {"item": "Calculator"})
         mock_recognize.assert_called_once()
 
+    def test_predict_route_logs_no_uploaded_filename_or_selected_item(self):
+        client = TestClient(app)
+        with (
+            patch.dict("os.environ", {"REQUIRE_SCAN_CLIENT_ID": "false"}, clear=False),
+            patch("routes.predict.recognize_item", AsyncMock(return_value={"item": "Private item"})),
+            patch("routes.predict.build_prediction_response", return_value={"item": "Private item"}),
+            self.assertLogs("routes.predict", level="INFO") as captured,
+        ):
+            response = client.post(
+                "/predict",
+                files={"file": ("private-photo.jpg", _make_image_bytes(), "image/jpeg")},
+                data={"selected_item": "Private item"},
+            )
+        self.assertEqual(response.status_code, 200)
+        log_text = "\n".join(captured.output)
+        self.assertNotIn("private-photo", log_text)
+        self.assertNotIn("Private item", log_text)
+
     def test_predict_requires_client_id_when_configured(self):
         client = TestClient(app)
 

@@ -462,8 +462,17 @@ export function CurbsideServiceSheet({
 
   return (
     <Modal
+      testID="curbside-service-modal"
       animationType="none"
-      onRequestClose={() => close(false)}
+      onRequestClose={() => {
+        if (providerCooldownVisible) {
+          setProviderCooldownVisible(false);
+        } else if (providerConfirmationVisible) {
+          if (!saving) handleRegionalEdit();
+        } else if (!saving) {
+          close(false);
+        }
+      }}
       statusBarTranslucent
       transparent
       visible={visible}

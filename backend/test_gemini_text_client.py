@@ -75,7 +75,8 @@ class GeminiTextClientTests(unittest.TestCase):
         combined = "\n".join(logs.output)
         self.assertIn("parse_success=True", combined)
         self.assertIn("schema_success=True", combined)
-        self.assertIn("model_response=", combined)
+        self.assertNotIn("model_response=", combined)
+        self.assertNotIn('{"ok":true}', combined)
         self.assertNotIn("secret-key", combined)
 
     @patch("services.gemini_text_client.requests.post")

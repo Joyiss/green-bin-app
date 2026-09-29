@@ -24,6 +24,7 @@ import {
 import {
   acquireRequestLock,
   ApiError,
+  getApiErrorMessage,
   releaseRequestLock,
   requestJson,
 } from '../api/request.ts';
@@ -730,9 +731,13 @@ test('prediction validation rejects incompatible core fields and normalizes opti
     () => normalizePredictionResponse({ status: 'maybe', item: 'Bottle' }),
     ApiContractError,
   );
+  assert.throws(
+    () => normalizePredictionResponse({ status: 'confident', item: 'Bottle' }),
+    ApiContractError,
+  );
 
   const prediction = normalizePredictionResponse({
-    status: 'confident',
+    status: 'uncertain',
     item: ' Bottle ',
     category: null,
     disposal_action: 42,
@@ -1083,4 +1088,89 @@ test('caller cancellation aborts stale work without retrying it', async () => {
     (error) => error instanceof ApiError && error.message === 'Request was cancelled.',
   );
   assert.equal(fetchCount, 1);
+});
+
+test('HTTP failure matrix returns a finite, understandable scan error without POST replay', async () => {
+  for (const status of [400, 401, 403, 429, 500, 502, 503]) {
+    let calls = 0;
+    await assert.rejects(
+      requestJson('https://local.test/predict', {
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response('{}', { status });
+        },
+        init: { method: 'POST' },
+        retryCount: 1,
+        retryDelayMs: 0,
+        timeoutMs: 100,
+        validate: normalizePredictionResponse,
+      }),
+      (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, status);
+        assert.ok(getApiErrorMessage(error, 'scan').length > 20);
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test('empty, incomplete, unexpected, and malformed prediction bodies fail safely', async () => {
+  for (const body of ['', '{}', '[]', '{invalid', JSON.stringify({ status: 'confident', item: 'Bottle' })]) {
+    await assert.rejects(
+      requestJson('https://local.test/predict', {
+        fetchImpl: async () => new Response(body, { status: 200 }),
+        init: { method: 'POST' },
+        timeoutMs: 100,
+        validate: normalizePredictionResponse,
+      }),
+      (error) => error instanceof ApiError && error.kind === 'invalid_response',
+    );
+  }
+});
+
+test('bounded local repeated and concurrent scans isolate failures', async () => {
+  for (const count of [1, 5, 10]) {
+    let active = 0;
+    let peak = 0;
+    let calls = 0;
+    const requests = Array.from({ length: count }, (_, index) => requestJson(
+      'https://local.test/predict',
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          active -= 1;
+          return index === 2
+            ? new Response('{}', { status: 503 })
+            : new Response(JSON.stringify({
+                status: 'confident', item: `Mock item ${index}`, disposal_action: 'recycle',
+              }), { status: 200 });
+        },
+        init: { method: 'POST' },
+        timeoutMs: 100,
+        validate: normalizePredictionResponse,
+      },
+    ));
+    const results = await Promise.allSettled(requests);
+    assert.equal(calls, count);
+    assert.equal(peak, count);
+    assert.equal(results.filter((result) => result.status === 'rejected').length, count >= 5 ? 1 : 0);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, count >= 5 ? count - 1 : count);
+  }
+
+  for (let index = 0; index < 20; index += 1) {
+    const result = await requestJson('https://local.test/predict', {
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: 'confident', item: 'Mock item', disposal_action: 'recycle',
+      }), { status: 200 }),
+      init: { method: 'POST' },
+      timeoutMs: 100,
+      validate: normalizePredictionResponse,
+    });
+    assert.equal(result.status, 'confident');
+  }
 });

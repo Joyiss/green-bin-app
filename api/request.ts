@@ -121,6 +121,8 @@ export async function requestJson<T>(
   }: RequestJsonOptions<T>,
 ): Promise<T> {
   let attempt = 0;
+  const method = init?.method?.toUpperCase() ?? 'GET';
+  const canRetryMethod = method === 'GET' || method === 'HEAD';
 
   while (true) {
     const controller = new AbortController();
@@ -159,7 +161,7 @@ export async function requestJson<T>(
               ? new ApiError('request', { cause: error, message: 'Request was cancelled.' })
               : new ApiError('network', { cause: error, retryable: true });
 
-      if (!canRetryAutomatically(apiError) || attempt >= retryCount || signal?.aborted) {
+      if (!canRetryMethod || !canRetryAutomatically(apiError) || attempt >= retryCount || signal?.aborted) {
         throw apiError;
       }
       attempt += 1;
@@ -186,6 +188,9 @@ export function getApiErrorMessage(error: unknown, action: 'scan' | 'nearby' | '
   }
   if (apiError?.kind === 'network') {
     return 'You appear to be offline. Check your connection and try again.';
+  }
+  if (apiError?.status === 401 || apiError?.status === 403) {
+    return 'Green Bin could not authorize this request. Please try again later or update the app.';
   }
   if (apiError?.kind === 'rate_limit') {
     return 'Too many requests were sent. Please wait and try again.';

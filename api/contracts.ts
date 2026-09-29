@@ -506,6 +506,9 @@ export function normalizePredictionResponse(value: unknown): PredictionResponse 
   if (status === 'confident' && !item) {
     throw new ApiContractError('A confident prediction requires an item.');
   }
+  if (status === 'confident' && !text(value.disposal_action)) {
+    throw new ApiContractError('A confident prediction requires disposal guidance.');
+  }
 
   const recognitionDetails = optionalRecord(value.recognition_details);
   const normalizedDetails = optionalRecord(recognitionDetails?.normalized);

@@ -1,10 +1,11 @@
 const mockStorage = new Map<string, string>();
+const mockSetItem = jest.fn(async (key: string, value: string) => {
+  mockStorage.set(key, value);
+});
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
-  setItem: jest.fn(async (key: string, value: string) => {
-    mockStorage.set(key, value);
-  }),
+  setItem: (...args: [string, string]) => mockSetItem(...args),
 }));
 
 import {
@@ -28,6 +29,10 @@ const SERVER_USAGE = {
 describe('scan usage metadata', () => {
   beforeEach(() => {
     mockStorage.clear();
+    mockSetItem.mockReset();
+    mockSetItem.mockImplementation(async (key: string, value: string) => {
+      mockStorage.set(key, value);
+    });
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-07-09T12:00:00Z'));
   });
@@ -45,6 +50,12 @@ describe('scan usage metadata', () => {
       monthlyScansRemaining: 8,
       monthlyResetAt: '2026-08-01T00:00:00Z',
     });
+  });
+
+  it('keeps a valid scan result usable when local usage storage fails', async () => {
+    mockSetItem.mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(saveScanUsageMetadata(SERVER_USAGE)).resolves.toBeNull();
+    expect(mockStorage.size).toBe(0);
   });
 
   it('resets the daily allowance without resetting the current month', async () => {

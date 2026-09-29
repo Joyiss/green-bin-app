@@ -35,7 +35,7 @@ def _get_supabase_client() -> Client | None:
     try:
         _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
     except Exception as exc:
-        logger.warning("Failed to create Supabase disposal guidance client: %s", exc)
+        logger.warning("Failed to create Supabase disposal guidance client. error_type=%s", type(exc).__name__)
         return None
 
     return _SUPABASE_CLIENT
@@ -113,7 +113,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(raw_value)
     except ValueError:
-        logger.warning("Disposal guidance cache row had invalid expires_at: %s", value)
+        logger.warning("Disposal guidance cache row had invalid expires_at")
         return None
 
     if parsed.tzinfo is None:
@@ -145,7 +145,7 @@ def get_guidance_by_cache_key(cache_key: str | None) -> dict[str, Any] | None:
             .execute()
         )
     except Exception as exc:
-        logger.warning("Disposal guidance cache lookup failed: %s", exc)
+        logger.warning("Disposal guidance cache lookup failed. error_type=%s", type(exc).__name__)
         return None
 
     rows = _response_data(response)
@@ -173,7 +173,7 @@ def record_guidance_cache_hit(row_id: str | None) -> bool:
             {"row_id": row_id},
         ).execute()
     except Exception as exc:
-        logger.warning("Disposal guidance cache hit update failed: %s", exc)
+        logger.warning("Disposal guidance cache hit update failed. error_type=%s", type(exc).__name__)
         return False
 
     return True
@@ -192,7 +192,7 @@ def upsert_guidance_cache_row(payload: dict[str, Any]) -> dict[str, Any] | None:
             .execute()
         )
     except Exception as exc:
-        logger.warning("Disposal guidance cache upsert failed: %s", exc)
+        logger.warning("Disposal guidance cache upsert failed. error_type=%s", type(exc).__name__)
         return None
 
     rows = _response_data(response)

@@ -251,6 +251,7 @@ export default function ProfileScreen() {
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState(false);
   const providerConfirmingRef = useRef(false);
+  const providerVerifyControllerRef = useRef<AbortController | null>(null);
   const appVersion = Constants.expoConfig?.version ?? 'Unavailable';
 
   useFocusEffect(
@@ -314,6 +315,8 @@ export default function ProfileScreen() {
       return () => {
         isActive = false;
         controller.abort();
+        providerVerifyControllerRef.current?.abort();
+        providerVerifyControllerRef.current = null;
       };
     }, []),
   );
@@ -377,6 +380,8 @@ export default function ProfileScreen() {
   }, [providerLocation, savedCurbsideDraft, savedProvider]);
 
   const dismissCurbsideSheet = useCallback(() => {
+    providerVerifyControllerRef.current?.abort();
+    providerVerifyControllerRef.current = null;
     setWorkingCurbsideDraft(
       cloneCurbsideDraft(savedCurbsideDraft ?? EMPTY_CURBSIDE_DRAFT),
     );
@@ -385,6 +390,8 @@ export default function ProfileScreen() {
 
   const handleCurbsideDraftChange = useCallback((draft: CurbsideDraft) => {
     if (normalizedProviderName(draft.providerName) !== normalizedProviderName(workingCurbsideDraft.providerName)) {
+      providerVerifyControllerRef.current?.abort();
+      providerVerifyControllerRef.current = null;
       const stillConfirmed = savedProvider && (
         normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.raw_input_name) ||
         normalizedProviderName(draft.providerName) === normalizedProviderName(savedProvider.canonical_name)
@@ -398,6 +405,7 @@ export default function ProfileScreen() {
   }, [savedProvider, workingCurbsideDraft.providerName]);
 
   const handleVerifyProvider = useCallback(async () => {
+    if (providerVerifyControllerRef.current) return;
     const name = workingCurbsideDraft.providerName.trim();
     if (!name) {
       setProviderStatus('failure');
@@ -410,13 +418,17 @@ export default function ProfileScreen() {
       Alert.alert('Location unavailable', 'Green Bin cannot verify a provider until an existing city and state are available.');
       return;
     }
+    const controller = new AbortController();
+    providerVerifyControllerRef.current = controller;
     setProviderStatus('loading');
     setProviderError(null);
     setProviderResult(null);
     setVerificationId(null);
     try {
       const clientId = await getInstallationId();
-      const response = await verifyServiceProvider(name, providerLocation, clientId);
+      if (controller.signal.aborted) return;
+      const response = await verifyServiceProvider(name, providerLocation, clientId, controller.signal);
+      if (controller.signal.aborted) return;
       captureAnalyticsEvent('provider_verification_completed', {
         outcome:
           response.result.status === 'verified'
@@ -434,6 +446,7 @@ export default function ProfileScreen() {
         Alert.alert('Provider verification paused', `Try again after ${retry}.`);
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       captureAnalyticsEvent('provider_verification_completed', { outcome: 'error' });
       const cooldown = error instanceof ApiError ? normalizeProviderCooldownError(error.body) : null;
       if (cooldown) {
@@ -449,6 +462,10 @@ export default function ProfileScreen() {
       } else {
         setProviderStatus('failure');
         setProviderError(getApiErrorMessage(error, 'nearby'));
+      }
+    } finally {
+      if (providerVerifyControllerRef.current === controller) {
+        providerVerifyControllerRef.current = null;
       }
     }
   }, [providerLocation, workingCurbsideDraft.providerName]);

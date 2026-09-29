@@ -104,8 +104,8 @@ def detect_barcode(image_bytes: bytes) -> dict[str, str] | None:
             "barcode_value": barcode_value,
             "barcode_type": _extract_barcode_type(first_barcode) or "Unknown",
         }
-    except Exception:
-        logger.exception("Barcode detection failed.")
+    except Exception as exc:
+        logger.warning("Barcode detection failed. error_type=%s", type(exc).__name__)
         return None
 
 

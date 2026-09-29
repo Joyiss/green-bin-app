@@ -13,6 +13,7 @@ import {
   Alert,
   Animated,
   AppState,
+  BackHandler,
   Image,
   Keyboard,
   LayoutChangeEvent,
@@ -1608,6 +1609,25 @@ export default function ScannerScreen() {
       return;
     }
   };
+
+  const resetScannerForBackRef = useRef(resetScanner);
+  resetScannerForBackRef.current = resetScanner;
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !isScreenFocused) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (isRateLimitWarningVisible) {
+        setIsRateLimitWarningVisible(false);
+        return true;
+      }
+      if (visibleSheetState !== 'idle' || capturedImageUri || requestState === 'loading') {
+        resetScannerForBackRef.current();
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [capturedImageUri, isRateLimitWarningVisible, isScreenFocused, requestState, visibleSheetState]);
 
   const handleUseDeviceLocationForTesting = async () => {
     try {

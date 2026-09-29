@@ -164,8 +164,10 @@ export function ResultFeedback({
 
   const handleShare = async () => {
     try {
-      await Share.share({ message: shareText, title: `${presentation.item} disposal guidance` });
-      captureAnalyticsEvent('guidance_shared');
+      const outcome = await Share.share({ message: shareText, title: `${presentation.item} disposal guidance` });
+      if (outcome.action === Share.sharedAction) {
+        captureAnalyticsEvent('guidance_shared');
+      }
       setActionMessage(null);
     } catch {
       setActionMessage('Couldn’t open the share menu');

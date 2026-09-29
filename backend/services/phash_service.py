@@ -31,5 +31,5 @@ def warmup_phash() -> bool:
         logger.info("pHash startup warmup completed.")
         return True
     except Exception as exc:
-        logger.warning("pHash startup warmup failed safely: %s", exc)
+        logger.warning("pHash startup warmup failed safely. error_type=%s", type(exc).__name__)
         return False

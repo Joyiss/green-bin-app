@@ -77,16 +77,6 @@ def configuration_failure_reason(settings: dict[str, Any] | None = None) -> str 
     return None
 
 
-def _response_preview(value: Any, *, maximum: int = 2000) -> str:
-    text = (
-        value
-        if isinstance(value, str)
-        else json.dumps(value, ensure_ascii=True, default=str)
-    )
-    normalized = " ".join(text.split())
-    return normalized if len(normalized) <= maximum else normalized[:maximum] + "..."
-
-
 def _candidate_text(payload: Any) -> str:
     if not isinstance(payload, dict):
         raise GeminiTextError("malformed_response", "Gemini returned a non-object response.")
@@ -237,7 +227,7 @@ def generate_text(
         failure_reason = None
     if failure_reason:
         logger.warning(
-            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=%s parse_success=false schema_success=false failure_reason=%s status_code=%s model_response=%s",
+            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=%s parse_success=false schema_success=false failure_reason=%s status_code=%s",
             PROVIDER,
             model,
             use_case,
@@ -245,7 +235,6 @@ def generate_text(
             failure_reason == "timeout",
             failure_reason,
             response.status_code,
-            _response_preview(response.text),
         )
         raise GeminiTextError(failure_reason, f"Gemini API returned HTTP {response.status_code}.")
 
@@ -253,25 +242,23 @@ def generate_text(
         payload = response.json()
     except (ValueError, requests.exceptions.JSONDecodeError) as exc:
         logger.warning(
-            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=false schema_success=false failure_reason=malformed_response model_response=%s",
+            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=false schema_success=false failure_reason=malformed_response",
             PROVIDER,
             model,
             use_case,
             (perf_counter() - started) * 1000,
-            _response_preview(response.text),
         )
         raise GeminiTextError("malformed_response", "Gemini returned invalid response JSON.") from exc
     try:
         raw_text = _candidate_text(payload)
     except GeminiTextError as exc:
         logger.warning(
-            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=false schema_success=false failure_reason=%s model_response=%s",
+            "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=false schema_success=false failure_reason=%s",
             PROVIDER,
             model,
             use_case,
             (perf_counter() - started) * 1000,
             exc.failure_reason,
-            _response_preview(payload),
         )
         raise
     parse_success: bool | None = None
@@ -290,7 +277,7 @@ def generate_text(
     elif schema_success is False:
         failure_reason = "schema_validation_failed"
     logger.info(
-        "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=%s schema_success=%s failure_reason=%s model_response=%s",
+        "gemini_text_response provider=%s model=%s use_case=%s latency_ms=%.1f timeout=false parse_success=%s schema_success=%s failure_reason=%s",
         PROVIDER,
         model,
         use_case,
@@ -298,6 +285,5 @@ def generate_text(
         parse_success,
         schema_success,
         failure_reason,
-        _response_preview(raw_text),
     )
     return raw_text

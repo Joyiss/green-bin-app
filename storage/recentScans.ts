@@ -1,7 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Directory, File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 
 export const RECENT_SCANS_STORAGE_KEY = 'green-bin:recent-scans';
 export const MAX_RECENT_SCANS = 50;
+const RECENT_SCAN_IMAGE_DIRECTORY = 'recent-scan-images';
 
 export type RecentScanRecognitionStatus = 'confident' | 'uncertain' | 'unknown';
 export type RecentScanDisposalStatus = 'needs_action' | 'disposed';
@@ -185,6 +188,57 @@ function trimRecentScans(scans: RecentScan[]) {
   return sortRecentScans(scans).slice(0, MAX_RECENT_SCANS);
 }
 
+function imageDirectory() {
+  return new Directory(Paths.document, RECENT_SCAN_IMAGE_DIRECTORY);
+}
+
+function isManagedImage(uri: string, directory: Directory) {
+  const prefix = directory.uri.endsWith('/') ? directory.uri : `${directory.uri}/`;
+  return uri.startsWith(prefix);
+}
+
+function persistScanImage(scan: RecentScan): RecentScan {
+  const uri = scan.imageUri;
+  if (!uri || Platform.OS === 'web') return scan;
+  try {
+    const directory = imageDirectory();
+    if (isManagedImage(uri, directory)) return scan;
+    directory.create({ idempotent: true, intermediates: true });
+    const extension = uri.split('?')[0].match(/\.(jpe?g|png|webp|heic)$/i)?.[0].toLowerCase() ?? '.jpg';
+    const fileName = `${scan.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}${extension}`;
+    const destination = new File(directory, fileName);
+    if (!destination.exists) new File(uri).copy(destination);
+    return {
+      ...scan,
+      imageUri: destination.uri,
+      guidanceSnapshot: { ...scan.guidanceSnapshot, imageUri: destination.uri },
+    };
+  } catch {
+    // Keep the scan record even if the image cannot be copied to app storage.
+    return scan;
+  }
+}
+
+function removeUnreferencedImages(previous: RecentScan[], current: RecentScan[]) {
+  if (Platform.OS === 'web') return;
+  try {
+    const directory = imageDirectory();
+    const retained = new Set(current.map((scan) => scan.imageUri).filter(Boolean));
+    for (const scan of previous) {
+      const uri = scan.imageUri;
+      if (!uri || !isManagedImage(uri, directory) || retained.has(uri)) continue;
+      try {
+        const file = new File(uri);
+        if (file.exists) file.delete();
+      } catch {
+        // Storage cleanup must not interrupt user actions.
+      }
+    }
+  } catch {
+    // File-system access is optional for text-only history.
+  }
+}
+
 async function writeRecentScans(scans: RecentScan[]) {
   const normalizedScans = trimRecentScans(scans);
   await AsyncStorage.setItem(RECENT_SCANS_STORAGE_KEY, JSON.stringify(normalizedScans));
@@ -215,9 +269,10 @@ export async function getRecentScans() {
 
 export async function saveRecentScan(scan: RecentScan) {
   const recentScans = await getRecentScans();
-  const nextScans = [scan, ...recentScans.filter((existingScan) => existingScan.id !== scan.id)];
-
-  return writeRecentScans(nextScans);
+  const nextScans = [persistScanImage(scan), ...recentScans.filter((existingScan) => existingScan.id !== scan.id)];
+  const savedScans = await writeRecentScans(nextScans);
+  removeUnreferencedImages(recentScans, savedScans);
+  return savedScans;
 }
 
 export async function updateRecentScan(id: string, updates: Partial<RecentScan>) {
@@ -229,13 +284,15 @@ export async function updateRecentScan(id: string, updates: Partial<RecentScan>)
   }
 
   const nextScans = [...recentScans];
-  nextScans[scanIndex] = {
+  nextScans[scanIndex] = persistScanImage({
     ...nextScans[scanIndex],
     ...updates,
     id: nextScans[scanIndex].id,
-  };
+  });
 
-  return writeRecentScans(nextScans);
+  const savedScans = await writeRecentScans(nextScans);
+  removeUnreferencedImages(recentScans, savedScans);
+  return savedScans;
 }
 
 export async function deleteRecentScan(id: string) {
@@ -246,9 +303,13 @@ export async function deleteRecentScan(id: string) {
     return recentScans;
   }
 
-  return writeRecentScans(nextScans);
+  const savedScans = await writeRecentScans(nextScans);
+  removeUnreferencedImages(recentScans, savedScans);
+  return savedScans;
 }
 
 export async function clearRecentScans() {
+  const recentScans = await getRecentScans();
   await AsyncStorage.removeItem(RECENT_SCANS_STORAGE_KEY);
+  removeUnreferencedImages(recentScans, []);
 }

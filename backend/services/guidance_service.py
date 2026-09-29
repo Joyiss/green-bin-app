@@ -2272,13 +2272,8 @@ def _lookup_json_guidance(
         retrieval_inputs = _build_retrieval_inputs(classification)
     try:
         return guidance_retrieval_service.retrieve_guidance_chunks(**retrieval_inputs) or []
-    except Exception:
-        logger.exception(
-            "Guidance retrieval failed. lookup_item=%s lookup_material=%s lookup_category=%s",
-            retrieval_inputs.get("item_label"),
-            retrieval_inputs.get("material"),
-            retrieval_inputs.get("category"),
-        )
+    except Exception as exc:
+        logger.warning("Guidance retrieval failed. error_type=%s", type(exc).__name__)
         return []
 
 

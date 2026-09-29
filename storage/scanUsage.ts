@@ -114,8 +114,12 @@ export function normalizeScanUsageMetadata(value: unknown): ScanUsageMetadata | 
 export async function saveScanUsageMetadata(value: unknown) {
   const metadata = normalizeScanUsageMetadata(value);
   if (!metadata) return null;
-  await AsyncStorage.setItem(SCAN_USAGE_STORAGE_KEY, JSON.stringify(metadata));
-  return metadata;
+  try {
+    await AsyncStorage.setItem(SCAN_USAGE_STORAGE_KEY, JSON.stringify(metadata));
+    return metadata;
+  } catch {
+    return null;
+  }
 }
 
 export async function getScanUsageMetadata() {

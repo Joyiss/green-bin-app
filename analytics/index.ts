@@ -64,6 +64,12 @@ const commonProperties = {
   environment: analyticsEnvironment(),
 } as const;
 
+const SAFE_DISPOSAL_CATEGORIES = new Set([
+  'appliances', 'battery', 'cardboard', 'electronics', 'glass', 'hazardous',
+  'metal', 'organic', 'paper', 'plastic', 'textiles', 'recycle', 'trash',
+  'compost', 'drop-off', 'donate', 'unknown',
+]);
+
 function createClient(): AnalyticsClient | null {
   if (isAutomatedTest) {
     return null;
@@ -115,7 +121,17 @@ export function captureAnalyticsEvent<EventName extends AnalyticsEventName>(
   const properties = args[0] ?? ({} as AnalyticsEventProperties[EventName]);
 
   try {
-    analyticsClient?.capture(event, { ...commonProperties, ...properties });
+    const safeProperties = event === 'scan_completed'
+      ? {
+          ...properties,
+          disposal_category: SAFE_DISPOSAL_CATEGORIES.has(
+            String((properties as AnalyticsEventProperties['scan_completed']).disposal_category).toLowerCase(),
+          )
+            ? String((properties as AnalyticsEventProperties['scan_completed']).disposal_category).toLowerCase()
+            : 'unknown',
+        }
+      : properties;
+    analyticsClient?.capture(event, { ...commonProperties, ...safeProperties });
   } catch {
     // Analytics is best-effort and must never affect the application flow.
   }

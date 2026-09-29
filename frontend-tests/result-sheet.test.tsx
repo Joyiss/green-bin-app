@@ -304,6 +304,13 @@ test('copy includes the complete result and Share opens the native menu', async 
   expect(mockCaptureAnalyticsEvent).toHaveBeenCalledWith('guidance_shared');
 });
 
+test('dismissing Share does not count as a shared result', async () => {
+  jest.spyOn(Share, 'share').mockResolvedValueOnce({ action: Share.dismissedAction });
+  const { view } = await renderScreen();
+  await fireEvent.press(view.getByRole('button', { name: 'Share' }));
+  expect(mockCaptureAnalyticsEvent).not.toHaveBeenCalledWith('guidance_shared');
+});
+
 test('thumbs down opens a centered multi-reason feedback dialog', async () => {
   const { view, onFeedbackSuccess } = await renderScreen();
   await fireEvent.press(view.getByRole('button', { name: 'Thumbs Down' }));

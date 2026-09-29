@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 
 const mockBack = jest.fn();
 const mockCaptureAnalyticsEvent = jest.fn();
@@ -58,8 +58,8 @@ describe('Feedback board screen', () => {
     const screen = await render(<FeedbackBoardScreen />);
     const webView = screen.getByTestId('featurebase-webview');
 
-    await fireEvent(webView, 'load');
-    await fireEvent(webView, 'load');
+    await fireEvent(webView, 'loadEnd');
+    await fireEvent(webView, 'loadEnd');
     screen.rerender(<FeedbackBoardScreen />);
 
     expect(mockCaptureAnalyticsEvent).toHaveBeenCalledTimes(1);
@@ -70,6 +70,8 @@ describe('Feedback board screen', () => {
     const screen = await render(<FeedbackBoardScreen />);
 
     await fireEvent(screen.getByTestId('featurebase-webview'), 'error');
+    await fireEvent(screen.getByTestId('featurebase-webview'), 'loadEnd');
+    expect(mockCaptureAnalyticsEvent).not.toHaveBeenCalled();
     expect(screen.getByText('Couldn’t load feedback')).toBeTruthy();
     expect(screen.getByText('Check your connection, then try again.')).toBeTruthy();
 
@@ -79,5 +81,27 @@ describe('Feedback board screen', () => {
     expect(screen.getByTestId('featurebase-webview').props.source).toEqual({
       uri: 'https://greenbin.featurebase.app/',
     });
+  });
+
+  it('ends a stalled load and allows a retry without an endless spinner', async () => {
+    jest.useFakeTimers();
+    try {
+      const screen = await render(<FeedbackBoardScreen />);
+      await act(async () => {
+        jest.advanceTimersByTime(20_000);
+      });
+      expect(screen.queryByText('Loading feedback…')).toBeNull();
+      expect(screen.getByText('Couldn’t load feedback')).toBeTruthy();
+
+      await fireEvent.press(screen.getByText('Try Again'));
+      expect(screen.getByText('Loading feedback…')).toBeTruthy();
+      await fireEvent(screen.getByTestId('featurebase-webview'), 'loadEnd');
+      await act(async () => {
+        jest.advanceTimersByTime(20_000);
+      });
+      expect(screen.queryByText('Couldn’t load feedback')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

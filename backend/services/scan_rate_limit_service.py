@@ -168,7 +168,7 @@ def _normalized_client_hash(client_id: str | None) -> str | None:
 def _handle_repository_error(exc: scan_usage_repository.ScanUsageRepositoryError) -> None:
     if require_scan_client_id():
         raise ScanRateLimitUnavailableError(str(exc)) from exc
-    logger.warning("Skipping scan limits because usage tracking failed: %s", exc)
+    logger.warning("Skipping scan limits because usage tracking failed. error_type=%s", type(exc).__name__)
 
 
 def check_scan_limits(client_id: str | None) -> ScanRateLimitMetadata | None:

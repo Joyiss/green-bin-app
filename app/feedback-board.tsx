@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -15,6 +15,7 @@ import { captureAnalyticsEvent } from '@/analytics';
 import { PRIMARY_TEXT_STYLES, SECONDARY_TEXT_STYLES } from '@/constants/typography';
 
 const FEATUREBASE_PORTAL_URL = 'https://greenbin.featurebase.app/';
+const PORTAL_LOAD_TIMEOUT_MS = 20_000;
 
 export default function FeedbackBoardScreen() {
   const router = useRouter();
@@ -22,29 +23,53 @@ export default function FeedbackBoardScreen() {
   const [hasError, setHasError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const hasTrackedOpenRef = useRef(false);
+  const loadFailedRef = useRef(false);
+  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearLoadTimeout = useCallback(() => {
+    if (loadTimeoutRef.current) {
+      clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
+  }, []);
+
+  const startLoadTimeout = useCallback(() => {
+    clearLoadTimeout();
+    loadTimeoutRef.current = setTimeout(() => {
+      loadFailedRef.current = true;
+      setHasError(true);
+      setIsLoading(false);
+    }, PORTAL_LOAD_TIMEOUT_MS);
+  }, [clearLoadTimeout]);
+
+  useEffect(() => {
+    loadFailedRef.current = false;
+    startLoadTimeout();
+    return clearLoadTimeout;
+  }, [clearLoadTimeout, reloadKey, startLoadTimeout]);
 
   const handleLoadStart = useCallback(() => {
+    loadFailedRef.current = false;
+    startLoadTimeout();
     setHasError(false);
     setIsLoading(true);
-  }, []);
+  }, [startLoadTimeout]);
 
   const handleLoadEnd = useCallback(() => {
+    clearLoadTimeout();
     setIsLoading(false);
-  }, []);
-
-  const handleLoadSuccess = useCallback(() => {
-    if (hasTrackedOpenRef.current) {
-      return;
+    if (!loadFailedRef.current && !hasTrackedOpenRef.current) {
+      hasTrackedOpenRef.current = true;
+      captureAnalyticsEvent('feedback_board_opened');
     }
-
-    hasTrackedOpenRef.current = true;
-    captureAnalyticsEvent('feedback_board_opened');
-  }, []);
+  }, [clearLoadTimeout]);
 
   const handleLoadError = useCallback(() => {
+    clearLoadTimeout();
+    loadFailedRef.current = true;
     setHasError(true);
     setIsLoading(false);
-  }, []);
+  }, [clearLoadTimeout]);
 
   const handleRetry = useCallback(() => {
     setHasError(false);
@@ -74,7 +99,6 @@ export default function FeedbackBoardScreen() {
           key={reloadKey}
           onError={handleLoadError}
           onHttpError={handleLoadError}
-          onLoad={handleLoadSuccess}
           onLoadEnd={handleLoadEnd}
           onLoadStart={handleLoadStart}
           originWhitelist={['https://*']}

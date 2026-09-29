@@ -266,8 +266,8 @@ def warmup_exact_phash_lookup() -> bool:
         return True
     except Exception as exc:
         logger.warning(
-            "Recognition cache exact-lookup startup warmup failed safely: %s",
-            exc,
+            "Recognition cache exact-lookup startup warmup failed safely. error_type=%s",
+            type(exc).__name__,
         )
         return False
 

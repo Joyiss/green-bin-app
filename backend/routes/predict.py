@@ -89,13 +89,7 @@ def _confirmed_provider_for_location(
     normalized_county = county.strip() if isinstance(county, str) else ""
     normalized_state = state.strip() if isinstance(state, str) else ""
     if not normalized_client_id or not normalized_city or not normalized_state:
-        logger.info(
-            "predict_provider_context request_id=%s used=False city=%s county=%s state=%s reason=missing_context",
-            request_context.get_predict_request_id(),
-            normalized_city or None,
-            normalized_county or None,
-            normalized_state or None,
-        )
+        logger.info("predict_provider_context used=False reason=missing_context")
         return None
 
     try:
@@ -106,23 +100,11 @@ def _confirmed_provider_for_location(
             state=normalized_state,
         )
         if not isinstance(provider, dict):
-            logger.info(
-                "predict_provider_context request_id=%s used=False city=%s county=%s state=%s reason=not_found",
-                request_context.get_predict_request_id(),
-                normalized_city,
-                normalized_county or None,
-                normalized_state,
-            )
+            logger.info("predict_provider_context used=False reason=not_found")
             return None
         canonical_name = str(provider.get("canonical_name") or "").strip()
         if provider.get("status") != "verified" or not canonical_name:
-            logger.info(
-                "predict_provider_context request_id=%s used=False city=%s county=%s state=%s reason=invalid_record",
-                request_context.get_predict_request_id(),
-                normalized_city,
-                normalized_county or None,
-                normalized_state,
-            )
+            logger.info("predict_provider_context used=False reason=invalid_record")
             return None
         context = {
             "canonical_name": canonical_name,
@@ -131,23 +113,10 @@ def _confirmed_provider_for_location(
             "state": str(provider.get("state") or normalized_state).strip(),
             "official_domain": _provider_official_domain(provider.get("evidence_urls")),
         }
-        logger.info(
-            "predict_provider_context request_id=%s used=True canonical_provider=%s city=%s county=%s state=%s",
-            request_context.get_predict_request_id(),
-            canonical_name,
-            context["city"],
-            context["county"] or None,
-            context["state"],
-        )
+        logger.info("predict_provider_context used=True")
         return context
     except Exception:
-        logger.warning(
-            "predict_provider_context request_id=%s used=False city=%s county=%s state=%s reason=lookup_unavailable",
-            request_context.get_predict_request_id(),
-            normalized_city,
-            normalized_county or None,
-            normalized_state,
-        )
+        logger.warning("predict_provider_context used=False reason=lookup_unavailable")
         return None
 
 
@@ -186,14 +155,11 @@ async def predict(
     context_token = request_context.set_predict_request_id(request_id)
     active_count = _increment_active_predict_requests()
     logger.info(
-        "predict_request_started request_id=%s active_predict_requests=%s overlapping=%s has_file=%s selected_item=%s filename=%s content_type=%s",
-        request_id,
+        "predict_request_started active_predict_requests=%s overlapping=%s has_file=%s has_selected_item=%s",
         active_count,
         active_count > 1,
         file is not None,
         bool(selected_item),
-        getattr(file, "filename", None),
-        getattr(file, "content_type", None),
     )
     try:
         try:

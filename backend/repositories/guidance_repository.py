@@ -34,7 +34,7 @@ def _get_supabase_client() -> Client | None:
     try:
         _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
     except Exception as exc:
-        logger.warning("Failed to create Supabase guidance client: %s", exc)
+        logger.warning("Failed to create Supabase guidance client. error_type=%s", type(exc).__name__)
         return None
 
     return _SUPABASE_CLIENT
@@ -136,7 +136,7 @@ def _select_first_by_column(column_name: str, value: str) -> dict[str, Any] | No
             .execute()
         )
     except Exception as exc:
-        logger.warning("Supabase guidance lookup failed for %s=%s: %s", column_name, value, exc)
+        logger.warning("Supabase guidance lookup failed. column=%s error_type=%s", column_name, type(exc).__name__)
         return None
 
     rows = _normalize_row_list(_response_data(response))
@@ -167,7 +167,7 @@ def get_general_fallback_guidance() -> dict[str, Any] | None:
     try:
         response = client.table(_TABLE_NAME).select("*").limit(100).execute()
     except Exception as exc:
-        logger.warning("Supabase guidance fallback lookup failed: %s", exc)
+        logger.warning("Supabase guidance fallback lookup failed. error_type=%s", type(exc).__name__)
         return None
 
     for row in _normalize_row_list(_response_data(response)):

@@ -1074,7 +1074,7 @@ async def recognize_item(
                     next_stages,
                 )
         except Exception as exc:
-            logger.warning("pHash cache lookup failed: %s", exc)
+            logger.warning("pHash cache lookup failed. error_type=%s", type(exc).__name__)
 
         logger.info(
             "predict_timing request_id=%s stage=phash_total duration_ms=%.1f",
@@ -1096,7 +1096,7 @@ async def recognize_item(
                 )
             detected_barcode = barcode_service.detect_barcode(image_bytes)
         except Exception as exc:
-            logger.warning("Barcode detection failed: %s", exc)
+            logger.warning("Barcode detection failed. error_type=%s", type(exc).__name__)
             detected_barcode = None
 
         logger.info(
@@ -1147,7 +1147,7 @@ async def recognize_item(
                             save_clip_embedding=cache_policy["save_clip_embedding"],
                         )
                     except Exception as exc:
-                        logger.warning("Recognition cache save failed: %s", exc)
+                        logger.warning("Recognition cache save failed. error_type=%s", type(exc).__name__)
 
                     logger.info(
                         "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
@@ -1218,7 +1218,7 @@ async def recognize_item(
                                     save_clip_embedding=cache_policy["save_clip_embedding"],
                                 )
                             except Exception as exc:
-                                logger.warning("Recognition cache save failed: %s", exc)
+                                logger.warning("Recognition cache save failed. error_type=%s", type(exc).__name__)
 
                             logger.info(
                                 "Skipping CLIP/VLM due to Open Food Facts barcode lookup."
@@ -1331,7 +1331,7 @@ async def recognize_item(
                     save_clip_embedding=cache_policy["save_clip_embedding"],
                 )
             except Exception as exc:
-                logger.warning("Recognition cache save failed: %s", exc)
+                logger.warning("Recognition cache save failed. error_type=%s", type(exc).__name__)
 
             return classification
 
@@ -1348,7 +1348,7 @@ async def recognize_item(
                         len(clip_embedding),
                     )
                 except Exception as exc:
-                    logger.warning("CLIP embedding generation failed: %s", exc)
+                    logger.warning("CLIP embedding generation failed. error_type=%s", type(exc).__name__)
 
                 if clip_embedding is not None:
                     try:
@@ -1367,12 +1367,12 @@ async def recognize_item(
                                 _format_clip_candidates(clip_candidates),
                             )
                     except Exception as exc:
-                        logger.warning("CLIP vector search failed: %s", exc)
+                        logger.warning("CLIP vector search failed. error_type=%s", type(exc).__name__)
                     else:
                         try:
                             router_decision = evaluate_clip_candidates(clip_candidates)
                         except Exception as exc:
-                            logger.warning("CLIP confidence router failed: %s", exc)
+                            logger.warning("CLIP confidence router failed. error_type=%s", type(exc).__name__)
                         else:
                             if router_decision.get("use_cache"):
                                 target_label = (
@@ -1450,7 +1450,7 @@ async def recognize_item(
                 save_clip_embedding=cache_policy["save_clip_embedding"],
             )
         except Exception as exc:
-            logger.warning("Recognition cache save failed: %s", exc)
+            logger.warning("Recognition cache save failed. error_type=%s", type(exc).__name__)
 
         return classification
     except Exception as exc:

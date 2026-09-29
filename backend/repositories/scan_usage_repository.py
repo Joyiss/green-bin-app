@@ -55,7 +55,7 @@ def _get_supabase_client() -> Client | None:
     try:
         _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
     except Exception as exc:
-        logger.warning("Failed to create Supabase scan usage client: %s", exc)
+        logger.warning("Failed to create Supabase scan usage client. error_type=%s", type(exc).__name__)
         return None
 
     return _SUPABASE_CLIENT

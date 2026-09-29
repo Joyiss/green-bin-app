@@ -69,7 +69,7 @@ def warmup_clip_model() -> bool:
         logger.info("CLIP background warmup completed.")
         return True
     except Exception as exc:
-        logger.warning("CLIP background warmup failed safely: %s", exc)
+        logger.warning("CLIP background warmup failed safely. error_type=%s", type(exc).__name__)
         return False
 
 
