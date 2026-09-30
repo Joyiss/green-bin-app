@@ -32,7 +32,6 @@
       }
     },
     "androidNavigationBar": {
-      "backgroundColor": "#00000000",
       "barStyle": "dark-content",
       "enforceContrast": false
     },
@@ -51,9 +50,7 @@
       [
         "expo-navigation-bar",
         {
-          "backgroundColor": "#00000000",
           "barStyle": "dark",
-          "borderColor": "#00000000",
           "visibility": "hidden",
           "behavior": "overlay-swipe",
           "position": "absolute"
