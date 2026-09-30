@@ -14,11 +14,13 @@ try:
     from ..repositories import service_provider_repository
     from ..services import request_context, scan_rate_limit_service
     from ..services.guidance_service import build_prediction_response
+    from ..services.operational_logging import log_operation
     from ..services.recognition_router import recognize_item
 except ImportError:
     from repositories import service_provider_repository
     from services import request_context, scan_rate_limit_service
     from services.guidance_service import build_prediction_response
+    from services.operational_logging import log_operation
     from services.recognition_router import recognize_item
 
 router = APIRouter()
@@ -141,11 +143,13 @@ async def predict(
         else f"predict-{uuid.uuid4().hex[:12]}"
     )
     if not _has_predict_input(file, selected_item):
-        logger.info(
-            "tavily_local_guidance request_id=%s status=tavily_disabled called=False "
-            "skip_reason=invalid_request duration_ms=0.0 result_count=0 "
-            "trusted_source_count=0 reported_credit_usage=None",
-            request_id,
+        log_operation(
+            request_id=request_id,
+            route="/predict",
+            stage="validation",
+            status=400,
+            outcome="rejected",
+            duration_ms=(perf_counter() - request_started) * 1000,
         )
         raise HTTPException(
             status_code=400,
@@ -153,33 +157,43 @@ async def predict(
         )
 
     context_token = request_context.set_predict_request_id(request_id)
-    active_count = _increment_active_predict_requests()
-    logger.info(
-        "predict_request_started active_predict_requests=%s overlapping=%s has_file=%s has_selected_item=%s",
-        active_count,
-        active_count > 1,
-        file is not None,
-        bool(selected_item),
+    _increment_active_predict_requests()
+    request_status: int | str = 500
+    request_outcome = "failed"
+    log_operation(
+        request_id=request_id,
+        route="/predict",
+        stage="request",
+        status="started",
+        duration_ms=0,
     )
     try:
         try:
             scan_rate_limit_service.check_scan_limits(x_greenbin_client_id)
         except scan_rate_limit_service.MissingScanClientIdError:
+            request_status = 400
+            request_outcome = "rejected"
             return JSONResponse(
                 status_code=400,
                 content={"error": "scan_client_id_required"},
             )
         except scan_rate_limit_service.DailyScanLimitReachedError as exc:
+            request_status = 429
+            request_outcome = "rate_limited"
             return _scan_limit_response(
                 "daily_scan_limit_reached",
                 exc.metadata,
             )
         except scan_rate_limit_service.MonthlyScanLimitReachedError as exc:
+            request_status = 429
+            request_outcome = "rate_limited"
             return _scan_limit_response(
                 "monthly_scan_limit_reached",
                 exc.metadata,
             )
         except scan_rate_limit_service.ScanRateLimitUnavailableError:
+            request_status = 503
+            request_outcome = "unavailable"
             return JSONResponse(
                 status_code=503,
                 content={"error": "scan_rate_limit_unavailable"},
@@ -214,10 +228,12 @@ async def predict(
             # addresses, and other reverse-geocoder data never enter Tavily.
             classification["location"] = coarse_location
         guidance_started = perf_counter()
+        guidance_outcome = "failed"
         try:
             response = build_prediction_response(
                 classification,
             )
+            guidance_outcome = "completed"
             recognition_details = classification.get("recognition_details")
             if isinstance(recognition_details, dict):
                 normalized_details = recognition_details.get("normalized")
@@ -232,21 +248,29 @@ async def predict(
                     x_greenbin_client_id
                 )
             except scan_rate_limit_service.MissingScanClientIdError:
+                request_status = 400
+                request_outcome = "rejected"
                 return JSONResponse(
                     status_code=400,
                     content={"error": "scan_client_id_required"},
                 )
             except scan_rate_limit_service.DailyScanLimitReachedError as exc:
+                request_status = 429
+                request_outcome = "rate_limited"
                 return _scan_limit_response(
                     "daily_scan_limit_reached",
                     exc.metadata,
                 )
             except scan_rate_limit_service.MonthlyScanLimitReachedError as exc:
+                request_status = 429
+                request_outcome = "rate_limited"
                 return _scan_limit_response(
                     "monthly_scan_limit_reached",
                     exc.metadata,
                 )
             except scan_rate_limit_service.ScanRateLimitUnavailableError:
+                request_status = 503
+                request_outcome = "unavailable"
                 return JSONResponse(
                     status_code=503,
                     content={"error": "scan_rate_limit_unavailable"},
@@ -257,19 +281,25 @@ async def predict(
             # Feedback is optional and is written only when the tester submits a
             # rating. Prediction completion never depends on feedback storage.
             _ = x_original_request_id
+            request_status = 200
+            request_outcome = "completed"
             return response
         finally:
-            logger.info(
-                "predict_timing request_id=%s stage=guidance duration_ms=%.1f",
-                request_id,
-                (perf_counter() - guidance_started) * 1000,
+            log_operation(
+                request_id=request_id,
+                route="/predict",
+                stage="guidance",
+                status=guidance_outcome,
+                duration_ms=(perf_counter() - guidance_started) * 1000,
             )
     finally:
-        remaining_count = _decrement_active_predict_requests()
-        logger.info(
-            "predict_timing request_id=%s stage=total duration_ms=%.1f active_predict_requests=%s",
-            request_id,
-            (perf_counter() - request_started) * 1000,
-            remaining_count,
+        _decrement_active_predict_requests()
+        log_operation(
+            request_id=request_id,
+            route="/predict",
+            stage="total",
+            status=request_status,
+            outcome=request_outcome,
+            duration_ms=(perf_counter() - request_started) * 1000,
         )
         request_context.reset_predict_request_id(context_token)

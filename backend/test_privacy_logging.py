@@ -3,9 +3,30 @@ from unittest.mock import MagicMock, patch
 
 from repositories import guidance_repository
 from services import guidance_service
+from services.operational_logging import log_operation
 
 
 class PrivacyLoggingTests(unittest.TestCase):
+    def test_operational_log_contains_only_safe_fields_and_masks_request_id(self):
+        with self.assertLogs("greenbin.operations", level="INFO") as logs:
+            log_operation(
+                request_id="private-request-identifier",
+                route="/predict",
+                stage="guidance",
+                status=200,
+                outcome="completed",
+                duration_ms=12.3,
+            )
+
+        combined = "\n".join(logs.output)
+        self.assertNotIn("private-request-identifier", combined)
+        self.assertRegex(combined, r"request_id=rid-[0-9a-f]{16}")
+        self.assertIn("route=/predict", combined)
+        self.assertIn("stage=guidance", combined)
+        self.assertIn("status=200", combined)
+        self.assertIn("outcome=completed", combined)
+        self.assertIn("duration_ms=12.3", combined)
+
     def test_failed_guidance_lookup_does_not_log_item_or_exception_text(self):
         client = MagicMock()
         client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.side_effect = RuntimeError(

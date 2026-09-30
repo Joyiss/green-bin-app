@@ -439,7 +439,7 @@ class RecognitionRouterTests(unittest.TestCase):
             patch("services.recognition_router.clip_service.create_clip_embedding") as mock_clip,
             patch("services.recognition_router.vlm_service.get_top_predictions") as mock_vlm,
         ):
-            with self.assertLogs("services.recognition_router", level="INFO") as logs:
+            with self.assertLogs("greenbin.operations", level="INFO") as logs:
                 result = _run_recognize_item(file=_make_upload_file())
 
         self.assertEqual(result["recognition_source"], "phash_cache")
@@ -629,7 +629,7 @@ class RecognitionRouterTests(unittest.TestCase):
             ) as mock_nearest,
             patch("services.recognition_router.barcode_service.detect_barcode") as mock_barcode,
         ):
-            with self.assertLogs("services.recognition_router", level="INFO") as logs:
+            with self.assertLogs("greenbin.operations", level="INFO") as logs:
                 result = _run_recognize_item(file=_make_upload_file())
 
         self.assertEqual(result["recognition_source"], "phash_cache")
@@ -720,7 +720,7 @@ class RecognitionRouterTests(unittest.TestCase):
             patch("services.recognition_router.classify", return_value=_classification()),
             patch("services.recognition_router.cache_repository.save_recognition_record"),
         ):
-            with self.assertLogs("services.recognition_router", level="INFO") as logs:
+            with self.assertLogs("greenbin.operations", level="INFO") as logs:
                 _run_recognize_item(file=_make_upload_file())
 
         combined = "\n".join(logs.output)

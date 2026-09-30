@@ -71,17 +71,20 @@ class PredictRouteTests(unittest.TestCase):
             patch.dict("os.environ", {"REQUIRE_SCAN_CLIENT_ID": "false"}, clear=False),
             patch("routes.predict.recognize_item", AsyncMock(return_value={"item": "Private item"})),
             patch("routes.predict.build_prediction_response", return_value={"item": "Private item"}),
-            self.assertLogs("routes.predict", level="INFO") as captured,
+            self.assertLogs("greenbin.operations", level="INFO") as captured,
         ):
             response = client.post(
                 "/predict",
                 files={"file": ("private-photo.jpg", _make_image_bytes(), "image/jpeg")},
                 data={"selected_item": "Private item"},
+                headers={"X-Request-ID": "private-request-identifier"},
             )
         self.assertEqual(response.status_code, 200)
         log_text = "\n".join(captured.output)
         self.assertNotIn("private-photo", log_text)
         self.assertNotIn("Private item", log_text)
+        self.assertNotIn("private-request-identifier", log_text)
+        self.assertNotIn("active_predict_requests", log_text)
 
     def test_predict_requires_client_id_when_configured(self):
         client = TestClient(app)
@@ -450,7 +453,7 @@ class PredictRouteTests(unittest.TestCase):
         with (
             patch("routes.predict.recognize_item", AsyncMock(return_value=classification)),
             patch("routes.predict.build_prediction_response", return_value=response),
-            self.assertLogs("routes.predict", level="INFO") as logs,
+            self.assertLogs("greenbin.operations", level="INFO") as logs,
         ):
             result = asyncio.run(predict_route(file=None, selected_item="Calculator"))
 

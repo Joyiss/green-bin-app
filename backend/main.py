@@ -41,16 +41,35 @@ except ImportError:
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
-def _safe_log_level(requested: str | None) -> int:
+def _configured_log_level(requested: str | None) -> int:
     level = getattr(logging, (requested or "WARNING").upper(), logging.WARNING)
-    return max(level, logging.WARNING) if isinstance(level, int) else logging.WARNING
+    return level if isinstance(level, int) else logging.WARNING
 
 
 logging.basicConfig(
-    level=_safe_log_level(os.getenv("LOG_LEVEL")),
+    level=_configured_log_level(os.getenv("LOG_LEVEL")),
     format="%(levelname)s:%(name)s:%(message)s",
 )
-for _namespace in ("main", "routes", "repositories", "services"):
+for _namespace in (
+    "main",
+    "routes",
+    "repositories",
+    "services",
+    "backend.main",
+    "backend.routes",
+    "backend.repositories",
+    "backend.services",
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "supabase",
+    "postgrest",
+    "storage3",
+    "realtime",
+    "google",
+    "tavily",
+    "uvicorn.access",
+):
     logging.getLogger(_namespace).setLevel(logging.WARNING)
 
 EARTH911_BASE_URL = os.getenv("EARTH911_BASE_URL", "https://api.earth911.com").rstrip("/")

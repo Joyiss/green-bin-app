@@ -2,7 +2,7 @@
   "expo": {
     "name": "Green Bin",
     "slug": "green-bin-app",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "backgroundColor": "#F8F5F2",

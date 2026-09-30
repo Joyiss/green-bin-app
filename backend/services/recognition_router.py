@@ -25,6 +25,7 @@ try:
     )
     from . import request_context
     from . import vlm_service
+    from .operational_logging import log_operation
     from .recognition_reliability_service import (
         evaluate_open_recognition,
         user_confirmed_recognition_confidence,
@@ -45,6 +46,7 @@ except ImportError:
     )
     from services import request_context
     from services import vlm_service
+    from services.operational_logging import log_operation
     from services.recognition_reliability_service import (
         evaluate_open_recognition,
         user_confirmed_recognition_confidence,
@@ -89,11 +91,11 @@ def _timed_stage(stage: str):
     try:
         yield
     finally:
-        logger.info(
-            "predict_timing request_id=%s stage=%s duration_ms=%.1f",
-            request_context.get_predict_request_id(),
-            stage,
-            (perf_counter() - started) * 1000,
+        log_operation(
+            request_id=request_context.get_predict_request_id(),
+            stage=stage,
+            status="completed",
+            duration_ms=(perf_counter() - started) * 1000,
         )
 
 
@@ -1041,10 +1043,11 @@ async def recognize_item(
                             phash,
                             phash_distance,
                         )
-                        logger.info(
-                            "predict_timing request_id=%s stage=phash_total duration_ms=%.1f",
-                            request_context.get_predict_request_id(),
-                            (perf_counter() - phash_total_started) * 1000,
+                        log_operation(
+                            request_id=request_context.get_predict_request_id(),
+                            stage="phash_total",
+                            status="completed",
+                            duration_ms=(perf_counter() - phash_total_started) * 1000,
                         )
                         return _with_recognition_metadata(
                             cached_classification,
@@ -1076,10 +1079,11 @@ async def recognize_item(
         except Exception as exc:
             logger.warning("pHash cache lookup failed. error_type=%s", type(exc).__name__)
 
-        logger.info(
-            "predict_timing request_id=%s stage=phash_total duration_ms=%.1f",
-            request_context.get_predict_request_id(),
-            (perf_counter() - phash_total_started) * 1000,
+        log_operation(
+            request_id=request_context.get_predict_request_id(),
+            stage="phash_total",
+            status="completed",
+            duration_ms=(perf_counter() - phash_total_started) * 1000,
         )
 
         barcode_started = perf_counter()
@@ -1149,10 +1153,11 @@ async def recognize_item(
                     except Exception as exc:
                         logger.warning("Recognition cache save failed. error_type=%s", type(exc).__name__)
 
-                    logger.info(
-                        "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
-                        request_context.get_predict_request_id(),
-                        (perf_counter() - barcode_started) * 1000,
+                    log_operation(
+                        request_id=request_context.get_predict_request_id(),
+                        stage="barcode",
+                        status="completed",
+                        duration_ms=(perf_counter() - barcode_started) * 1000,
                     )
                     return _with_recognition_metadata(
                         classification,
@@ -1223,10 +1228,11 @@ async def recognize_item(
                             logger.info(
                                 "Skipping CLIP/VLM due to Open Food Facts barcode lookup."
                             )
-                            logger.info(
-                                "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
-                                request_context.get_predict_request_id(),
-                                (perf_counter() - barcode_started) * 1000,
+                            log_operation(
+                                request_id=request_context.get_predict_request_id(),
+                                stage="barcode",
+                                status="completed",
+                                duration_ms=(perf_counter() - barcode_started) * 1000,
                             )
                             return _with_recognition_metadata(
                                 classification,
@@ -1262,10 +1268,11 @@ async def recognize_item(
             barcode_signal["matched"],
         )
 
-        logger.info(
-            "predict_timing request_id=%s stage=barcode duration_ms=%.1f",
-            request_context.get_predict_request_id(),
-            (perf_counter() - barcode_started) * 1000,
+        log_operation(
+            request_id=request_context.get_predict_request_id(),
+            stage="barcode",
+            status="completed",
+            duration_ms=(perf_counter() - barcode_started) * 1000,
         )
 
         if barcode_signal["value"] is not None and not barcode_signal["matched"]:
@@ -1301,13 +1308,11 @@ async def recognize_item(
                     cache_hit=False,
                     recognition_source=recognition_source,
                 )
-                logger.info(
-                    "predict_timing request_id=%s stage=vlm_result_normalization duration_ms=%.1f recognition_source=%s status=%s item=%s",
-                    request_context.get_predict_request_id(),
-                    (perf_counter() - normalization_started) * 1000,
-                    recognition_source,
-                    classification.get("status"),
-                    classification.get("item"),
+                log_operation(
+                    request_id=request_context.get_predict_request_id(),
+                    stage="vlm_result_normalization",
+                    status="completed",
+                    duration_ms=(perf_counter() - normalization_started) * 1000,
                 )
                 _log_final_classification(classification)
 
@@ -1415,13 +1420,11 @@ async def recognize_item(
                 cache_hit=False,
                 recognition_source=recognition_source,
             )
-            logger.info(
-                "predict_timing request_id=%s stage=vlm_result_normalization duration_ms=%.1f recognition_source=%s status=%s item=%s",
-                request_context.get_predict_request_id(),
-                (perf_counter() - normalization_started) * 1000,
-                recognition_source,
-                classification.get("status"),
-                classification.get("item"),
+            log_operation(
+                request_id=request_context.get_predict_request_id(),
+                stage="vlm_result_normalization",
+                status="completed",
+                duration_ms=(perf_counter() - normalization_started) * 1000,
             )
             _log_final_classification(classification)
         cache_policy = _finalize_vlm_cache_policy(
